@@ -110,12 +110,55 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| DATA-01 | Phase 1 | Pending |
+| DATA-02 | Phase 1 | Pending |
+| DATA-03 | Phase 1 | Pending |
+| DATA-04 | Phase 1 | Pending |
+| DATA-05 | Phase 1 | Pending |
+| DATA-06 | Phase 1 | Pending |
+| DATA-07 | Phase 1 | Pending |
+| WIND-01 | Phase 2 | Pending |
+| WIND-02 | Phase 2 | Pending |
+| WIND-03 | Phase 2 | Pending |
+| WIND-04 | Phase 2 | Pending |
+| WIND-05 | Phase 3 | Pending |
+| WIND-06 | Phase 3 | Pending |
+| WIND-07 | Phase 2 | Pending |
+| NAV-01 | Phase 2 | Pending |
+| NAV-02 | Phase 2 | Pending |
+| NAV-03 | Phase 2 | Pending |
+| CRSE-01 | Phase 2 | Pending |
+| CRSE-02 | Phase 2 | Pending |
+| CRSE-03 | Phase 2 | Pending |
+| CRSE-04 | Phase 2 | Pending |
+| CRSE-05 | Phase 2 | Pending |
+| GRIB-01 | Phase 3 | Pending |
+| GRIB-02 | Phase 3 | Pending |
+| GRIB-03 | Phase 3 | Pending |
+| ROUT-01 | Phase 3 | Pending |
+| ROUT-02 | Phase 3 | Pending |
+| ROUT-03 | Phase 3 | Pending |
+| ROUT-04 | Phase 3 | Pending |
+| ROUT-05 | Phase 3 | Pending |
+| ROUT-06 | Phase 3 | Pending |
+| ROUT-07 | Phase 3 | Pending |
+| ROUT-08 | Phase 3 | Pending |
+| ROUT-09 | Phase 3 | Pending |
+| ROUT-10 | Phase 3 | Pending |
+| HELM-01 | Phase 2 | Pending |
+| HELM-02 | Phase 2 | Pending |
+| HELM-03 | Phase 2 | Pending |
+| HELM-04 | Phase 2 | Pending |
+| HELM-05 | Phase 1 | Pending |
+| REL-01 | Phase 1 | Pending |
+| REL-02 | Phase 4 | Pending |
+| REL-03 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 43 total
-- Mapped to phases: 0
-- Unmapped: 43 ⚠️
+- Mapped to phases: 43
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-11-06*
-*Last updated: 2026-11-06 after initial definition*
+*Last updated: 2026-11-06 after roadmap creation (traceability mapped)*
