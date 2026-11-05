@@ -31,6 +31,10 @@ At the helm, during the race, the screen shows a trustworthy, continuously updat
 - [ ] Offline map of the race area (Vodice / Šibenik archipelago to Jabuka) with boat, route, laylines, marks
 - [ ] Marks entered by tapping on the tablet map (with which side to leave them), ordered into a course; editable during the race
 - [ ] Helm view: big, night-readable numbers (course to steer / target heading, deviation, target TWA/BSP, distance/time to mark, layline indication) with map behind
+- [ ] Helm view shows time (countdown) to the next recommended tack/gybe
+- [ ] "Stay on this tack" override: a helm button freezes the current tack; routing recomputes from it (earliest next tack point, countdown updated)
+- [ ] Show the cost of not tacking now (minutes lost vs optimal route)
+- [ ] Auto-recompute if the advised tack time has passed and the boat hasn't tacked (after 2 minutes), instead of continuing to say "tack"
 - [ ] Runs headless and robust on Pi 3B for ~36 h (auto-start on boot, survives restarts, no internet)
 
 ### Out of Scope
