@@ -58,6 +58,7 @@ Race-ready for Regata Jabuka (start 2026-11-13). Each maps to one roadmap phase.
 - [ ] **ROUT-07**: Helm can press "Stay on this tack": routing recomputes with the current tack held, showing the earliest next tack and updated countdown
 - [ ] **ROUT-08**: Helm sees the cost of not tacking now (minutes lost vs the optimal route)
 - [ ] **ROUT-09**: If the advised tack time has passed by 2 minutes without a tack detected, the system recomputes automatically instead of continuing to say "tack"
+- [ ] **ROUT-11**: The route never crosses land: every route segment (not just isochrone points) is checked against a land/hazard mask fine enough to keep the narrow channels between islands (Šibenik archipelago, Kornati side) navigable, with a configurable safety margin from shore and shoals; a test suite of known island-crossing cases (e.g. Vodice → open sea between Prvić/Zlarin/Tijat, around Blitvenica and Plić Sestre) proves no route intersects land
 - [ ] **ROUT-10**: Route is drawn on the map and gives a target TWA + tack for the current leg, so steering advice stays correct through wind shifts between reruns
 
 ### Helm Display
@@ -145,6 +146,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ROUT-08 | Phase 3 | Pending |
 | ROUT-09 | Phase 3 | Pending |
 | ROUT-10 | Phase 3 | Pending |
+| ROUT-11 | Phase 3 | Pending |
 | HELM-01 | Phase 2 | Pending |
 | HELM-02 | Phase 2 | Pending |
 | HELM-03 | Phase 2 | Pending |
@@ -155,8 +157,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | REL-03 | Phase 4 | Pending |
 
 **Coverage:**
-- v1 requirements: 43 total
-- Mapped to phases: 43
+- v1 requirements: 44 total
+- Mapped to phases: 44
 - Unmapped: 0 ✓
 
 ---

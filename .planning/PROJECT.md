@@ -76,6 +76,7 @@ At the helm, during the race, the screen shows a trustworthy, continuously updat
 | Marks entered by tapping on the map | User preference; course may change | — Pending |
 | Helm-first UI (big numbers + map) | Helmsman is the primary user | — Pending |
 | Degraded modes: GPS+GRIB, manual wind entry | Fastnet bus untested before race day | — Pending |
+| Route must never cross land (segment-level checks, narrow inter-island channels kept open, shore margin) | Race passes between islands of the Šibenik archipelago; user explicitly insisted | — Pending |
 | Current & waves optional (file and/or measured) | Data availability uncertain | — Pending |
 
 ## Evolution
