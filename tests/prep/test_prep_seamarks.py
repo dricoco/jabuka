@@ -90,6 +90,16 @@ def test_seamark_light_properties() -> None:
     assert p["light"] == "Fl(2)W 10s 4M"
     bare = pm.seamark_feature("node/2", {"seamark:type": "rock"}, 15.8, 43.7, BBOX)["properties"]
     assert bare["light_character"] is None and bare["light"] is None
+    mulo = {
+        "seamark:type": "landmark",
+        "seamark:light:1:character": "Fl",  # sectored-light tagging
+        "seamark:light:1:colour": "white",
+        "seamark:light:1:period": "5",
+        "seamark:light:1:range": "21",
+    }
+    p = pm.seamark_feature("node/498383293", mulo, 15.918543, 43.514478, BBOX)["properties"]
+    assert p["light"] == "Fl W 5s 21M"
+    assert p["light_period"] == "5"
 
 
 # -- coastline geometry -------------------------------------------------------------------------

@@ -44,7 +44,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
@@ -60,6 +60,7 @@ from pmtiles.writer import write as pmtiles_write
 
 from jabuka.common.atomicio import atomic_write_json
 from jabuka.core.tiles import COASTLINE_FILE, SEAMARKS_FILE, TILES_FILE, TileIndex
+from jabuka.core.web import strip_control
 
 EXIT_OK, EXIT_BUILD, EXIT_USAGE, EXIT_CHECK = 0, 1, 2, 3
 
@@ -98,8 +99,28 @@ HTTP_WORKERS = 8
 HTTP_TIMEOUT_S = 60.0
 HTTP_RETRIES = 3
 
+GEOFABRIK_URL = "https://download.geofabrik.de/europe/croatia-latest.osm.pbf"
+GEOFABRIK_FILE = "croatia-latest.osm.pbf"
+PBF_MAX_BYTES = 600 * 1024 * 1024
+PBF_MAX_AGE_S = 2 * 86400.0
+
+# night-relevant seamark types (RESEARCH "Offline map prep" item 2); everything else is dropped
+SEAMARK_TYPES = frozenset({"rock", "wreck", "obstruction", "landmark", "marine_farm"})
+SEAMARK_PREFIXES = ("light_", "beacon_", "buoy_")
+NAME_MAX = 60
+LIGHT_TEXT_MAX = 24
+COLOUR_ABBR = {"white": "W", "red": "R", "green": "G", "yellow": "Y", "blue": "Bu", "orange": "Or"}
+COORD_DECIMALS = 5  # ~1 m
+COAST_MARGIN_DEG = 0.3  # coastline kept up to this far outside the bbox (map edge, islands)
+COAST_MAX_BYTES = 4 * 1024 * 1024
+COAST_TOL_M = 5.0
+GEOJSON_MAX_BYTES = 64 * 1024 * 1024  # --check refuses to parse anything bigger
+FALLBACK_ZOOMS = (12, 10)
+
 Extractor = Callable[[str, Path, Bbox, int], None]
 Logger = Callable[[str], None]
+# overlays(bbox) -> (seamarks FeatureCollection, coastline FeatureCollection, manifest sources)
+Overlays = Callable[[Bbox], tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]
 
 
 def _log(msg: str) -> None:
@@ -484,6 +505,333 @@ def extract_basemap(url: str, out_dir: Path, bbox: Bbox, maxzoom: int, extract: 
         tmp.unlink(missing_ok=True)
 
 
+# -- seamarks + coastline from OpenStreetMap ----------------------------------------------------
+def _clean_text(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = strip_control(str(value)).strip()[:limit]
+    return text or None
+
+
+def seamark_kept(kind: str) -> bool:
+    return kind in SEAMARK_TYPES or kind.startswith(SEAMARK_PREFIXES)
+
+
+def _light_tag(tags: Mapping[str, str], key: str) -> str | None:
+    # single light: seamark:light:KEY; sectored lights: seamark:light:1:KEY
+    return _clean_text(
+        tags.get(f"seamark:light:{key}") or tags.get(f"seamark:light:1:{key}"), LIGHT_TEXT_MAX
+    )
+
+
+def _light_summary(
+    char: str | None, group: str | None, colour: str | None, period: str | None, rng: str | None
+) -> str | None:
+    """'Fl', '2', 'white', '10', '4' -> 'Fl(2)W 10s 4M' (chart abbreviation, for labels)."""
+    if not char:
+        return None
+    parts = (colour or "").replace(",", ";").split(";")
+    col = "".join(COLOUR_ABBR.get(c.strip(), "") for c in parts)
+    # 'Fl(2)W' with a group, 'Fl W' without (as on the chart)
+    text = char + (f"({group}){col}" if group else (f" {col}" if col else ""))
+    if period:
+        text += f" {period}s"
+    if rng:
+        text += f" {rng}M"
+    return text[:LIGHT_TEXT_MAX]
+
+
+def seamark_feature(
+    osm_id: str, tags: Mapping[str, str], lon: float, lat: float, bbox: Bbox
+) -> dict[str, Any] | None:
+    """GeoJSON Point feature for a night-relevant seamark inside bbox, else None.
+    properties: id, type, name (control chars stripped, <= 60 chars), light_character,
+    light_colour, light_period, light_range, light (chart-style summary or None)."""
+    kind = str(tags.get("seamark:type", ""))
+    if not seamark_kept(kind):
+        return None
+    if not (math.isfinite(lon) and math.isfinite(lat)):
+        return None
+    w, s, e, n = bbox
+    if not (w <= lon <= e and s <= lat <= n):
+        return None
+    char = _light_tag(tags, "character")
+    colour = _light_tag(tags, "colour")
+    period = _light_tag(tags, "period")
+    rng = _light_tag(tags, "range")
+    group = _light_tag(tags, "group")
+    props = {
+        "id": osm_id,
+        "type": kind,
+        "seamark:type": kind,  # same value, as in tests/fixtures/map/seamarks-mini.geojson
+        "name": _clean_text(tags.get("seamark:name") or tags.get("name"), NAME_MAX),
+        "light_character": char,
+        "light_colour": colour,
+        "light_period": period,
+        "light_range": rng,
+        "light": _light_summary(char, group, colour, period, rng),
+    }
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
+        "properties": props,
+    }
+
+
+Point = tuple[float, float]
+Way = tuple[list[int], list[Point]]  # node refs, positions (same length)
+
+
+def _chain_ways(ways: Sequence[Way]) -> list[tuple[bool, list[Point]]]:
+    """Join coastline ways that share end nodes (OSM splits long coastlines into ways of at most
+    2000 nodes). Returns (closed, positions) per chain."""
+    out: list[tuple[bool, list[Point]]] = []
+    opened: list[Way] = []
+    for refs, pts in ways:
+        if len(refs) != len(pts) or len(refs) < 2:
+            continue
+        if refs[0] == refs[-1]:
+            out.append((len(refs) >= 4, list(pts)))
+        else:
+            opened.append((list(refs), list(pts)))
+    by_first: dict[int, list[int]] = {}
+    by_last: dict[int, list[int]] = {}
+    for i, (refs, _) in enumerate(opened):
+        by_first.setdefault(refs[0], []).append(i)
+        by_last.setdefault(refs[-1], []).append(i)
+    used = [False] * len(opened)
+
+    def take(index: dict[int, list[int]], ref: int) -> int | None:
+        for j in index.get(ref, []):
+            if not used[j]:
+                used[j] = True
+                return j
+        return None
+
+    for i, (refs0, pts0) in enumerate(opened):
+        if used[i]:
+            continue
+        used[i] = True
+        refs, pts = list(refs0), list(pts0)
+        while refs[0] != refs[-1]:
+            j = take(by_first, refs[-1])
+            if j is None:
+                break
+            refs += opened[j][0][1:]
+            pts += opened[j][1][1:]
+        while refs[0] != refs[-1]:
+            j = take(by_last, refs[0])
+            if j is None:
+                break
+            refs = opened[j][0][:-1] + refs
+            pts = opened[j][1][:-1] + pts
+        out.append((refs[0] == refs[-1] and len(refs) >= 4, pts))
+    return out
+
+
+def _round_dedup(pts: Sequence[Sequence[float]]) -> list[list[float]]:
+    out: list[list[float]] = []
+    for lon, lat in pts:
+        if not (math.isfinite(lon) and math.isfinite(lat)):
+            continue
+        p = [round(lon, COORD_DECIMALS), round(lat, COORD_DECIMALS)]
+        if not out or out[-1] != p:
+            out.append(p)
+    return out
+
+
+def _inside(p: Sequence[float], box: Bbox) -> bool:
+    return box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3]
+
+
+def _touches(pts: Sequence[Sequence[float]], box: Bbox) -> bool:
+    lons = [p[0] for p in pts]
+    lats = [p[1] for p in pts]
+    return (
+        min(lons) <= box[2] and max(lons) >= box[0] and min(lats) <= box[3] and max(lats) >= box[1]
+    )
+
+
+def _line(coords: list[Any]) -> dict[str, Any]:
+    return {
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": coords},
+        "properties": {},
+    }
+
+
+def _polygon(ring: list[Any]) -> dict[str, Any]:
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+        "properties": {},
+    }
+
+
+def coastline_features(ways: Sequence[Way], bbox: Bbox) -> list[dict[str, Any]]:
+    """natural=coastline ways -> GeoJSON features for the land/water fallback map: chained ways that
+    close become Polygons, the others LineStrings; positions rounded to 5 decimals with consecutive
+    duplicates dropped; chains that do not reach bbox are dropped, the rest is cut to bbox plus
+    COAST_MARGIN_DEG (a polygon that sticks out degrades to its inside LineStrings)."""
+    w, s, e, n = bbox
+    m = COAST_MARGIN_DEG
+    outer = (w - m, s - m, e + m, n + m)
+    feats: list[dict[str, Any]] = []
+    for closed, pts in _chain_ways(ways):
+        coords = _round_dedup(pts)
+        if len(coords) < 2 or not _touches(coords, bbox):
+            continue
+        if all(_inside(p, outer) for p in coords):
+            if closed and len(coords) >= 4 and coords[0] == coords[-1]:
+                feats.append(_polygon(coords))
+            else:
+                feats.append(_line(coords))
+            continue
+        run: list[list[float]] = []
+        for p in [*coords, None]:
+            if p is not None and _inside(p, outer):
+                run.append(p)
+                continue
+            if len(run) >= 2 and _touches(run, bbox):
+                feats.append(_line(run))
+            run = []
+    return feats
+
+
+def rdp_simplify(pts: Sequence[Any], tol_m: float) -> list[Any]:
+    """Ramer-Douglas-Peucker on lon/lat with a local metric projection (iterative). Endpoints are
+    always kept, so a closed ring stays closed."""
+    k = len(pts)
+    if k < 3:
+        return list(pts)
+    lat0 = math.radians(sum(p[1] for p in pts) / k)
+    kx, ky = 111_320.0 * math.cos(lat0), 110_574.0
+    xy = [(p[0] * kx, p[1] * ky) for p in pts]
+    keep = [False] * k
+    keep[0] = keep[-1] = True
+    stack = [(0, k - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        ax, ay = xy[a]
+        bx, by = xy[b]
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        best, idx = -1.0, -1
+        for i in range(a + 1, b):
+            px, py = xy[i]
+            if seg2 == 0.0:
+                d2 = (px - ax) ** 2 + (py - ay) ** 2
+            else:
+                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+                d2 = (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2
+            if d2 > best:
+                best, idx = d2, i
+        if best > tol_m * tol_m:
+            keep[idx] = True
+            stack.append((a, idx))
+            stack.append((idx, b))
+    return [p for p, kept in zip(pts, keep, strict=True) if kept]
+
+
+def _json_size(obj: Any) -> int:
+    return len(json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def coastline_collection(
+    features: list[dict[str, Any]], max_bytes: int = COAST_MAX_BYTES, tol_m: float = COAST_TOL_M
+) -> dict[str, Any]:
+    """FeatureCollection; above max_bytes every geometry is simplified at tol_m (RDP)."""
+    fc = {"type": "FeatureCollection", "features": features}
+    if _json_size(fc) <= max_bytes:
+        return fc
+    simplified = []
+    for f in features:
+        g = f["geometry"]
+        if g["type"] == "Polygon":
+            ring = rdp_simplify(g["coordinates"][0], tol_m)
+            simplified.append(_polygon(ring if len(ring) >= 4 else g["coordinates"][0]))
+        else:
+            simplified.append(_line(rdp_simplify(g["coordinates"], tol_m)))
+    return {"type": "FeatureCollection", "features": simplified}
+
+
+def extract_overlays(
+    pbf: Path, bbox: Bbox, log: Logger = _log
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One osmium pass over an OSM file (.pbf or .osm): seamark nodes/ways (a way at the mean of
+    its distinct node positions) and natural=coastline ways. Returns (seamarks FC, coastline FC)."""
+    import osmium  # laptop-only prep extra
+    from osmium.filter import KeyFilter
+
+    t0 = time.monotonic()
+    seamarks: list[dict[str, Any]] = []
+    ways: list[Way] = []
+    fp = (
+        osmium.FileProcessor(str(pbf))
+        .with_locations()
+        .with_filter(KeyFilter("seamark:type", "natural"))
+    )
+    for o in fp:
+        tags = {t.k: t.v for t in o.tags}
+        if o.is_node():
+            if "seamark:type" in tags and o.location.valid():
+                f = seamark_feature(f"node/{o.id}", tags, o.location.lon, o.location.lat, bbox)
+                if f is not None:
+                    seamarks.append(f)
+        elif o.is_way():
+            refs: list[int] = []
+            pts: list[Point] = []
+            for nd in o.nodes:
+                if nd.location.valid():
+                    refs.append(nd.ref)
+                    pts.append((nd.location.lon, nd.location.lat))
+            if tags.get("natural") == "coastline" and len(pts) >= 2:
+                ways.append((refs, pts))
+            if "seamark:type" in tags and pts:
+                distinct = list(dict(zip(refs, pts, strict=True)).values())
+                lon = sum(p[0] for p in distinct) / len(distinct)
+                lat = sum(p[1] for p in distinct) / len(distinct)
+                f = seamark_feature(f"way/{o.id}", tags, lon, lat, bbox)
+                if f is not None:
+                    seamarks.append(f)
+    seamarks.sort(key=lambda f: f["properties"]["id"])
+    coast = coastline_collection(coastline_features(ways, bbox))
+    log(
+        f"prep-map: {len(seamarks)} seamarks, {len(coast['features'])} coastline features "
+        f"from {len(ways)} coastline ways in {time.monotonic() - t0:.1f} s"
+    )
+    return {"type": "FeatureCollection", "features": seamarks}, coast
+
+
+def ensure_pbf(
+    cache_dir: Path,
+    download: Callable[[str, Path, int], Any] = download_file,
+    log: Logger = _log,
+) -> Path:
+    """The Geofabrik Croatia extract in cache_dir, re-downloaded when older than 2 days."""
+    path = cache_dir / GEOFABRIK_FILE
+    if path.is_file() and time.time() - path.stat().st_mtime < PBF_MAX_AGE_S:
+        log(f"prep-map: reusing {path}")
+        return path
+    log(f"prep-map: downloading {GEOFABRIK_URL} (about 200 MB)")
+    download(GEOFABRIK_URL, path, PBF_MAX_BYTES)
+    return path
+
+
+def _write_geojson(path: Path, fc: dict[str, Any]) -> None:
+    atomic_write_json(path, fc)
+    path.with_name(path.name + ".bak").unlink(missing_ok=True)
+
+
+def _geojson_count(path: Path) -> int | None:
+    try:
+        return len(json.loads(path.read_text("utf-8"))["features"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 # -- manifest + check ---------------------------------------------------------------------------
 def write_manifest(directory: Path, meta: dict[str, Any]) -> dict[str, Any]:
     """racepack.json (atomic) with sha256 + size of every pack file present."""
@@ -576,9 +924,87 @@ def check_pack(directory: str | Path) -> list[str]:
     tiles = d / TILES_FILE
     if tiles.is_file():
         problems += _check_tiles(tiles, manifest, bbox)
-    else:
-        problems.append(f"{TILES_FILE}: missing")
+    elif manifest.get("fallback") != "coastline-only":
+        problems.append(f"{TILES_FILE}: missing (and the manifest is not coastline-only)")
+    coast_count = None
+    if bbox is not None:
+        for name, kinds, box in (
+            (SEAMARKS_FILE, ("Point",), bbox),
+            (COASTLINE_FILE, ("LineString", "Polygon"), _expand(bbox, COAST_MARGIN_DEG)),
+        ):
+            p = d / name
+            if p.is_file():
+                found, count = _check_geojson(p, kinds, box)
+                problems += found
+                if name == COASTLINE_FILE:
+                    coast_count = count
+    if not tiles.is_file() and not coast_count:
+        problems.append(f"{COASTLINE_FILE}: no coastline feature and no {TILES_FILE}: empty map")
     return problems
+
+
+def _expand(bbox: Bbox, margin: float) -> Bbox:
+    return (bbox[0] - margin, bbox[1] - margin, bbox[2] + margin, bbox[3] + margin)
+
+
+def _positions(geom: dict[str, Any]) -> list[Any] | None:
+    """Every position of a Point/LineString/Polygon, None when the shape is malformed."""
+    c = geom.get("coordinates")
+    kind = geom.get("type")
+    if kind == "Point":
+        return [c]
+    if kind == "LineString":
+        return c if isinstance(c, list) and len(c) >= 2 else None
+    if kind == "Polygon":
+        if not isinstance(c, list) or not c:
+            return None
+        out = []
+        for ring in c:
+            if not isinstance(ring, list) or len(ring) < 4 or ring[0] != ring[-1]:
+                return None
+            out += ring
+        return out
+    return None
+
+
+def _check_geojson(path: Path, kinds: tuple[str, ...], box: Bbox) -> tuple[list[str], int]:
+    """(problems, feature count) for a FeatureCollection whose geometries must be one of kinds with
+    finite positions inside box. At most 5 feature problems are reported."""
+    name = path.name
+    if path.stat().st_size > GEOJSON_MAX_BYTES:
+        return [f"{name}: larger than {GEOJSON_MAX_BYTES // (1 << 20)} MB"], 0
+    try:
+        fc = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        return [f"{name}: unreadable ({e})"], 0
+    if not isinstance(fc, dict) or fc.get("type") != "FeatureCollection":
+        return [f"{name}: not a GeoJSON FeatureCollection"], 0
+    feats = fc.get("features")
+    if not isinstance(feats, list):
+        return [f"{name}: FeatureCollection without a features list"], 0
+    problems: list[str] = []
+    for i, f in enumerate(feats):
+        if len(problems) >= 5:
+            problems.append(f"{name}: more problems not shown")
+            break
+        geom = f.get("geometry") if isinstance(f, dict) else None
+        if not isinstance(geom, dict) or geom.get("type") not in kinds:
+            got = geom.get("type") if isinstance(geom, dict) else None
+            problems.append(f"{name}: feature {i} is {got!r}, expected {'/'.join(kinds)}")
+            continue
+        pts = _positions(geom)
+        ok = pts is not None and all(
+            isinstance(p, list)
+            and len(p) == 2
+            and all(isinstance(v, int | float) and not isinstance(v, bool) for v in p)
+            and all(math.isfinite(v) for v in p)
+            for p in pts
+        )
+        if not ok:
+            problems.append(f"{name}: feature {i} has malformed coordinates")
+        elif not all(_inside(p, box) for p in pts or []):
+            problems.append(f"{name}: feature {i} lies outside the bbox {fmt_bbox(box)}")
+    return problems, len(feats)
 
 
 # -- build --------------------------------------------------------------------------------------
@@ -590,31 +1016,88 @@ def build_pack(
     bbox: Bbox = DEFAULT_BBOX,
     maxzoom: int = DEFAULT_MAXZOOM,
     probe: Callable[[str], bool] = probe_url,
+    overlays: Overlays | None = None,
     log: Logger = _log,
 ) -> int:
-    """Build the race pack in `out`. Returns the CLI exit code."""
+    """Build the race pack in `out`. Returns the CLI exit code.
+
+    Basemap fallback chain (CONTEXT: never leave the tablet without a map): extract at maxzoom,
+    then 12, then 10 (manifest fallback "maxzoom-12"/"maxzoom-10"); when every extract fails or no
+    build is reachable the pack is "coastline-only" (02-01's map.js draws land from
+    coastline.geojson). overlays(bbox) -> (seamarks FC, coastline FC, sources) is the OSM step,
+    None to skip it (--skip-seamarks keeps any overlay files already in `out`).
+    Exit 0 when the pack is usable and complete, 1 when the OSM step failed or the pack would
+    show no map at all."""
     out.mkdir(parents=True, exist_ok=True)
+    warnings: list[str] = []
+    sources: dict[str, Any] = {}
+
+    def warn(msg: str) -> None:
+        warnings.append(msg)
+        log(f"prep-map: WARNING {msg}")
+
     url = find_build(today, probe, log)
+    used_zoom: int | None = None
     if url is None:
-        log("prep-map: ERROR no Protomaps daily build reachable in the last 7 days")
-        return EXIT_BUILD
-    try:
-        count = extract_basemap(url, out, bbox, maxzoom, extract)
-    except (OSError, ValueError, subprocess.SubprocessError) as e:
-        log(f"prep-map: ERROR extract at maxzoom {maxzoom} failed: {e}")
-        return EXIT_BUILD
-    log(f"prep-map: {TILES_FILE}: {count} tiles, maxzoom {maxzoom}")
+        warn("no Protomaps daily build reachable in the last 7 days")
+    else:
+        sources["basemap"] = url
+        for z in [maxzoom, *(z for z in FALLBACK_ZOOMS if z < maxzoom)]:
+            try:
+                count = extract_basemap(url, out, bbox, z, extract)
+            except (OSError, ValueError, subprocess.SubprocessError) as e:
+                warn(f"basemap extract at maxzoom {z} failed: {e}")
+                continue
+            used_zoom = z
+            log(f"prep-map: {TILES_FILE}: {count} tiles, maxzoom {z}")
+            break
+    if used_zoom is None:
+        fallback: str | None = "coastline-only"
+        stale = out / TILES_FILE
+        if stale.exists():
+            os.replace(stale, out / (TILES_FILE + ".old"))
+            warn(f"previous {TILES_FILE} moved to {TILES_FILE}.old (not served)")
+        banner = "!" * 72
+        log(
+            f"{banner}\nprep-map: COASTLINE-ONLY PACK: no basemap tiles; the tablets will show "
+            "land and water from coastline.geojson only. Rebuild with internet before departure.\n"
+            f"{banner}"
+        )
+    else:
+        fallback = None if used_zoom == maxzoom else f"maxzoom-{used_zoom}"
+        if fallback:
+            log(f"prep-map: WARNING basemap built at maxzoom {used_zoom} instead of {maxzoom}")
+
+    overlays_failed = False
+    if overlays is not None:
+        try:
+            seamarks, coast, osm_sources = overlays(bbox)
+            _write_geojson(out / SEAMARKS_FILE, seamarks)
+            _write_geojson(out / COASTLINE_FILE, coast)
+            sources.update(osm_sources)
+        except (OSError, ValueError, RuntimeError, ImportError) as e:
+            overlays_failed = True
+            warn(f"seamarks/coastline step failed: {e}")
+    counts = {
+        "seamarks": _geojson_count(out / SEAMARKS_FILE),
+        "coastline_features": _geojson_count(out / COASTLINE_FILE),
+    }
     write_manifest(
         out,
         {
             "bbox": bbox,
-            "maxzoom": maxzoom,
-            "protomaps_build": build_day(url),
-            "sources": {"basemap": url},
-            "fallback": None,
+            "maxzoom": used_zoom,
+            "protomaps_build": build_day(url) if url and used_zoom is not None else None,
+            "sources": sources,
+            "counts": counts,
+            "fallback": fallback,
+            "warnings": warnings,
         },
     )
-    return EXIT_OK
+    if used_zoom is None and not counts["coastline_features"]:
+        log("prep-map: ERROR no basemap and no coastline: the pack would show an empty map")
+        return EXIT_BUILD
+    return EXIT_BUILD if overlays_failed else EXIT_OK
 
 
 def summary(directory: Path) -> str:
@@ -639,10 +1122,11 @@ def summary(directory: Path) -> str:
     )
     for k, v in sorted(m.get("counts", {}).items()):
         lines.append(f"  {k}: {v}")
+    lines += [f"  WARNING: {w}" for w in m.get("warnings", [])]
     lines += [
         "copy to the Pi (docs/RACE-PACK.md):",
-        f"  scp -r {directory} jabuka@10.42.0.1:/tmp/racepack",
-        "  ssh jabuka@10.42.0.1 'sudo rsync -a --delete /tmp/racepack/ /var/lib/jabuka/racepack/ "
+        f"  rsync -a --delete {directory}/ <user>@10.42.0.1:/tmp/racepack/",
+        "  ssh <user>@10.42.0.1 'sudo rsync -a --delete /tmp/racepack/ /var/lib/jabuka/racepack/ "
         "&& sudo chown -R jabuka:jabuka /var/lib/jabuka/racepack "
         "&& sudo systemctl restart jabuka-core'",
     ]
@@ -699,11 +1183,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, KeyError, tarfile.TarError) as e:
         print(f"prep-map: ERROR go-pmtiles unavailable: {e}", file=sys.stderr)
         return EXIT_BUILD
+    overlays: Overlays | None = None
+    if not a.skip_seamarks:
+
+        def osm_overlays(box: Bbox) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+            pbf = a.pbf or ensure_pbf(a.cache)
+            seamarks, coast = extract_overlays(pbf, box)
+            stamp = dt.datetime.fromtimestamp(pbf.stat().st_mtime, dt.UTC)
+            return (
+                seamarks,
+                coast,
+                {
+                    "osm": str(a.pbf) if a.pbf else GEOFABRIK_URL,
+                    "osm_file_utc": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+            )
+
+        overlays = osm_overlays
     t0 = time.monotonic()
-    code = build_pack(a.out, today=today, extract=extract, bbox=bbox, maxzoom=a.maxzoom)
-    if code == EXIT_OK:
-        print(summary(a.out))
-        print(f"prep-map: built in {time.monotonic() - t0:.1f} s")
+    code = build_pack(
+        a.out, today=today, extract=extract, bbox=bbox, maxzoom=a.maxzoom, overlays=overlays
+    )
+    print(summary(a.out))
+    print(f"prep-map: {'built' if code == EXIT_OK else 'FAILED'} in {time.monotonic() - t0:.1f} s")
     return code
 
 
