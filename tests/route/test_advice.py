@@ -104,15 +104,64 @@ def test_wind_shift_keeps_twa_and_moves_heading() -> None:
     assert follower.follow(T0 + 302.0, *_latlon(*_pos(5.0)), None, None).target_hdg_t is None
 
 
-def test_projection_never_moves_backwards() -> None:
+def test_projection_moves_backwards_only_inside_the_window() -> None:
     path, tacks = beat_path()
     follower = RouteFollower(path, tacks)
     first = follower.follow(T0 + 600.0, *_latlon(*_pos(10.0)), 320.0, TWD)
     back = follower.follow(T0 + 610.0, *_latlon(*_pos(4.0)), 320.0, TWD)
-    assert back.idx >= first.idx
+    assert back.idx < first.idx  # 6 min of route time back: re-projected (HI-04)
+    assert back.t_route_here == pytest.approx(T0 + 240.0, abs=1.0)
+    far = RouteFollower(path, tacks)
+    far.follow(T0 + 1800.0, *_latlon(*_pos(30.0)), 40.0, TWD)
+    g = far.follow(T0 + 1810.0, *_latlon(*_pos(4.0)), 320.0, TWD)
+    assert g.t_route_here >= T0 + 1800.0 - 600.0 - 1e-6  # never more than 10 min back
     fresh = RouteFollower(path, tacks)
     assert fresh.idx == 0
     assert fresh.follow(T0, *_latlon(*_pos(0.0)), 320.0, TWD).idx == 0
+
+
+def hairpin(leg_s: float = 3600.0, gap_nm: float = 0.6):
+    """Outbound north (starboard, TWA +40) along x = 0 for 7 nm, round a mark, return south
+    (port, TWA -140) along x = gap_nm: the Jabuka hairpin (03-REVIEW HI-04)."""
+    path = []
+    n = 14
+    for k in range(n + 1):
+        lat, lon = _latlon(0.0, 7.0 * k / n)
+        path.append((T0 + leg_s * k / n, lat, lon, 40.0, 1))
+    t_mark = T0 + leg_s + 120.0
+    lat, lon = _latlon(gap_nm / 2.0, 7.3)
+    path.append((t_mark, lat, lon, -140.0, -1))
+    for k in range(n + 1):
+        lat, lon = _latlon(gap_nm, 7.0 * (1.0 - k / n))
+        path.append((t_mark + 120.0 + leg_s * k / n, lat, lon, -140.0, -1))
+    return path, t_mark
+
+
+@pytest.mark.parametrize("cog", [0.0, None])
+def test_hairpin_never_latches_onto_the_return_leg(cog) -> None:
+    path, t_mark = hairpin()
+    follower = RouteFollower(path, [], legs=[t_mark])
+    for k in range(66):  # 0.35 nm east of its own outbound track, closer to the return leg
+        y = 0.1 * k
+        f = follower.follow(T0 + 3600.0 * y / 7.0, *_latlon(0.35, y), cog, TWD)
+        assert f.target_twa == 40.0, (y, f)
+        assert f.remaining_s > 3600.0
+    back = follower.follow(T0 + 3600.0 * 6.5 / 7.0, *_latlon(0.0, 6.5), cog, TWD)
+    assert back.target_twa == 40.0 and back.xte_nm == pytest.approx(0.0, abs=1e-6)
+
+
+def test_short_hairpin_needs_the_mark_zone_to_cross_the_arrival() -> None:
+    # 10 min legs: the return leg is inside the time window; only the leg arrival rule (and
+    # the COG) keep the boat on its outbound leg
+    path, t_mark = hairpin(leg_s=600.0)
+    follower = RouteFollower(path, [], legs=[t_mark])
+    for k in range(60):
+        y = 0.1 * k
+        f = follower.follow(T0 + 600.0 * y / 7.0, *_latlon(0.35, y), None, TWD)
+        assert f.target_twa == 40.0, y
+    near = follower.follow(T0 + 600.0, *_latlon(0.3, 7.2), None, TWD)  # in the mark zone
+    after = follower.follow(T0 + 900.0, *_latlon(0.6, 6.0), None, TWD)  # rounded: return leg
+    assert near.xte_nm < 0.2 and after.target_twa == -140.0
 
 
 def test_late_boat_eta_and_countdown_in_route_time() -> None:

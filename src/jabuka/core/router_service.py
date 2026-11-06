@@ -998,7 +998,9 @@ class RouterService:
 
     def _on_new_route(self) -> None:
         assert self.route is not None
-        self.follower = RouteFollower(self.route.path, self.route.tacks)
+        self.follower = RouteFollower(
+            self.route.path, self.route.tacks, legs=[eta for _mid, eta in self.route.legs]
+        )
         self.offroute.reset()  # 03-04: the off-route timer follows the displayed route
 
     @staticmethod

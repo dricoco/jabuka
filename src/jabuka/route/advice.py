@@ -24,8 +24,14 @@ from jabuka.route.bias import bias_changed
 LAT0 = 43.4  # local equirectangular frame origin (same constants as route/frame.py)
 LON0 = 15.65
 NM_PER_DEG_LAT = 60.0
-SEARCH_AHEAD = 40  # segments searched ahead of the last projection
-GLOBAL_SEARCH_NM = 2.0  # beyond this distance from all of them, search the whole rest
+# Projection window in ROUTE time (03-REVIEW HI-04): the boat is projected only onto segments
+# whose times overlap [t_prev - BACK_S, t_prev + elapsed + AHEAD_S] (t_prev = the previous
+# projection), so the return leg of a hairpin hours later can never capture it.
+BACK_S = 600.0  # a backward re-projection up to 10 min of route time is allowed
+AHEAD_S = 1800.0  # ... and a forward one up to 30 min beyond the elapsed time
+INIT_WINDOW_S = 3600.0  # first projection: within 1 h of the wall time (the route's time line)
+COURSE_WEIGHT_NM = 0.5  # a segment 180 deg off the COG counts as this much farther
+MARK_ZONE_NM = 0.5  # a leg's arrival is crossed only by a boat this close to it
 DUE_S = 1.0  # a tack this close (route time) to the boat's projection is due now
 _EPS = 1e-12
 
@@ -163,7 +169,12 @@ class Follow(NamedTuple):
 
 
 class RouteFollower:
-    """Project the boat onto a route polyline (never backwards) and derive the helm advice.
+    """Project the boat onto a route polyline and derive the helm advice.
+
+    The projection is searched inside a route-time window around the previous one (BACK_S
+    behind, the elapsed time + AHEAD_S ahead), scored by distance plus a COG mismatch penalty
+    (COURSE_WEIGHT_NM for a segment 180 deg off the COG), and never crosses a leg arrival
+    (``legs``: arrival times) unless the boat is within MARK_ZONE_NM of it (03-REVIEW HI-04).
 
     The countdown is measured in route time from the projection, so it stays right when the
     boat is early or late. An advised tack stays the "next tack" (with a negative countdown in
@@ -177,6 +188,7 @@ class RouteFollower:
         tacks: Sequence[Sequence[Any]] = (),
         lat0: float = LAT0,
         lon0: float = LON0,
+        legs: Sequence[float] = (),
     ):
         if len(path) == 0:
             raise ValueError("empty route path")
@@ -188,6 +200,12 @@ class RouteFollower:
         n = len(self.path)
         self._nseg = max(1, n - 1)
         self._idx = 0
+        self._t_prev: float | None = None  # route time of the previous projection
+        self._now_prev: float | None = None  # wall time of the previous projection
+        # leg arrivals: (route time, path index of the arrival point)
+        self._arrivals = sorted(
+            (float(t), min(range(n), key=lambda k: abs(self._t[k] - float(t)))) for t in legs
+        )
         # pending advised tack (overdue while the boat is still on the old tack)
         self._adv: Any | None = None
         self._adv_wall: float | None = None
@@ -206,20 +224,71 @@ class RouteFollower:
             x1, y1 = x0, y0
         return x0, y0, x1 - x0, y1 - y0
 
-    def _project(self, i: int, x: float, y: float) -> tuple[float, float]:
-        """(distance nm, parameter s in [0, 1]) of (x, y) on segment i."""
+    def _project(
+        self, i: int, x: float, y: float, s_lo: float = 0.0, s_hi: float = 1.0
+    ) -> tuple[float, float]:
+        """(distance nm, parameter s in [s_lo, s_hi]) of (x, y) on segment i."""
         x0, y0, dx, dy = self._seg(i)
         l2 = dx * dx + dy * dy
-        s = 0.0 if l2 < _EPS else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / l2))
+        s = s_lo if l2 < _EPS else max(s_lo, min(s_hi, ((x - x0) * dx + (y - y0) * dy) / l2))
         return math.hypot(x - (x0 + s * dx), y - (y0 + s * dy)), s
 
-    def _nearest(self, lo: int, hi: int, x: float, y: float) -> tuple[int, float, float]:
-        best = (lo, math.inf, 0.0)
-        for i in range(lo, hi):
-            d, s = self._project(i, x, y)
-            if d <= best[1] + 1e-9:  # ties go to the later segment (vertex -> next leg)
-                best = (i, d, s)
+    def _s_bounds(self, i: int, lo_t: float, hi_t: float) -> tuple[float, float]:
+        """Part [s_lo, s_hi] of segment i inside the route-time window [lo_t, hi_t]."""
+        t0 = self._t[i]
+        t1 = self._t[i + 1] if i + 1 < len(self._t) else t0
+        if t1 - t0 <= _EPS:
+            return 0.0, 1.0
+        s_lo = max(0.0, min(1.0, (lo_t - t0) / (t1 - t0)))
+        s_hi = max(s_lo, min(1.0, (hi_t - t0) / (t1 - t0)))
+        return s_lo, s_hi
+
+    def _nearest(
+        self,
+        cands: Sequence[int],
+        x: float,
+        y: float,
+        cog_deg: float | None,
+        window: tuple[float, float] = (-math.inf, math.inf),
+    ) -> tuple[int, float, float]:
+        """(segment, distance nm, s) minimising distance + COG mismatch inside the route-time
+        window; exact ties go to the later segment (vertex -> next leg)."""
+        best = (cands[0] if cands else 0, math.inf, 0.0)
+        best_score = math.inf
+        for i in cands:
+            d, s = self._project(i, x, y, *self._s_bounds(i, *window))
+            score = d
+            if cog_deg is not None:
+                dev = math.radians(_wrap180(cog_deg - self._seg_course(i)))
+                score += COURSE_WEIGHT_NM * (1.0 - math.cos(dev)) / 2.0
+            if score <= best_score + 1e-9:
+                best, best_score = (i, d, s), score
         return best
+
+    def _window(self, t_now: float) -> tuple[float, float]:
+        """Route-time window of this projection."""
+        if self._t_prev is None or self._now_prev is None:
+            return t_now - INIT_WINDOW_S, t_now + INIT_WINDOW_S
+        return (
+            self._t_prev - BACK_S,
+            self._t_prev + max(0.0, t_now - self._now_prev) + AHEAD_S,
+        )
+
+    def _candidates(self, t_now: float, x: float, y: float, window: tuple[float, float]):
+        """Segments allowed for this projection (route-time window, leg arrivals)."""
+        lo_t, hi_t = window
+        last = len(self._t) - 1
+        cands = [
+            i for i in range(self._nseg) if self._t[i] <= hi_t and self._t[min(i + 1, last)] >= lo_t
+        ]
+        if self._arrivals:
+            t_ref = self._t_prev if self._t_prev is not None else t_now
+            nxt = next((a for a in self._arrivals if a[0] > t_ref + DUE_S), None)
+            if nxt is not None:
+                ax, ay = self._xy[nxt[1]]
+                if math.hypot(x - ax, y - ay) > MARK_ZONE_NM:
+                    cands = [i for i in cands if i < nxt[1]]  # not past the next mark yet
+        return cands
 
     def _seg_course(self, i: int) -> float:
         # degenerate segments borrow the course of the nearest real one
@@ -238,16 +307,16 @@ class RouteFollower:
         twd_deg: float | None = None,
     ) -> Follow:
         x, y = to_xy(lat, lon, self._lat0, self._lon0)
-        lo = self._idx
-        i, d, s = self._nearest(lo, min(self._nseg, lo + SEARCH_AHEAD), x, y)
-        if d > GLOBAL_SEARCH_NM and lo + SEARCH_AHEAD < self._nseg:
-            i2, d2, s2 = self._nearest(lo, self._nseg, x, y)
-            if d2 < d:
-                i, d, s = i2, d2, s2
+        window = self._window(t_now)
+        cands = self._candidates(t_now, x, y, window)
+        if not cands:  # e.g. a restored route entirely in the past: the whole path
+            cands, window = list(range(self._nseg)), (-math.inf, math.inf)
+        i, d, s = self._nearest(cands, x, y, cog_deg, window)
         self._idx = i
         t0 = self._t[i]
         t1 = self._t[i + 1] if i + 1 < len(self._t) else t0
         t_here = t0 + s * (t1 - t0)
+        self._t_prev, self._now_prev = t_here, t_now
         seg_course = self._seg_course(i)
         course_dev = None if cog_deg is None else abs(_wrap180(cog_deg - seg_course))
         p = self.path[i]
