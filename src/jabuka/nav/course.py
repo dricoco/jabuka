@@ -25,8 +25,10 @@ Annuler). undo() restores the previous mark and suppresses that mark until the b
 zone; leaving that zone then counts as the rounding (10 s debounce), so the real rounding after
 an early advance + Annuler still advances. The finish leg finishes on entering its radius
 ("ARRIVÉE — <nom>"), no further advance.
-Hairpin marks (Jabuka in Course A: in 203 deg, out 009 deg) advance when abeam of the island:
-slightly early but safe, the laylines then point to the next mark. Debounce state lives in memory.
+Hairpin marks (course change > 90 deg, Jabuka in both courses: in 203 deg, out 009/038 deg) need
+more than abeam of the incoming leg, which comes half a lap before the island is rounded (WR-01):
+the boat must also be past the mark along the outgoing leg (the far side of the island), or have
+left the zone. Debounce state lives in memory.
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ GATE_NM = 2.0  # nothing fires further than this from the active mark
 DEBOUNCE_S = 10.0  # rounding evidence must hold this long
 BANNER_S = 60.0  # Annuler window
 FINISH_MIN_NM = 0.05  # finish radius floor (a radius-0 custom finish is still reachable)
+HAIRPIN_DEG = 90.0  # course change above which abeam also needs "past the mark" on the way out
 
 Side = Literal["port", "stbd", "none"]
 
@@ -572,8 +575,12 @@ class CourseStore:
         self._save_quiet(self.course.model_copy(update={"banner": None}))
 
     def _abeam(self, lat: float, lon: float, idx: int, mark: Mark) -> bool:
-        """Passed abeam of the mark relative to the incoming leg."""
-        prev = self.course.marks.get(self.course.seq[idx - 1].mark_id)
+        """Passed abeam of the mark relative to the incoming leg. At a turn sharper than
+        HAIRPIN_DEG (Jabuka: in 203 deg, out 009/038 deg) abeam of the incoming leg is reached
+        half a lap before the rounding is done (WR-01): the boat must ALSO be past the mark
+        along the outgoing leg, i.e. round on the far side; otherwise the zone exit decides."""
+        c = self.course
+        prev = c.marks.get(c.seq[idx - 1].mark_id)
         if prev is None:
             return False
         bearing, dist = geo.bearing_distance(prev.lat, prev.lon, mark.lat, mark.lon)
@@ -581,7 +588,22 @@ class CourseStore:
             return False
         px, py = geo.to_local(lat, lon, mark.lat, mark.lon)
         ux, uy = geo.unit(bearing)
-        return px * ux + py * uy > 0.0
+        if px * ux + py * uy <= 0.0:
+            return False
+        nxt = c.marks.get(c.seq[idx + 1].mark_id) if idx + 1 < len(c.seq) else None
+        if nxt is None:
+            return True
+        out, out_dist = geo.bearing_distance(mark.lat, mark.lon, nxt.lat, nxt.lon)
+        if out_dist < 1e-6:
+            return True
+        turn = math.degrees(math.remainder(out - bearing, 2 * math.pi))  # + right, - left
+        if abs(turn) <= HAIRPIN_DEG:
+            return True
+        side = c.seq[idx].side
+        if (side == "stbd" and turn < 0) or (side == "port" and turn > 0):
+            return False  # rounded the long way (> 180 deg): only the zone exit counts
+        vx, vy = geo.unit(out)
+        return px * vx + py * vy > 0.0
 
     def on_tick(self, lat: float | None, lon: float | None, t_mono: float) -> None:
         """Record the boat position and run the rounding state machine (never raises)."""

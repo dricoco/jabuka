@@ -304,14 +304,16 @@ def test_undo_outside_the_zone_needs_a_fresh_entry(tmp_path: Path) -> None:
 
 
 def test_hairpin_annuler_then_real_rounding_advances(tmp_path: Path) -> None:
-    """CR-02 scenario: Jabuka (Course A) advances early abeam, the helmsman taps Annuler, rounds
-    the island inside the zone and heads north: the exit advances to Blitvenica."""
+    """CR-02 scenario: Jabuka (Course A) advances early (the boat swung wide out of the zone on
+    the approach side), comes back into the zone, the helmsman taps Annuler, rounds the island
+    inside the zone and heads north: the exit advances to Blitvenica."""
     cs, _ = store(tmp_path)
     cs.activate(2)
     jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
     t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)  # approaching from the NNE, in the zone
-    t = run(cs, at(203, 0.6, mark=jab), t, 11)  # abeam (past the island on the incoming leg)
+    t = run(cs, at(113, 0.9, mark=jab), t, 11)  # wide on the east side, out of the zone
     assert cs.course.active_idx == 3
+    t = run(cs, at(150, 0.6, mark=jab), t, 2)  # back in the zone
     cs.undo(cs.status()["banner"]["token"], t)
     assert cs.course.active_idx == 2
     t = run(cs, at(203, 0.6, mark=jab), t, 20)  # rounding inside the zone: suppressed
@@ -378,25 +380,65 @@ def test_finish_here_finishes_at_the_checkpoint(tmp_path: Path) -> None:
     assert cs.course.finished is False and cs.active_target().mark.id == "blitvenica"
 
 
-def test_hairpin_jabuka_advances_when_abeam(tmp_path: Path) -> None:
-    """Course A Jabuka: in 203 deg, out 009 deg, starboard rounding. The boat sails down the
-    incoming leg past the island on its anchor line; the advance fires ~10 s after abeam (early
-    but safe: the laylines then point to Blitvenica)."""
+def _rounding_track(t_, out_deg: float, speed: float):
+    """Positions, one per second, of a boat sailing down the incoming anchor line to abeam, then
+    round the mark at its radius on the leg's side, then out along out_deg. Yields
+    (lat, lon, phase, bearing from the mark in deg)."""
+    m = (t_.mark.lat, t_.mark.lon)
+    in_deg = math.degrees(t_.leg_bearing)
+    sgn = 1.0 if t_.side == "stbd" else -1.0  # stbd: clockwise (bearing increases)
+    for k in range(-400, 1):
+        lat, lon = geo.offset(t_.anchor_lat, t_.anchor_lon, t_.leg_bearing, k * speed)
+        yield lat, lon, "approach", math.degrees(geo.bearing_distance(*m, lat, lon)[0])
+    b0 = in_deg - sgn * 90.0
+    b1 = out_deg - sgn * 90.0
+    sweep = ((b1 - b0) * sgn) % 360.0
+    step = math.degrees(speed / t_.radius_nm)
+    for k in range(1, int(sweep / step) + 1):
+        b = b0 + sgn * k * step
+        lat, lon = geo.offset(*m, math.radians(b), t_.radius_nm)
+        yield lat, lon, "arc", b % 360.0
+    start = geo.offset(*m, math.radians(b1), t_.radius_nm)
+    for k in range(1, 600):
+        lat, lon = geo.offset(*start, math.radians(out_deg), k * speed)
+        yield lat, lon, "out", math.degrees(geo.bearing_distance(*m, lat, lon)[0])
+
+
+@pytest.mark.parametrize(("template", "next_id"), [("A", "blitvenica"), ("B", "mulo")])
+def test_hairpin_jabuka_advances_only_once_rounded(
+    tmp_path: Path, template: str, next_id: str
+) -> None:
+    """WR-01: Jabuka is a hairpin (in 203 deg, out 009 deg starboard in A, 038 deg port in B).
+    Abeam of the incoming leg is half a lap before the island is rounded: no advance on the
+    approach side or during the rounding, only once the boat is on the far side (out along the
+    next leg)."""
     cs, _ = store(tmp_path)
+    if template == "B":
+        cs.select("B")
     cs.activate(2)
     t_ = cs.active_target()
     assert math.degrees(t_.leg_bearing) == pytest.approx(203, abs=1.5)
-    jab = (t_.mark.lat, t_.mark.lon)
-    u = t_.leg_bearing
+    nxt = cs.marks[next_id]
+    out_deg = math.degrees(geo.bearing_distance(t_.mark.lat, t_.mark.lon, nxt.lat, nxt.lon)[0])
     speed = 7.0 / 3600.0  # nm per second
-    fired_at = None
-    for k in range(-400, 200):
-        s = k * speed  # along-track distance past abeam
-        lat, lon = geo.offset(t_.anchor_lat, t_.anchor_lon, u, s)
+    fired = None
+    for k, (lat, lon, phase, b) in enumerate(_rounding_track(t_, out_deg, speed)):
         cs.on_tick(lat, lon, 1000.0 + k)
         if cs.course.active_idx == 3:
-            fired_at = k
+            fired = (phase, b, geo.bearing_distance(lat, lon, t_.mark.lat, t_.mark.lon)[1])
             break
-    assert fired_at is not None and 10 <= fired_at <= 11
-    assert geo.bearing_distance(lat, lon, *jab)[1] < 0.7
-    assert cs.active_target().mark.id == "blitvenica"
+    assert fired is not None
+    phase, b, d = fired
+    assert phase == "out", fired  # not abeam on the approach, not mid-rounding
+    # on the far side: past the mark along the outgoing leg, still close to the island
+    off = math.degrees(math.remainder(math.radians(b - out_deg), 2 * math.pi))
+    assert abs(off) < 90.0 and d < 1.0, fired
+    assert cs.active_target().mark.id == next_id
+
+
+def test_gentle_turn_still_advances_when_abeam(tmp_path: Path) -> None:
+    """Below 90 deg of course change (Plić Sestre: in ~161, out ~203 deg) abeam alone fires."""
+    cs, _ = store(tmp_path)
+    t = run(cs, at(61, 0.4), 0.0, 2)
+    t = run(cs, at(81, 0.4), t, 11)
+    assert cs.course.active_idx == 2
