@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-from jabuka.prep.wxpack import Crop, Cube, default_crop
+from jabuka.prep.wxpack import Crop, Cube, default_crop, iso_utc
 
 MAX_INPUT_BYTES = 200 * 1024 * 1024
 MAX_BZ2_OUTPUT = 100 * 1024 * 1024
@@ -143,6 +143,73 @@ def crop_regular(g: Any, crop: Crop) -> tuple[np.ndarray, np.ndarray, np.ndarray
     return np.ascontiguousarray(arr), la.copy(), lo.copy()
 
 
+def message_ident(g: Any) -> tuple[Any, ...]:
+    """(run, ensemble member, level type, level, short name) of a message."""
+    pn = _key(g, "perturbationNumber")
+    return (
+        run_epoch(g),
+        None if pn is None else int(pn),
+        str(_key(g, "typeOfLevel", "")),
+        _key(g, "level"),
+        str(_key(g, "shortName", "")),
+    )
+
+
+def _fmt_run(run: int | None) -> str:
+    return iso_utc(run) if run is not None else "inconnu"
+
+
+class _Dedup:
+    """One message per (valid time, component), from one run and one ensemble member
+    (03-REVIEW LO-05: a later message silently replaced an earlier one, so u could come from
+    one member or run and v from another)."""
+
+    def __init__(self) -> None:
+        self.seen: dict[tuple[int, str], tuple[Any, ...]] = {}
+        self.runs: set[int | None] = set()
+        self.members: set[int | None] = set()
+        self.dups = 0
+
+    def accept(self, t: int, kind: str, g: Any) -> bool:
+        """True for a new (t, kind); False for an exact duplicate (ignored); ValueError when
+        two different messages give the same component at the same valid time."""
+        ident = message_ident(g)
+        self.runs.add(ident[0])
+        self.members.add(ident[1])
+        prev = self.seen.get((t, kind))
+        if prev is None:
+            self.seen[(t, kind)] = ident
+            return True
+        if prev == ident:
+            self.dups += 1
+            return False
+        if prev[0] != ident[0]:
+            why = f"runs {_fmt_run(prev[0])} et {_fmt_run(ident[0])}"
+        elif prev[1] != ident[1]:
+            why = f"membres d'ensemble {prev[1]} et {ident[1]}"
+        else:
+            why = f"{prev[4]} ({prev[2]} {prev[3]}) et {ident[4]} ({ident[2]} {ident[3]})"
+        raise ValueError(
+            f"échéance {iso_utc(t)} : deux messages {kind} différents ({why}) : "
+            "ne garder qu'un run et un membre"
+        )
+
+    def finish(self) -> int | None:
+        """The single run kept (printed); ValueError for several runs or members."""
+        if len(self.runs) > 1:
+            runs = ", ".join(sorted(_fmt_run(r) for r in self.runs))
+            raise ValueError(f"plusieurs runs dans les fichiers ({runs}) : n'en garder qu'un")
+        if len(self.members) > 1:
+            members = ", ".join(str(m) for m in sorted(self.members, key=lambda m: (m is None, m)))
+            raise ValueError(
+                f"plusieurs membres d'ensemble (perturbationNumber {members}) : n'en garder qu'un"
+            )
+        run = next(iter(self.runs)) if self.runs else None
+        extra = f", {self.dups} message(s) en double ignoré(s)" if self.dups else ""
+        print(f"GRIB : run gardé {_fmt_run(run)}{extra}")
+        return run
+
+
 class _Stack:
     """Collect 2-D fields per valid time on one common grid."""
 
@@ -206,6 +273,7 @@ def _decode_regular(
 ) -> _Stack:
     pygrib = _pygrib()
     st = _Stack()
+    dedup = _Dedup()
     for p in sorted(paths, key=str):
         with open_grib_path(p, tmp_dir) as gp:
             grbs = pygrib.open(gp)
@@ -215,6 +283,8 @@ def _decode_regular(
                     k = kind(g)
                     if k is None:
                         continue
+                    if not dedup.accept(valid_epoch(g), k, g):
+                        continue
                     res = crop_regular(g, crop)
                     if res is None:
                         raise ValueError(
@@ -223,9 +293,10 @@ def _decode_regular(
                         )
                     arr, la, lo = res
                     st.add(valid_epoch(g), k, arr, la, lo)
-                    st.run = st.run if st.run is not None else run_epoch(g)
             finally:
                 grbs.close()
+    if dedup.seen:
+        st.run = dedup.finish()
     return st
 
 
@@ -526,6 +597,7 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
     # (alpha: bearing of the grid x axis when the wind is grid-relative, see grid_x_bearing)
     recs: dict[int, dict[str, tuple[Any, ...]]] = {}
     run: int | None = None
+    dedup = _Dedup()
     sel = 0.3  # deg kept around the crop for projected grids (IDW neighbours at the edges)
     with open_grib_path(path) as gp:
         try:
@@ -539,7 +611,8 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
                 if kind is None:
                     continue
                 t = valid_epoch(g)
-                run = run if run is not None else run_epoch(g)
+                if not dedup.accept(t, kind, g):
+                    continue
                 gtype = str(_key(g, "gridType", ""))
                 if gtype in ("regular_ll", "regular_gg"):
                     arr, la, lo = crop_regular(g, crop) or (None, None, None)
@@ -587,6 +660,8 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
         finally:
             grbs.close()
     print(f"GRIB {path.name} : champs trouvés : {', '.join(dict.fromkeys(found)) or 'aucun'}")
+    if dedup.seen:
+        run = dedup.finish()
     st = _Stack()
     st.run = run
     st.found = found

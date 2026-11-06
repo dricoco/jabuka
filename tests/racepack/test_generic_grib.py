@@ -323,3 +323,53 @@ def test_rotated_grid_edges_are_filled(write_grib, tmp_path) -> None:
     f = write_grib(tmp_path / "rot.grib2", [_rotated("10u", 6.0), _rotated("10v", -2.0)])
     cube = import_generic(f, default_crop())
     assert np.isfinite(cube.fields["u"]).all() and np.isfinite(cube.fields["v"]).all()
+
+
+# -- duplicate messages (03-REVIEW LO-05) ---------------------------------------------------------
+def _member(msg: bytes, number: int) -> bytes:
+    g = pygrib.fromstring(msg)
+    g["productDefinitionTemplateNumber"] = 1  # individual ensemble forecast
+    g = pygrib.fromstring(g.tostring())
+    g["perturbationNumber"] = number
+    return g.tostring()
+
+
+def _pair(rp, h: int = 0, u: float = 0.0, **kw) -> list[bytes]:
+    return [
+        rp.grib_message(short_name="10u", forecast=h * 60, values=u, **kw),
+        rp.grib_message(short_name="10v", forecast=h * 60, values=-5.0, **kw),
+    ]
+
+
+def test_two_runs_for_the_same_valid_time_are_refused(rp, write_grib, tmp_path) -> None:
+    other_run = datetime(2026, 11, 13, 6, tzinfo=UTC)
+    msgs = _pair(rp, h=6, u=1.0) + _pair(rp, h=12, u=2.0, run=other_run)  # both 13 Nov 18Z
+    with pytest.raises(ValueError, match="runs 2026-11-13T12:00:00Z et 2026-11-13T06:00:00Z"):
+        import_generic(write_grib(tmp_path / "two.grib2", msgs), default_crop())
+
+
+def test_runs_are_never_mixed_across_valid_times(rp, write_grib, tmp_path) -> None:
+    other_run = datetime(2026, 11, 13, 6, tzinfo=UTC)
+    msgs = _pair(rp, h=0) + _pair(rp, h=12, run=other_run)  # 12Z and 18Z: no overlap
+    with pytest.raises(ValueError, match="plusieurs runs"):
+        import_generic(write_grib(tmp_path / "mix.grib2", msgs), default_crop())
+    files = []
+    for i, m in enumerate(msgs):  # same through the ICON-EU decoder (--from-files cache)
+        files.append(write_grib(tmp_path / "cache" / f"m{i}.grib2", [m]))
+    with pytest.raises(ValueError, match="plusieurs runs"):
+        gribmod.decode_wind_files(files, default_crop())
+
+
+def test_ensemble_members_are_refused(rp, write_grib, tmp_path) -> None:
+    a = [_member(m, 0) for m in _pair(rp, u=1.0)]
+    b = [_member(m, 1) for m in _pair(rp, u=9.0)]
+    with pytest.raises(ValueError, match="membres d'ensemble 0 et 1"):
+        import_generic(write_grib(tmp_path / "ens.grib2", a + b), default_crop())
+
+
+def test_exact_duplicates_are_ignored_and_the_run_is_printed(rp, write_grib, tmp_path, capsys):
+    msgs = _pair(rp, u=3.0)
+    cube = import_generic(write_grib(tmp_path / "dup.grib2", msgs + msgs), default_crop())
+    assert cube.t.size == 1 and np.allclose(cube.fields["u"], 3.0)
+    out = capsys.readouterr().out
+    assert "run gardé 2026-11-13T12:00:00Z" in out and "2 message(s) en double" in out
