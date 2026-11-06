@@ -125,3 +125,14 @@ def test_cli_current_bad_file_exits_2(tmp_path, capsys) -> None:
     assert cli.main(["current", str(bad), "--out", str(tmp_path / "p"),
                      "--marks", str(REPO_MARKS)]) == 2  # fmt: skip
     assert "Erreur" in capsys.readouterr().err
+
+
+def test_time_without_units_is_a_french_error(tmp_path) -> None:
+    """03-REVIEW LO-07: a time variable without units raised an uncaught AttributeError."""
+    f = _write_nc(tmp_path / "c.nc")
+    with netCDF4.Dataset(f, "a") as ds:
+        ds.variables["time"].delncattr("units")
+    with pytest.raises(ValueError, match="time sans unités"):
+        import_copernicus(f, default_crop())
+    assert cli.main(["current", str(f), "--out", str(tmp_path / "p"),
+                     "--marks", str(REPO_MARKS)]) == 2  # fmt: skip

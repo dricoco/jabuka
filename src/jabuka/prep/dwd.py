@@ -206,6 +206,24 @@ def check_host(url: str) -> None:
         raise ValueError(f"URL refusée (hôte non autorisé) : {url}")
 
 
+class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to an allowed https host (03-REVIEW LO-07: urlopen followed
+    redirects anywhere once check_host had approved the first URL)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        check_host(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_OPENER = urllib.request.build_opener(_CheckedRedirect)
+
+
+def safe_urlopen(url: str, timeout: float = TIMEOUT_S) -> Any:
+    """urlopen for the DWD downloads: the URL and every redirect target must pass check_host."""
+    check_host(url)
+    return _SAFE_OPENER.open(url, timeout=timeout)
+
+
 def check_url(url: str) -> str:
     """Return the cache file name for an allowed file URL; ValueError otherwise."""
     check_host(url)
@@ -268,7 +286,7 @@ def _fetch_listing(url: str, opener: Opener, timeout: float) -> str:
 
 
 def fetch_listings(
-    urls: Sequence[str], opener: Opener = urllib.request.urlopen, timeout: float = TIMEOUT_S
+    urls: Sequence[str], opener: Opener = safe_urlopen, timeout: float = TIMEOUT_S
 ) -> dict[str, str]:
     """{url: html}; a directory that cannot be listed maps to '' (its runs are just ignored)."""
     out: dict[str, str] = {}
@@ -285,7 +303,7 @@ def fetch_listings(
 def download_all(
     urls: Sequence[str],
     cache_dir: str | Path,
-    opener: Opener = urllib.request.urlopen,
+    opener: Opener = safe_urlopen,
     *,
     max_workers: int = MAX_WORKERS,
     timeout: float = TIMEOUT_S,

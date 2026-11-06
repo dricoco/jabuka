@@ -33,6 +33,13 @@ case "$OUT" in
     var/*) ;;
     *) echo "racepack-dryrun: OUT must be under var/ (got $OUT)" >&2; exit 2 ;;
 esac
+# resolved too (03-REVIEW LO-07): var/../../tmp/x or a symlink out of var/ is refused
+VAR_REAL="$(realpath -m var)"
+OUT_REAL="$(realpath -m "$OUT")"
+case "$OUT_REAL/" in
+    "$VAR_REAL"/?*/) ;;
+    *) echo "racepack-dryrun: OUT must resolve under $VAR_REAL (got $OUT -> $OUT_REAL)" >&2; exit 2 ;;
+esac
 for tool in "$PY" "$BIN/jabuka-prep" "$BIN/jabuka-route-bench"; do
     [ -x "$tool" ] || { echo "racepack-dryrun: $tool missing: run bash scripts/bootstrap-dev.sh" >&2; exit 2; }
 done

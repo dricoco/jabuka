@@ -66,13 +66,20 @@ def import_copernicus(path: str | Path, crop: Crop) -> Cube:
         lon = np.asarray(lon_var[:], dtype=np.float64)
         if lat.ndim != 1 or lon.ndim != 1:
             raise ValueError("grille courant non régulière (latitude/longitude 2-D)")
-        dates = netCDF4.num2date(
-            t_var[:],
-            t_var.units,
-            getattr(t_var, "calendar", "standard"),
-            only_use_cftime_datetimes=False,
-            only_use_python_datetimes=True,
-        )
+        units = getattr(t_var, "units", None)
+        if not isinstance(units, str) or not units.strip():
+            # 03-REVIEW LO-07: an AttributeError traceback instead of a French PrepError
+            raise ValueError(f"time sans unités dans {path.name} : fichier refusé")
+        try:
+            dates = netCDF4.num2date(
+                t_var[:],
+                units,
+                getattr(t_var, "calendar", "standard"),
+                only_use_cftime_datetimes=False,
+                only_use_python_datetimes=True,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(f"time illisible dans {path.name} ({units!r}) : {exc}") from exc
         t = np.array([calendar.timegm(d.timetuple()) for d in np.atleast_1d(dates)], np.int64)
         jj = np.flatnonzero((lat >= crop.lat1) & (lat <= crop.lat2))
         ii = np.flatnonzero((lon >= crop.lon1) & (lon <= crop.lon2))

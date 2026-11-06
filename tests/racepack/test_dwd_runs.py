@@ -326,3 +326,26 @@ def test_cli_wind_incomplete_run_exits_3(rp, tmp_path, capsys) -> None:
     assert rc == 3
     assert "MÉTÉO INCOMPLÈTE" in out
     assert (tmp_path / "pack" / "wind.npz").is_file()
+
+
+def test_redirects_are_checked_against_the_allowed_hosts(monkeypatch) -> None:
+    """03-REVIEW LO-07: urlopen followed a redirect to any host after check_host approved the
+    first URL; the DWD opener re-checks every redirect target."""
+    import urllib.request
+
+    req = urllib.request.Request("https://opendata.dwd.de/weather/nwp/x.grib2.bz2")
+    handler = dwd._CheckedRedirect()
+    with pytest.raises(ValueError, match="hôte non autorisé"):
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example/x")
+    with pytest.raises(ValueError, match="https obligatoire"):
+        handler.redirect_request(req, None, 302, "Found", {}, "http://opendata.dwd.de/x")
+    ok = handler.redirect_request(req, None, 302, "Found", {}, "https://opendata.dwd.de/y")
+    assert ok.full_url == "https://opendata.dwd.de/y"
+    with pytest.raises(ValueError, match="hôte non autorisé"):
+        dwd.safe_urlopen("https://evil.example/x")  # refused before any connection
+    monkeypatch.setattr(cli, "URL_OPENER", None)
+    assert cli._opener() is dwd.safe_urlopen
+    import inspect
+
+    for fn in (dwd.download_all, dwd.fetch_listings):
+        assert inspect.signature(fn).parameters["opener"].default is dwd.safe_urlopen
