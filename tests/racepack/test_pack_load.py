@@ -222,3 +222,21 @@ def test_npz_written_in_memory_is_not_a_pickle(rp, tmp_path) -> None:
     path = _write(tmp_path, grid=rp.synthetic_grid())
     with np.load(io.BytesIO(path.read_bytes()), allow_pickle=False) as z:
         assert set(z.files) >= {"u", "v", "t", "lat", "lon", "model", "run"}
+
+
+def test_real_dwd_samples_load_without_errors(rp, tmp_path) -> None:
+    import shutil
+
+    for src, dst in (("wind_icon_eu_sample", "wind"), ("waves_ewam_sample", "waves")):
+        assert (rp.fixtures / f"{src}.npz").stat().st_size < 204800
+        shutil.copyfile(rp.fixtures / f"{src}.npz", tmp_path / f"{dst}.npz")
+        shutil.copyfile(rp.fixtures / f"{src}.json", tmp_path / f"{dst}.json")
+    pack = load_pack(tmp_path)
+    assert pack.errors == []
+    assert pack.wind is not None and pack.waves is not None
+    assert pack.wind.t.size == 24 and np.all(np.diff(pack.wind.t) == 3600)
+    assert pack.waves.t.size == 24 and not np.isnan(pack.waves.arrays["hs"]).any()
+    assert pack.meta["wind"]["model"] == "ICON-EU" and pack.meta["waves"]["model"] == "EWAM"
+    # the 0.25 deg margin keeps the race bbox inside the interpolation margin of both grids
+    for g in (pack.wind, pack.waves):
+        assert g.lat[1] < 42.8 and g.lat[-2] > 44.0 and g.lon[1] < 15.0 and g.lon[-2] > 16.3

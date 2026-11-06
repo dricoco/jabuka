@@ -170,8 +170,21 @@ def decode_wind_files(
     paths: Sequence[str | Path], crop: Crop | None = None, tmp_dir: str | Path | None = None
 ) -> Cube:
     """ICON-EU style files (10u/10v at 10 m, regular lat/lon) -> wind Cube with fields u, v."""
+
+    def kind(g: Any) -> str | None:
+        k = _ICON_WIND.get(str(g.shortName))
+        if k is None or g.typeOfLevel != "heightAboveGround" or int(g.level) != 10:
+            return None
+        return k
+
+    st = _decode_regular(paths, crop or default_crop(), tmp_dir, kind)
+    return st.cube(("u", "v"))
+
+
+def _decode_regular(
+    paths: Sequence[str | Path], crop: Crop, tmp_dir: str | Path | None, kind: Any
+) -> _Stack:
     pygrib = _pygrib()
-    crop = crop or default_crop()
     st = _Stack()
     for p in sorted(paths, key=str):
         with open_grib_path(p, tmp_dir) as gp:
@@ -179,8 +192,8 @@ def decode_wind_files(
             try:
                 for g in grbs:
                     st.found.append(str(g.shortName))
-                    kind = _ICON_WIND.get(str(g.shortName))
-                    if kind is None or g.typeOfLevel != "heightAboveGround" or int(g.level) != 10:
+                    k = kind(g)
+                    if k is None:
                         continue
                     res = crop_regular(g, crop)
                     if res is None:
@@ -189,8 +202,68 @@ def decode_wind_files(
                             "utiliser la commande grib"
                         )
                     arr, la, lo = res
-                    st.add(valid_epoch(g), kind, arr, la, lo)
+                    st.add(valid_epoch(g), k, arr, la, lo)
                     st.run = st.run if st.run is not None else run_epoch(g)
             finally:
                 grbs.close()
-    return st.cube(("u", "v"))
+    return st
+
+
+def fill_nearest(a: np.ndarray, max_iter: int | None = None) -> np.ndarray:
+    """Fill NaN cells from the nearest valid cell by iterative 4-neighbour dilation (numpy only).
+
+    Works on [NY, NX] or [..., NY, NX] (each 2-D slice independently). Valid cells never change;
+    a NaN cell takes the value of its first valid neighbour (row below, row above, column left,
+    column right), so directions are never averaged across 0/360. Slices without any valid cell
+    stay NaN.
+    """
+    out = np.array(a, dtype=np.float64, copy=True)
+    ny, nx = out.shape[-2:]
+    cap = max_iter if max_iter is not None else ny + nx + 2
+    # (destination view, source view): the neighbour that feeds each cell
+    shifts = (
+        (np.s_[..., 1:, :], np.s_[..., :-1, :]),
+        (np.s_[..., :-1, :], np.s_[..., 1:, :]),
+        (np.s_[..., :, 1:], np.s_[..., :, :-1]),
+        (np.s_[..., :, :-1], np.s_[..., :, 1:]),
+    )
+    for _ in range(cap):
+        nan = np.isnan(out)
+        if not nan.any():
+            break
+        cand = np.full_like(out, np.nan)
+        for dst, src in shifts:
+            view = cand[dst]
+            source = out[src]
+            take = np.isnan(view) & ~np.isnan(source)
+            view[take] = source[take]
+        fill = nan & ~np.isnan(cand)
+        if not fill.any():
+            break
+        out[fill] = cand[fill]
+    return out
+
+
+_WAVE_NAMES = {"swh": "hs", "mwd": "mwd"}
+
+
+def decode_wave_files(
+    paths: Sequence[str | Path], crop: Crop | None = None, tmp_dir: str | Path | None = None
+) -> Cube:
+    """EWAM swh (+ optional mwd, degrees true FROM) files -> waves Cube (fields hs[, mwd]).
+
+    EWAM rows are stored north to south and land/near-coast cells are masked (bitmap): rows are
+    flipped to ascending latitude, masked cells become NaN, then filled from the nearest sea cell.
+    """
+    st = _decode_regular(
+        paths, crop or default_crop(), tmp_dir, lambda g: _WAVE_NAMES.get(str(g.shortName))
+    )
+    cube = st.cube(("hs",), ("mwd",))
+    for name, arr in cube.fields.items():
+        filled = fill_nearest(arr)
+        if np.isnan(filled).any():
+            raise ValueError(f"vagues : aucune cellule de mer valide pour {name} sur la zone")
+        if name == "mwd":
+            filled = np.mod(filled, 360.0)
+        cube.fields[name] = filled.astype(np.float32)
+    return cube
