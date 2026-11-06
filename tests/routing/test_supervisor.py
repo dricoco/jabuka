@@ -311,6 +311,44 @@ def test_manual_wind_without_gps_time_is_observed(routing_core, fake_pool, rh) -
     assert any("manual" in r for r in _reasons(core))
 
 
+def test_long_route_line_reaches_the_finish(routing_core, fake_pool, rh) -> None:
+    """03-REVIEW LO-02: a path of more than 300 points was cut at its 300th point on the map."""
+    import dataclasses
+
+    from jabuka.core.router_service import display_points
+    from jabuka.route.types import PathPoint
+
+    core, pos = _start(routing_core, fake_pool, rh)
+
+    def long_route(creq):
+        res = fake_pool.default(creq)
+        b = creq.base
+        pts = []
+        for k in range(701):  # a 700-segment zig-zag beat
+            tack = 1 if (k // 7) % 2 == 0 else -1
+            lat = b.lat + (rh.PLIC_SESTRE[0] - b.lat) * k / 700
+            lon = b.lon + (rh.PLIC_SESTRE[1] - b.lon) * k / 700 + 0.001 * tack
+            pts.append(PathPoint(b.t0 + 10.0 * k, lat, lon, 40.0 * tack, tack, 6.0, 45.0, 18.0))
+        opt = dataclasses.replace(res.optimal, path=tuple(pts), tacks=())
+        return dataclasses.replace(res, optimal=opt)
+
+    fake_pool.script = long_route
+    core.call(core.router.request, "manuel", True)
+    _run(core, pos, 1)
+    msg = core.client.get("/api/route").json()
+    line = next(f for f in msg["geojson"]["features"] if f["geometry"]["type"] == "LineString")
+    coords = line["geometry"]["coordinates"]
+    path = core.router.route.path
+    assert len(coords) <= 300
+    assert coords[-1] == [round(path[-1].lon, 6), round(path[-1].lat, 6)]  # to the finish
+    shown = display_points(path, 300)
+    vertices = [p for a, p in zip(path, path[1:], strict=False) if p.tack != a.tack]
+    assert all(v in shown for v in vertices)  # every tack vertex kept
+    assert display_points(path[:10], 300) == list(path[:10])
+    few = display_points(path, 20)  # more vertices than room: evenly spaced, ends kept
+    assert len(few) <= 20 and few[0] == path[0] and few[-1] == path[-1]
+
+
 # -- one pack for the core and the worker (03-REVIEW MD-05) ---------------------------------------
 def test_pack_replaced_on_disk_raises_a_restart_alert(routing_core, fake_pool, rh, route_pack):
     core, pos = _start(routing_core, fake_pool, rh)

@@ -144,6 +144,31 @@ def _wrap180(a: float) -> float:
     return r
 
 
+def display_points(path: Any, limit: int) -> list:
+    """At most ``limit`` points of ``path`` for the map line, always ending at the finish
+    (03-REVIEW LO-02: truncating to the first ``limit`` points cut the line short). The ends
+    and the tack/gybe vertices are kept first, the other points evenly spaced."""
+    n = len(path)
+    if n <= limit:
+        return list(path)
+    limit = max(2, limit)
+
+    def even(idx: list[int], k: int) -> list[int]:
+        if k <= 0 or not idx:
+            return []
+        if k >= len(idx):
+            return idx
+        return [idx[round(j * (len(idx) - 1) / max(1, k - 1))] for j in range(k)]
+
+    vertices = [i for i in range(1, n - 1) if int(path[i][4]) != int(path[i - 1][4])]
+    if len(vertices) + 2 > limit:
+        keep = {0, n - 1, *even(vertices, limit - 2)}
+    else:
+        others = [i for i in range(1, n - 1) if i not in set(vertices)]
+        keep = {0, n - 1, *vertices, *even(others, limit - 2 - len(vertices))}
+    return [path[i] for i in sorted(keep)]
+
+
 def _tack_name(tack: int | None) -> str | None:
     if tack is None or tack == 0:
         return None
@@ -1483,7 +1508,8 @@ class RouterService:
         r = self.route
         if r is None:
             return None
-        coords = [[round(p.lon, 6), round(p.lat, 6)] for p in r.path[:MAX_ROUTE_POINTS]]
+        shown = display_points(r.path, MAX_ROUTE_POINTS)
+        coords = [[round(p.lon, 6), round(p.lat, 6)] for p in shown]
         features: list[dict] = [
             {
                 "type": "Feature",
