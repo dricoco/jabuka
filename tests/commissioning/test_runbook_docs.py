@@ -34,8 +34,9 @@ PI_SETUP = REPO / "deploy" / "PI-SETUP.md"
 TABLET = DOCS / "TABLET-SETUP.md"
 # created by plan 04-01 in the same wave: links to them are allowed before they exist
 LINK_ALLOW = {"docs/SOAK.md", "scripts/soak.sh"}
-LINK_ALLOW |= {"docs/FREEZE.md", "docs/SPARE-SD.md"}  # written by task 3 of this plan
-COMMAND_DOCS = [RUNBOOK]
+FREEZE = DOCS / "FREEZE.md"
+SPARE_SD = DOCS / "SPARE-SD.md"
+COMMAND_DOCS = [RUNBOOK, FREEZE, SPARE_SD]
 
 SECTIONS = [
     (1, "Avant de partir (maison)"),
@@ -279,7 +280,7 @@ def test_runbook_references_exist() -> None:
     check_references(RUNBOOK)
 
 
-@pytest.mark.parametrize("doc", [RUNBOOK, CARD], ids=lambda p: p.name)
+@pytest.mark.parametrize("doc", [RUNBOOK, CARD, FREEZE, SPARE_SD], ids=lambda p: p.name)
 def test_relative_links_resolve(doc: Path) -> None:
     check_links(doc)
 
@@ -320,3 +321,77 @@ def test_pi_setup_points_to_the_phase4_docs() -> None:
     for doc in ("SOAK.md", "COMMISSIONING.md", "SPARE-SD.md", "FREEZE.md"):
         assert doc in sec7, doc
     assert "Deferred to Phase 4" not in text
+
+
+# -- freeze and spare SD -----------------------------------------------------------------------
+def test_freeze_doc() -> None:
+    text = _text(FREEZE)
+    assert re.search(r"^Lock revu : sha256 (À REMPLIR|[0-9a-f]{64})$", text, re.M), (
+        "the line read by scripts/freeze-check.sh F5"
+    )
+    for word in (
+        "mercredi 11 novembre 2026",
+        "race-2026",
+        # configuration still allowed after the freeze
+        "variation_deg",
+        "heading_offset_deg",
+        "--awa-sign",
+        "true_wind_source",
+        "route_level",
+        "efficiency",
+        "polar.json",
+        # the ordered checklist
+        "bash scripts/soak.sh",
+        "var/soak/",
+        "JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 bash scripts/check.sh",
+        "01-UAT #8",
+        "02-UAT #10",
+        "03-05",
+        "bash scripts/freeze-check.sh --pre",
+        "tag -a race-2026 -m",
+        "bash scripts/build-wheelhouse.sh",
+        "sudo deploy/provision.sh",
+        "systemctl cat jabuka-core jabuka-ingest-fastnet",
+        "bash scripts/freeze-check.sh`",
+        "SPARE-SD",
+        # emergency fix
+        "race-2026.1",
+    ):
+        assert word in text, word
+    checklist = text[text.index("## Liste du 11 novembre") : text.index("Lock revu")]
+    steps = [int(n) for n in re.findall(r"^(\d+)\. ", checklist, re.M)]
+    assert steps == list(range(1, 13)), steps
+    check_references(FREEZE)
+
+
+def test_spare_sd_doc() -> None:
+    text = _text(SPARE_SD)
+    for word in (
+        "Pitfall 15",
+        "lsblk -o NAME,SIZE,MODEL,TRAN",
+        "sudo dd if=/dev/<carte>",
+        "bs=4M",
+        "status=progress",
+        "conv=fsync",
+        "sha256sum",
+        "cmp",
+        "rpi-clone",
+        "systemctl stop jabuka-core jabuka-ingest-fastnet",
+        "systemctl is-active jabuka-ingest-fastnet jabuka-core",
+        "jabuka-logcheck",
+        "fastnet-probe --file",
+        "http://10.42.0.1",
+        "Échange de carte en mer",
+        "sudo raspi-config nonint enable_overlayfs",
+        "sudo raspi-config nonint disable_overlayfs",
+        "CRSE-05",
+    ):
+        assert word in text, word
+    check_references(SPARE_SD)
+
+
+@pytest.mark.parametrize("doc", [FREEZE, SPARE_SD], ids=lambda p: p.name)
+def test_freeze_and_spare_sd_tool_commands(doc: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _check_commands(doc, monkeypatch)
+    if doc == SPARE_SD:
+        assert {"fastnet-probe", "jabuka-logcheck"} <= seen, seen
