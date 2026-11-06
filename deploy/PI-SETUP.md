@@ -352,9 +352,13 @@ its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. 
     hours, deletions), and a red banner when the disk is low, being pruned for space, or the raw
     floor was breached. The Fastnet health box shows `disk_state` and `disk_free_bytes`.
 
-## 7. Deferred to Phase 4
+## 7. Phase 4: soak, commissioning, freeze, spare SD
 
-- The 36 h soak test on the Pi, with the same `jabuka-logcheck` gate.
-- The on-boat commissioning runbook (REL-03), including the AWA sign check and the 12 Nov bus
-  capture.
-- The decision on a read-only root / overlay filesystem, and cloning the spare SD card.
+- 36 h soak (laptop and Pi, same `jabuka-logcheck` gate): [docs/SOAK.md](../docs/SOAK.md).
+- On-boat commissioning runbook for 12–13 Nov (REL-03: wiring, the 12 Nov bus capture, AWA sign,
+  tablet, race pack, course, degraded drills, go/no-go), rehearsable on the laptop with
+  `bash scripts/commissioning-rehearsal.sh`: [docs/COMMISSIONING.md](../docs/COMMISSIONING.md).
+- Spare SD card (clone, boot check, swap at sea) and the optional read-only overlay filesystem
+  with its rollback: [docs/SPARE-SD.md](../docs/SPARE-SD.md).
+- Feature freeze of 2026-11-11 (tag `race-2026`, wheelhouse, lock review, config-only changes
+  afterwards, `bash scripts/freeze-check.sh`): [docs/FREEZE.md](../docs/FREEZE.md).
