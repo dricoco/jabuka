@@ -14,6 +14,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from jabuka.common.clock import utc_epoch
 from jabuka.nav.settings import VersionConflict
 
 if TYPE_CHECKING:
@@ -107,7 +108,7 @@ def router(ctx: CoreContext) -> APIRouter:
         nav = ctx.nav
         try:
             entry = nav.manual.set(
-                body.twd, body.tws_kn, body.ref, nav.settings.variation_deg, ctx.clock.wall()
+                body.twd, body.tws_kn, body.ref, nav.settings.variation_deg, utc_epoch(ctx.clock)
             )
         except ValidationError as e:
             return validation_response(e)

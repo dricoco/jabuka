@@ -83,7 +83,8 @@ def test_fmt_countdown_and_durations() -> None:
 
 def test_source_badge_and_deviation_class() -> None:
     assert js("sourceBadge({source: 'LIVE_BG'})")["text"] == "LIVE B&G"
-    assert js("sourceBadge({source: 'MANUEL'})") == {"text": "MANUEL", "cls": "warn"}
+    # WR-03: no trusted UTC -> the age is unknown, said so (never guessed from the system clock)
+    assert js("sourceBadge({source: 'MANUEL'})") == {"text": "MANUEL âge ?", "cls": "warn"}
     assert js("sourceBadge({source: 'MANUEL', manual_age_s: 720})")["text"] == "MANUEL 12 min"
     assert js("sourceBadge({source: 'LIVE', stale: true})")["text"] == "PÉRIMÉ"
     assert js("sourceBadge({source: 'NONE'})")["text"] == "PAS DE VENT"

@@ -24,7 +24,7 @@ turns the latest instrument values into a WindSolution once per tick (RESEARCH P
 
 Inputs are StateStore.latest() rows keyed by path ({value, unit, src, ref, ...} or None); stale
 rows are already None (wind/heading 5 s). Radians and m/s throughout; time from the injected
-monotonic clock (t_mono) and the injected wall clock (t_wall, manual age only).
+monotonic clock (t_mono) and the trusted UTC epoch (t_wall, manual age only; None if not synced).
 """
 
 from __future__ import annotations
@@ -338,8 +338,8 @@ class WindPipeline:
             sol.alerts.append(ALERT_CHECK)
 
     def _manual_age(self, sol: WindSolution, manual: ManualWind, t_wall: float | None) -> None:
-        if t_wall is None:
-            return
+        if t_wall is None or manual.t_set_wall is None:
+            return  # trusted UTC unknown (now or at entry): age unknown, "MANUEL âge ?" (WR-03)
         age = max(0.0, t_wall - manual.t_set_wall)
         sol.manual_age_s = age
         limit_min = self.settings.manual_wind_max_age_min

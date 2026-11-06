@@ -116,8 +116,9 @@ class MarkOverride(BaseModel):
 
 
 class Banner(BaseModel):
-    """Pending advance (Annuler offered) or the finish notice. Times are wall-clock seconds so a
-    restart can tell how much of the window is left; the live window runs on t_mono."""
+    """Pending advance (Annuler offered) or the finish notice. Times are trusted UTC epochs (GPS,
+    never the unsynced system clock, WR-03; None when not synced) so a restart can tell how much
+    of the window is left; the live window runs on t_mono."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -216,7 +217,8 @@ class CourseStore:
         self.version = 0
         self.course = course_from_template(self.library, "A")
         self.boat: tuple[float, float, float] | None = None  # (lat, lon, t_mono)
-        # set by the course API router: event lines and the wall clock for the banner window
+        # set by the course API router: event lines and the trusted UTC (epoch | None) for the
+        # banner window
         self.on_event = on_event
         self.wall = wall
         # rounding state machine (memory only)
@@ -563,8 +565,8 @@ class CourseStore:
         if self._banner_until is None:  # loaded from disk: how much of the window is left?
             remaining = BANNER_S
             if self.wall is not None and b.at_wall is not None and b.until_wall is not None:
-                now = self.wall()
-                if now >= b.at_wall - 1.0:  # a clock behind the advance is not trusted
+                now = self.wall()  # trusted UTC; None while unsynced -> the full window
+                if now is not None and now >= b.at_wall - 1.0:  # a clock behind it: not trusted
                     remaining = b.until_wall - now
             remaining = min(BANNER_S, remaining)
             if remaining > 0:
@@ -673,8 +675,11 @@ class CourseStore:
         if self.wall is None:
             return None, None
         try:
-            at = float(self.wall())
+            now = self.wall()
+            at = None if now is None else float(now)
         except Exception:
+            return None, None
+        if at is None:  # trusted UTC unknown: a restart offers the full window
             return None, None
         return at, at + BANNER_S
 

@@ -164,6 +164,55 @@ def test_manual_wind_survives_a_restart(tmp_data_dir: Path, free_udp_port: int) 
     assert ctx3.nav.update()["wind"]["source"] == "NONE"
 
 
+class _FakeHwClock(SimClock):
+    """GPS UTC from the sim, but a system wall clock stuck behind it (fake-hwclock after a
+    power cut, chrony not locked yet)."""
+
+    def __init__(self, start_utc: float | None, wall: float) -> None:
+        super().__init__(start_utc=start_utc)
+        self._fake_wall = wall
+
+    def wall(self) -> float:
+        return self._fake_wall
+
+
+def test_manual_age_uses_gps_utc_not_the_system_clock(
+    tmp_data_dir: Path, free_udp_port: int
+) -> None:
+    """WR-03: entered at 20:00, power cut, fake-hwclock restores 20:17 while the GPS says 21:05:
+    the age is 65 min (stale), not 17 min."""
+    ctx = CoreContext.create(
+        _FakeHwClock(START_UTC, wall=START_UTC), tmp_data_dir, udp_port=free_udp_port
+    )
+    TestClient(create_app(ctx)).post(
+        "/api/wind/manual", json={"twd": 200, "tws_kn": 12, "ref": "T"}
+    )
+    later = _FakeHwClock(START_UTC + 65 * 60.0, wall=START_UTC + 17 * 60.0)
+    ctx2 = CoreContext.create(later, tmp_data_dir, udp_port=free_udp_port)
+    nav = ctx2.nav.update()
+    assert nav["wind"]["source"] == "MANUEL"
+    assert nav["wind"]["manual_age_s"] == pytest.approx(65 * 60.0, abs=1.0)
+    assert nav["wind"]["stale"] is True
+
+
+def test_manual_age_unknown_without_trusted_utc(tmp_data_dir: Path, free_udp_port: int) -> None:
+    """WR-03: no trusted UTC (GPS not synced): the entry carries no time and the age is unknown
+    (null), never computed from the system clock."""
+    ctx = CoreContext.create(
+        _FakeHwClock(None, wall=START_UTC), tmp_data_dir, udp_port=free_udp_port
+    )
+    client = TestClient(create_app(ctx))
+    nav = client.post("/api/wind/manual", json={"twd": 200, "tws_kn": 12, "ref": "T"}).json()
+    assert nav["wind"]["source"] == "MANUEL"
+    assert nav["wind"]["manual_age_s"] is None and nav["wind"]["stale"] is False
+    assert client.get("/api/wind/manual").json()["manual"]["t_set_wall"] is None
+    # synced later: still unknown (the entry time was never known)
+    ctx2 = CoreContext.create(
+        _FakeHwClock(START_UTC + 600.0, wall=START_UTC), tmp_data_dir, udp_port=free_udp_port
+    )
+    assert ctx2.nav.update()["wind"]["manual_age_s"] is None
+
+
 @pytest.mark.parametrize(
     "body",
     [

@@ -32,6 +32,15 @@ class Clock(Protocol):
     async def sleep_until(self, t_mono: float) -> None: ...
 
 
+def utc_epoch(clock: Clock) -> float | None:
+    """Trusted UTC (GPS-disciplined, or simulated) as an epoch, None while not synced. Domain
+    decisions that must survive a restart (manual-wind age, the Annuler window) use this, never
+    wall(): the Pi has no RTC and its system clock is fake-hwclock's last save until chrony
+    locks (WR-03)."""
+    now = clock.now_utc()
+    return None if now is None else now.timestamp()
+
+
 def _iso(epoch: float | None) -> str | None:
     if epoch is None:
         return None

@@ -114,8 +114,9 @@ class ManualWind(BaseModel):
     """One manual wind entry, already TRUE (converted once, at entry time, Pitfall 6).
 
     twd_entered/ref_entered keep what the helmsman typed (B&G display, often °M) for the log and
-    the form; twd_t_deg is what the pipeline uses. t_set_wall is the injected wall clock at entry,
-    so the age survives a core restart."""
+    the form; twd_t_deg is what the pipeline uses. t_set_wall is the trusted (GPS) UTC epoch at
+    entry, so the age survives a core restart; None when the clock was not synced (age unknown,
+    never computed from the system clock, WR-03)."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -123,7 +124,7 @@ class ManualWind(BaseModel):
     tws_kn: float = Field(ge=0.0, le=80.0)
     ref_entered: Literal["M", "T"]
     twd_entered: float = Field(ge=0.0, lt=360.0)
-    t_set_wall: float
+    t_set_wall: float | None = None
 
 
 class ManualWindStore:
@@ -142,7 +143,7 @@ class ManualWindStore:
                 self.alerts.append("Vent manuel illisible : ignoré")
 
     def set(
-        self, twd: float, tws_kn: float, ref: str, variation_deg: float, t_wall: float
+        self, twd: float, tws_kn: float, ref: str, variation_deg: float, t_wall: float | None
     ) -> ManualWind:
         """Store an entry. A °M direction becomes TRUE with the variation in force now.
         Raises pydantic.ValidationError (bad values) or OSError (disk); nothing changes then."""

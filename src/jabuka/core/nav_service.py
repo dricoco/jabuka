@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from jabuka.common.clock import Clock
+from jabuka.common.clock import Clock, utc_epoch
 from jabuka.common.conventions import current_towards_uv
 from jabuka.common.units import ms_to_kn, wrap_pi
 from jabuka.core.state import StateStore
@@ -134,7 +134,7 @@ class NavService:
             lat = _r(pos["value"].get("latitude"), 7)
             lon = _r(pos["value"].get("longitude"), 7)
         # wind first: it owns the TRUE heading (compass, or COG inside the Jabuka zone)
-        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=self.clock.wall())
+        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=utc_epoch(self.clock))
         hdg_t = w.hdg
         cog = wind.num(inputs.get(wind.COG))
         sog_ms = wind.num(inputs.get(wind.SOG))

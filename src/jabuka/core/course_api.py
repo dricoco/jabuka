@@ -22,6 +22,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from jabuka.common.clock import utc_epoch
 from jabuka.nav.course import MAX_SEQ, NAME_MAX, BannerGone, UnknownMark, clean_name
 from jabuka.nav.settings import VersionConflict
 
@@ -114,7 +115,7 @@ def router(ctx: CoreContext) -> APIRouter:
             log.exception("course event write failed")
 
     course.on_event = write_event
-    course.wall = ctx.clock.wall
+    course.wall = lambda: utc_epoch(ctx.clock)  # trusted UTC, None while unsynced (WR-03)
 
     def mutate(fn: Callable[[], dict]) -> dict | JSONResponse:
         try:

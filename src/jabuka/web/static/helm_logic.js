@@ -69,7 +69,8 @@ export function sourceBadge(wind) {
       return { text: "LIVE B&G", cls: "good" };
     case "MANUEL":
       return {
-        text: isNum(wind.manual_age_s) ? `MANUEL ${Math.round(wind.manual_age_s / 60)} min` : "MANUEL",
+        // no trusted UTC (GPS not synced, now or at entry): the age is unknown, never guessed
+        text: isNum(wind.manual_age_s) ? `MANUEL ${Math.round(wind.manual_age_s / 60)} min` : "MANUEL âge ?",
         cls: "warn",
       };
     default:
