@@ -47,7 +47,34 @@ by_severity:
   high: 4
   medium: 5
   low: 8
-status: issues_found
+status: fixed
+fixed_at: 2026-11-06
+fix_base: 2b119b0
+fixes:
+  fixed: 19
+  skipped: 0
+  commits: 21  # one per finding + 2 follow-ups (CR-02 nav shape fixture, CR-01 shutdown)
+gate: "JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 check: ruff ok; 3.14 and 3.13 each 1296 passed, 5 skipped (env-only skips: no weatherrouting, no deploy/wheelhouse x2, no JABUKA_REAL_PACK x2)"
+resolution:
+  CR-01: "fixed 2e04440 (+ b2c6d08 no pool after shutdown) - RouterPool._job total (fault -> error outcome, executor dropped, pending launched); OSError on submit retried once; 1 Hz watchdog recycles a pool stuck > 2 x timeout, recreates a missing pool, 5 min ROUTEUR RELANCÉ alert"
+  CR-02: "fixed a49ef0c (+ 23a8165 shape fixture) - stale flag + last_fail while steerable; withdrawn (state outdated, no target/countdown/cost -> Phase 2 laylines, line greyed on the map) on course change (not on rounding the route's own mark), failed or > 3 min missed-tack reroute, 2 failed cycles and 10 min unconfirmed, 40 min unconfirmed"
+  HI-01: "fixed a9f82e5 - tacks >= t_here - 1 s; a due tack counts down in wall time -> VIREZ then missed-tack reroute; next_tack from t0 in route_message; wrong_tack flag, no |TWA| deviation, MAUVAIS BORD on the helm"
+  HI-02: "fixed d18223e - gated gap > tau_ema_s starts a new episode, old estimate kept as a decaying fallback with its own t_obs; bias.json restored as a fallback, never the live EMA"
+  HI-03: "fixed fdbe188 - uvRelativeToGrid (flag 0x08) read on non lat/lon grids; u/v (or direction) rotated with the grid x-axis bearing from the grid coordinates; non-orthogonal / undeterminable / unflagged / mixed grids refused"
+  HI-04: "fixed 09b0284 - route-time projection window (10 min back, elapsed + 30 min ahead), COG mismatch penalty, leg arrivals crossed only within 0.5 nm of the mark; global search removed"
+  MD-01: "fixed 6b873bb - prep fills wind NaN (u and v together) and reports the fraction; coverage alerts on NaN in the race-area stencil; WindField.at gives NaN (core: no GRIB wind) instead of a calm"
+  MD-02: "fixed e7e84f5 - a detected tack away from the followed segment's tack requests a 'tack' reroute with the off-route treatment; off-route ignores COG below 2 kn SOG"
+  MD-03: "fixed b4945a6 - CycleRequest.old_t_here; evaluate_path projects inside the follower's window and adds the rejoin time (XTE at reaching speed)"
+  MD-04: "fixed 2f9a5a1 - cost_s set in _adopt from the adopted cycle only"
+  MD-05: "fixed 926e197 - pack fingerprint (sidecar sha256) in every CycleRequest, worker refuses another pack, core re-reads sidecars every minute -> PACK DE COURSE MODIFIÉ alert; landmask.npz verified against landmask.json; restored route withdrawn until the first cycle replaces it"
+  LO-01: "fixed 62e3e04 - ManualWindStore.version; router keys on (version, entry identity)"
+  LO-02: "fixed b9978b0 - route_message thins the line (ends + tack vertices first) instead of truncating at 300 points"
+  LO-03: "fixed 70a213d - geo_cache / polar_cache are 8-entry LRU OrderedDicts"
+  LO-04: "fixed 40ffacc - RouteResult.fail_kind (land/input/engine/pack); ROUTE INVALIDE only for land"
+  LO-05: "fixed 17b6c39 - duplicate messages per (valid time, component) checked: exact duplicates ignored, differing ones refused, single run and member required, run kept printed"
+  LO-06: "fixed 886835f - bias.json config range-checked (defaults otherwise, unknown keys ignored); non-finite t_obs/manual/fallback rejected"
+  LO-07: "fixed 97e8a17 - dry-run OUT realpath under var/; DWD safe_urlopen re-checks redirect hosts; NetCDF time without units -> French error"
+  LO-08: "fixed 1963d91 - land-release line only while release_in_s > 0, then VIREZ"
 ---
 
 # Phase 3: Code Review Report
@@ -55,7 +82,7 @@ status: issues_found
 **Reviewed:** 2026-11-06T19:25:52Z
 **Depth:** deep. I followed the whole chain: the race-pack prep tools, the pack loader, the weather fields and bias, the isochrone router and land mask, the worker pool, the core supervisor (`RouterService`), the REST/WS route message and the helm and route UI.
 **Files Reviewed:** 33. `bench.py` was only skimmed: it is a laptop/Pi measuring tool and nothing in it reaches the helm.
-**Status:** issues_found
+**Status:** issues_found at review time; all 19 findings fixed on 2026-11-06 (one commit each on top of 2b119b0, see `resolution` in the frontmatter). The reviewer's scratchpad scripts became regression tests (`tests/routing/test_route_expiry.py`, `tests/route/test_pool.py`, `tests/route/test_advice.py`, `tests/route/test_bias.py`, `tests/routing/test_tack_advice_core.py`).
 
 Severity mapping: BLOCKER = critical/high, WARNING = medium, INFO = low.
 
