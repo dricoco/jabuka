@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from jabuka.common.atomicio import atomic_write_json, load_json_with_bak
+from jabuka.common.atomicio import atomic_write_json, load_json_status
 
 SETTINGS_FILE = "settings.json"
 LOCAL_ISO = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$"  # local wall-clock minutes, no zone
@@ -111,9 +111,11 @@ class SettingsStore:
     def __init__(self, data_dir: str | Path) -> None:
         self.path = Path(data_dir) / SETTINGS_FILE
         self.alerts: list[str] = []
-        raw = load_json_with_bak(self.path, None)
+        raw, source = load_json_status(self.path, None)
         self.version = 0
         self.settings = Settings()
+        if source == "unreadable":  # present but neither NAME nor NAME.bak loads (04-01 soak)
+            self.alerts.append("Réglages illisibles : valeurs par défaut")
         if raw is not None:
             try:
                 if not isinstance(raw, dict):
@@ -181,7 +183,9 @@ class ManualWindStore:
         # bumps on every set/clear: observers key on it, never on t_set_wall, which is None
         # without trusted GPS time (03-REVIEW LO-01)
         self.version = 0
-        raw = load_json_with_bak(self.path, None)
+        raw, source = load_json_status(self.path, None)
+        if source == "unreadable":  # present but neither NAME nor NAME.bak loads (04-01 soak)
+            self.alerts.append("Vent manuel illisible : ignoré")
         if raw:  # None (missing) or {} (cleared) -> no entry
             try:
                 self.entry = ManualWind.model_validate(raw)
