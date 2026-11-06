@@ -13,7 +13,8 @@ body.theme-day {
   --accent: #0050b3;
 }
 
-/* Night: pure red channel on true black, no green/blue light (HELM-03, Pitfall 4). */
+/* Night: pure red channel on true black, no green/blue light (HELM-03, Pitfall 4). app.js scales
+   the reds by the brightness slider (inline custom properties on body). */
 body.theme-night {
   --bg: #000000;
   --bg-band: rgba(0, 0, 0, 0.85);
@@ -24,6 +25,7 @@ body.theme-night {
   --warn: #c00000;
   --bad: #ff0000;
   --accent: #ff0000;
+  color-scheme: only light;
 }
 
 * { box-sizing: border-box; }
@@ -43,10 +45,23 @@ html, body {
 
 #topbar {
   position: fixed; top: 0; left: 0; right: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
   background: var(--bg-band); border-bottom: 1px solid var(--line);
   min-height: 52px; padding: 2px 6px;
 }
+#top-ctrls { display: flex; align-items: center; gap: 6px; flex: none; }
+button.ctrl {
+  min-height: 48px; min-width: 48px; padding: 0 12px;
+  font-size: 18px; font-weight: 700;
+  color: var(--fg); background: transparent;
+  border: 2px solid var(--line); border-radius: 8px;
+}
+button.ctrl[aria-pressed="true"] { border-color: var(--fg); }
+#night-brightness {
+  width: 120px; height: 48px; margin: 0;
+  color: var(--fg); background: transparent; accent-color: var(--fg);
+}
+#night-brightness[hidden] { display: none; }
 
 .tabs { display: flex; gap: 4px; }
 .tabs button, button.big {
@@ -60,7 +75,7 @@ button:disabled { opacity: 0.4; }
 button:focus { outline: none; }
 button:focus-visible { outline: 2px solid var(--accent); }
 
-#badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+#badges { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .badge {
   font-weight: 700; font-size: 16px; padding: 6px 10px; border-radius: 6px;
   border: 2px solid currentColor;
@@ -70,12 +85,12 @@ button:focus-visible { outline: 2px solid var(--accent); }
 .badge.bad { color: var(--bad); }
 
 #banner {
-  position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 30;
+  position: fixed; top: calc(var(--topbar-h, 52px) + 4px); left: 50%; transform: translateX(-50%); z-index: 30;
   background: var(--bg); color: var(--fg); border: 2px solid var(--fg); border-radius: 8px;
   padding: 10px 16px; font-size: 20px; font-weight: 700;
 }
 
-main { position: fixed; inset: 56px 0 0 0; z-index: 10; pointer-events: none; }
+main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer-events: none; }
 .tab { position: absolute; inset: 0; }
 .tab[hidden] { display: none !important; }
 .tab > * { pointer-events: auto; }
@@ -106,3 +121,20 @@ body.link-stale #tab-barre .band { opacity: 0.35; filter: grayscale(1); }
 #diag-frame { width: 100%; height: 100%; border: 0; background: #fff; }
 
 #lock-overlay { position: fixed; inset: 0; z-index: 100; touch-action: none; }
+
+/* -- night: no light other than red (Pitfall 4) ----------------------------------------------- */
+body.theme-night #map { opacity: var(--map-k, 1); }
+body.theme-night * { scrollbar-color: var(--dim) #000000; }
+body.theme-night *:focus-visible { outline-color: var(--fg); }
+body.theme-night ::selection { background: var(--dim); color: #000000; }
+/* MapLibre controls are white/black by default */
+body.theme-night .maplibregl-ctrl,
+body.theme-night .maplibregl-ctrl * {
+  background-color: #000000 !important;
+  color: var(--dim) !important;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+body.theme-night .maplibregl-ctrl a,
+body.theme-night .maplibregl-ctrl-attrib a { color: var(--dim) !important; }
+body.theme-night .maplibregl-ctrl-attrib-button { filter: none; opacity: 0.4; }
