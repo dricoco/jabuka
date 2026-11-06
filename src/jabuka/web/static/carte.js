@@ -339,8 +339,8 @@ export function mount(ctx) {
       act(() => ctx.api.post("/api/course/select", { template: b.dataset.template, base_version: version() }));
     });
   }
-  btnPrev.addEventListener("click", () => act(() => ctx.api.post("/api/course/prev")));
-  btnNext.addEventListener("click", () => act(() => ctx.api.post("/api/course/next")));
+  btnPrev.addEventListener("click", () => act(() => ctx.api.post("/api/course/prev", { base_version: version() })));
+  btnNext.addEventListener("click", () => act(() => ctx.api.post("/api/course/next", { base_version: version() })));
   btnSides.addEventListener("click", () =>
     act(() => ctx.api.post("/api/course/confirm-sides", { base_version: version() })),
   );

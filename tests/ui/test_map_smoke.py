@@ -181,6 +181,30 @@ def test_map_renders_offline_with_overlays(page, feeder) -> None:
     assert "CARTE INDISPONIBLE" not in pg.locator("#badges").inner_text()
 
 
+def test_security_headers_do_not_break_the_app(page, feeder) -> None:
+    """IN-01: the Content-Security-Policy is served and the app runs under it: map (blob:
+    workers), WebSocket, the Diag iframe and the wake-lock video, with no CSP violation."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    violations: list[str] = []
+    pg.on("console", lambda m: violations.append(m.text) if "Content Security" in m.text else None)
+    resp = pg.goto(page.base_url + "/")
+    assert "default-src 'self'" in resp.headers["content-security-policy"]
+    pg.wait_for_function("() => window.jabuka && window.jabuka.map", timeout=30000)
+    pg.wait_for_function(
+        "() => { const t = document.getElementById('primary').textContent; "
+        "return t && t !== '—'; }",
+        timeout=15000,
+    )
+    pg.click("button[data-tab=diag]")  # same-origin iframe (frame-ancestors 'self')
+    frame = pg.frame_locator("#diag-frame")
+    frame.locator("body").wait_for(timeout=10000)
+    pg.click("button[data-tab=barre]")
+    pg.wait_for_timeout(1500)
+    assert violations == [], violations
+    assert "CARTE INDISPONIBLE" not in pg.locator("#badges").inner_text()
+
+
 def test_tabs_course_and_settings(page, feeder) -> None:
     """Only the active tab shows; Carte lists the course and switches A/B in one tap (CRSE-01);
     Réglages renders the schema form (modules mounted after the first events still get them)."""
