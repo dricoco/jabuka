@@ -7,14 +7,23 @@ NAME.bak, then to the defaults with an alert string.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from jabuka.common.atomicio import atomic_write_json, load_json_with_bak
 
 SETTINGS_FILE = "settings.json"
+LOCAL_ISO = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$"  # local wall-clock minutes, no zone
 
 
 def _f(default: Any, label: str, **kw: Any) -> Any:
@@ -47,6 +56,40 @@ class Settings(BaseModel):
     zone_radius_nm: float = _f(3.0, "Zone magnétique : rayon (nm)", ge=0.0, le=20.0)
     # -- manual wind (WIND-04) -------------------------------------------------------------------
     manual_wind_max_age_min: float = _f(30.0, "Vent manuel périmé après (min)", ge=1.0, le=240.0)
+    # -- routing (Phase 3, plan 03-05) -----------------------------------------------------------
+    routing_enabled: bool = _f(True, "Routage actif")
+    route_level: Literal["L0", "L1", "L2", "L3", "L4", "L5"] = _f(
+        "L0", "Niveau de routage (banc Pi)"
+    )
+    route_cadence_min: float = _f(5.0, "Recalcul toutes les (min)", ge=2.0, le=30.0)
+    tack_penalty_s: float = _f(45.0, "Pénalité de virement (s)", ge=0.0, le=180.0)
+    stay_extra_min: float = _f(5.0, "On reste : marge (min)", ge=1.0, le=30.0)
+    route_waves: bool = _f(True, "Vagues dans le routage")
+    route_current: bool = _f(True, "Courant dans le routage")
+    # -- GRIB wind (WIND-05/06) ------------------------------------------------------------------
+    grib_wind_fallback: bool = _f(True, "Vent GRIB sans instruments")
+    bias_enabled: bool = _f(True, "Correction du GRIB (biais)")
+    bias_tau_decay_h: float = _f(2.5, "Biais : décroissance (h)", ge=0.5, le=12.0)
+    # -- race window for the weather coverage check (local time, Europe/Zagreb) -----------------
+    race_start_local: str = _f("2026-11-13T18:00", "Fenêtre météo : début", pattern=LOCAL_ISO)
+    race_end_local: str = _f("2026-11-15T10:00", "Fenêtre météo : fin", pattern=LOCAL_ISO)
+
+    @field_validator("race_start_local", "race_end_local")
+    @classmethod
+    def _local_iso(cls, v: str) -> str:
+        try:
+            datetime.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"date locale invalide : {v}") from exc
+        return v
+
+    @model_validator(mode="after")
+    def _window_order(self) -> Settings:
+        if datetime.fromisoformat(self.race_end_local) <= datetime.fromisoformat(
+            self.race_start_local
+        ):
+            raise ValueError("fenêtre météo : la fin doit suivre le début")
+        return self
 
     def eff_up(self) -> float:
         return self.efficiency_up if self.efficiency_up is not None else self.efficiency

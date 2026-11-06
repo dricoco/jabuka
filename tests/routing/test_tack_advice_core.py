@@ -28,12 +28,14 @@ def _start(routing_core, fake_pool, rh, **kw):
 
 
 def _run(core, pos, seconds: int, hdg: float = PORT_HDG) -> dict:
-    nav = {}
+    """seconds x (feed, tick +1 s, let the router's job finish), then a same-time tick so the
+    returned nav message shows what the last job adopted."""
     for _ in range(seconds):
         core.sail(*pos, hdg)
-        nav = core.tick(1.0)
+        core.tick(1.0)
         core.settle()
-    return nav
+    core.sail(*pos, hdg)
+    return core.tick(0.0)
 
 
 def _kept(fake_pool):

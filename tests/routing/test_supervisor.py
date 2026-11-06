@@ -25,12 +25,14 @@ def _start(routing_core, fake_pool, rh, **kw):
 
 
 def _run(core, pos, seconds: int, hdg: float = 157.0) -> dict:
-    nav = {}
+    """seconds x (feed, tick +1 s, let the router's job finish), then a same-time tick so the
+    returned nav message shows what the last job adopted."""
     for _ in range(seconds):
         core.sail(*pos, hdg)
-        nav = core.tick(1.0)
+        core.tick(1.0)
         core.settle()
-    return nav
+    core.sail(*pos, hdg)
+    return core.tick(0.0)
 
 
 def _reasons(core) -> list[tuple[str, ...]]:
@@ -84,7 +86,9 @@ def test_route_older_than_20_min_is_replaced(routing_core, fake_pool, rh) -> Non
     fake_pool.script = lambda creq: _with_old(fake_pool, creq, 0.0)
     nav = _run(core, pos, 1150)  # timers at 5, 10, 15 min: kept (identical)
     assert nav["route"]["version"] == 1
-    nav = _run(core, pos, 160)  # 20 min timer and age > 20 min: replaced
+    nav = _run(core, pos, 60)  # 20 min timer: age exactly 20 min, still kept
+    assert nav["route"]["version"] == 1
+    nav = _run(core, pos, 300)  # 25 min timer, age > 20 min: replaced
     assert nav["route"]["version"] == 2
 
 
@@ -136,7 +140,8 @@ def test_triggers_never_overlap(routing_core, fake_pool, rh) -> None:
     fake_pool.hold = False
     core.settle()
     nav = _run(core, pos, 1)
-    assert nav["route"]["version"] == 2  # the latest forced request, once
+    # the running request completes, then only the latest pending one runs
+    assert nav["route"]["version"] == 3
     assert fake_pool.superseded >= 2
 
 
