@@ -317,10 +317,12 @@ its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. 
   ls -l /dev/fastnet
   ```
 
-- **Ingest restarting in a loop** (`NRestarts` keeps climbing,
-  `journalctl -u jabuka-ingest-fastnet` shows `cannot open /dev/fastnet: ... Invalid argument`):
-  the tty may be holding a 28800 setting that the C library refuses to re-apply. Unplug and
-  replug the DTECH, which resets the tty, and report it (01-04 SUMMARY, deferred item).
+- **Ingest restarting in a loop** (`NRestarts` keeps climbing): read
+  `journalctl -u jabuka-ingest-fastnet`. The old `cannot open /dev/fastnet: ... Invalid argument`
+  loop (a tty left at 28800 that glibc 2.43 refused to re-apply) is fixed: the ingest resets the
+  tty to a standard speed before configuring it (commit 6f5f5af). A missing device does NOT
+  restart the ingest (it reports `device: missing` and reconnects); a task that dies does (exit 1,
+  restarted by systemd), so look for `task ... died` in the journal.
 
 - **Fastnet health missing or silent:** stop the ingest and run the probe (item l) with the bus
   connected. `NO BYTES`: check the wires are on the adapter's T/R+ and T/R- (not RXD), the adapter

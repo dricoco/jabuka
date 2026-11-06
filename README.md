@@ -29,11 +29,14 @@ bash scripts/bootstrap-dev.sh     # creates .venv (3.14) and .venv313 (3.13), in
 .venv/bin/jabuka-core --data-dir var --http-port 8080
 ```
 
-Then open <http://127.0.0.1:8080/>. Every decoded value is listed with its unit, source, M/T
+Then open <http://127.0.0.1:8080/> (the core binds 127.0.0.1 by default; pass
+`--http-host 0.0.0.0` to reach it from another device). Every decoded value is listed with its unit, source, M/T
 reference and server-computed age. The "Event marker" button writes a line to
 `var/logs/events/events-*.jsonl`.
 
-Logs land under `<data-dir>/logs/{raw,bus,derived,events}/`.
+Logs land under `<data-dir>/logs/{raw,derived,events,gps}/` (and `bus/` with
+`jabuka-core --bus-log on`). One retention policy prunes them (see deploy/PI-SETUP.md,
+"Disk filling up").
 
 ## Checks
 

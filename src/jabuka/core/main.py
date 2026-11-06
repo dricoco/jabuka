@@ -334,7 +334,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="jabuka-core", description="Jabuka core: state, logs, diagnostics web app."
     )
-    p.add_argument("--http-host", default="0.0.0.0")
+    p.add_argument(
+        "--http-host",
+        default="127.0.0.1",
+        help="bind address (default 127.0.0.1; the Pi unit passes 0.0.0.0 for the AP)",
+    )
     p.add_argument("--http-port", type=int, default=8080)
     p.add_argument("--udp-host", default="127.0.0.1")
     p.add_argument("--udp-port", type=int, default=messages.DEFAULT_UDP_PORT)

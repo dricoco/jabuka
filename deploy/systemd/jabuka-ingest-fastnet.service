@@ -1,8 +1,10 @@
 # Jabuka receive-only B&G Fastnet ingest.
 # Installed by deploy/provision.sh to /etc/systemd/system/ and enabled at boot.
 #
-# - Type=notify + WatchdogSec: the process sends READY=1 once /dev/fastnet is open and pings
-#   WATCHDOG=1 from its event loop, so a hung loop is killed and restarted.
+# - Type=notify + WatchdogSec: the process sends READY=1 after its first open attempt (with
+#   /dev/fastnet open if it is present, and also when it is missing, so an unattended boot without
+#   the adapter still starts) and pings WATCHDOG=1 from its event loop, so a hung loop is killed
+#   and restarted. A task that dies makes the process exit 1, so systemd restarts it too.
 # - Restart=always + StartLimitIntervalSec=0: restart forever, never hit the start-rate limit.
 # - The unit is deliberately NOT bound to the device (no device binding / Requires on
 #   dev-fastnet.device): the process reports "device missing" in its health and reconnects itself.

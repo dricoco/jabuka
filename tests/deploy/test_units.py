@@ -177,6 +177,8 @@ def test_core_execstart_parses_with_the_real_cli(parse_unit) -> None:
     argv = shlex.split(_one(parse_unit(CORE), "Service", "ExecStart"))
     assert argv[0] == "/opt/jabuka/venv/bin/jabuka-core"
     assert argv[1:] == [
+        "--http-host",
+        "0.0.0.0",
         "--http-port",
         "80",
         "--data-dir",
@@ -189,6 +191,8 @@ def test_core_execstart_parses_with_the_real_cli(parse_unit) -> None:
     if not _core_knows_gpsd():
         pytest.skip("01-03 not merged yet; phase-level check covers it")
     args = core_parser().parse_args(argv[1:])
+    assert args.http_host == "0.0.0.0"  # the dev default is 127.0.0.1 (IN-08)
+    assert core_parser().parse_args([]).http_host == "127.0.0.1"
     assert args.http_port == 80
     assert str(args.data_dir) == "/var/lib/jabuka"
     assert args.clock == "gps"
