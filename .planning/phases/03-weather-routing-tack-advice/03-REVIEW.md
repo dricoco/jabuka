@@ -54,7 +54,7 @@ fixes:
   fixed: 19
   skipped: 0
   commits: 21  # one per finding + 2 follow-ups (CR-02 nav shape fixture, CR-01 shutdown)
-gate: "JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 check: ruff ok; 3.14 and 3.13 each 1296 passed, 5 skipped (env-only skips: no weatherrouting, no deploy/wheelhouse x2, no JABUKA_REAL_PACK x2)"
+gate: "JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 check: ruff ok; 3.14 and 3.13 each 1297 passed, 5 skipped (env-only skips: no weatherrouting, no deploy/wheelhouse x2, no JABUKA_REAL_PACK x2)"
 resolution:
   CR-01: "fixed 2e04440 (+ b2c6d08 no pool after shutdown) - RouterPool._job total (fault -> error outcome, executor dropped, pending launched); OSError on submit retried once; 1 Hz watchdog recycles a pool stuck > 2 x timeout, recreates a missing pool, 5 min ROUTEUR RELANCÉ alert"
   CR-02: "fixed a49ef0c (+ 23a8165 shape fixture) - stale flag + last_fail while steerable; withdrawn (state outdated, no target/countdown/cost -> Phase 2 laylines, line greyed on the map) on course change (not on rounding the route's own mark), failed or > 3 min missed-tack reroute, 2 failed cycles and 10 min unconfirmed, 40 min unconfirmed"
