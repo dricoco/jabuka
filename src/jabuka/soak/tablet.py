@@ -118,12 +118,14 @@ class TabletClient(threading.Thread):
         self.conn = Signal("conn")
         self.connects = 0
         self.conn_errors = 0
+        self.last_error: tuple[float, str] | None = None
         self.last_diag: dict | None = None
         self.last_nav: dict | None = None
         self.diag_count = 0
         self.nav_count = 0
         self.routes: list[dict[str, Any]] = []
         self._pending_routes: dict[int, tuple[float, dict]] = {}
+        self._margin: dict[Any, bool] = {}  # route version -> start_in_margin seen True
         self.counter_increases: list[dict[str, Any]] = []
         self._counters: dict[str, int] | None = None
         self._uptime: float | None = None
@@ -133,6 +135,9 @@ class TabletClient(threading.Thread):
         self.wind_sources: list[tuple[float, str | None]] = []
         self.route_blocks: list[tuple[float, dict]] = []  # (t_wall, nav.route), on change only
         self._last_route_key: Any = None
+        self.clock_valid = Signal("clock")
+        self.clock_invalid_count = 0  # valid -> invalid transitions of the diag clock
+        self.layline_missing = 0  # nav messages with live wind + position but no laylines
 
     # -- lifecycle ---------------------------------------------------------------------------
     def stop(self) -> None:
@@ -155,9 +160,10 @@ class TabletClient(threading.Thread):
                         except TimeoutError:
                             continue
                         self._on_text(text if isinstance(text, str) else text.decode())
-            except Exception:  # noqa: BLE001 - core down / restarting / closed
+            except Exception as exc:  # noqa: BLE001 - core down / restarting / closed
                 with self.lock:
                     self.conn_errors += 1
+                    self.last_error = (time.time(), repr(exc)[:200])
             t = time.time()
             with self.lock:
                 self.conn.force(False, t)
@@ -187,6 +193,10 @@ class TabletClient(threading.Thread):
         rows = msg.get("values") or []
         self.wind.observe(row_live(rows, WIND_PATH, "fastnet"), t)
         self.pos.observe(row_live(rows, POS_PATH, "gpsd"), t)
+        valid = bool((msg.get("clock") or {}).get("time_valid"))
+        if self.clock_valid.value and not valid:
+            self.clock_invalid_count += 1
+        self.clock_valid.observe(valid, t, debounce=1)
         core = msg.get("core") or {}
         up = core.get("uptime_s")
         if isinstance(up, int | float):
@@ -208,6 +218,8 @@ class TabletClient(threading.Thread):
     def _on_nav(self, msg: dict, t: float) -> None:
         self.nav_count += 1
         self.last_nav = msg
+        if self.wind.value and self.pos.value and not msg.get("layline"):
+            self.layline_missing += 1
         for a in msg.get("alerts") or []:
             self.alerts_seen.setdefault(a, t)
         r = msg.get("route") or {}
@@ -259,12 +271,24 @@ class TabletClient(threading.Thread):
             lons = np.array([c[0] for c in coords], dtype=np.float64)
             lats = np.array([c[1] for c in coords], dtype=np.float64)
             xs, ys = self.mask.frame.to_xy(lats, lons)
+            v = msg.get("version")
+            if start_in_margin:
+                self._margin[v] = True
+            elif self._margin.get(v):  # a restored route ("outdated") does not carry the flag
+                start_in_margin = True
             v0 = 1 if start_in_margin else 0
             ok, bad = self.mask.validate_polyline(xs[v0:], ys[v0:])
-            if not ok and start_in_margin is None and bad == 0:
-                ok2, _ = self.mask.validate_polyline(xs[1:], ys[1:])
-                rec["detail"] = "start margin unknown: first segment only" if ok2 else None
-                ok = ok2
+            if not ok and v0 == 0 and bad == 0 and self._starts_in_margin(xs, ys):
+                # the router's own rule: a start inside the shore margin only has to clear real
+                # land on its exit segment (raw raster), the rest the full mask
+                raw_ok = bool(self.mask.raw_segments_clear(xs[:1], ys[:1], xs[1:2], ys[1:2])[0])
+                ok2, bad2 = self.mask.validate_polyline(xs[1:], ys[1:])
+                ok, bad = (
+                    raw_ok and ok2,
+                    (0 if not raw_ok else (None if bad2 is None else bad2 + 1)),
+                )
+                rec["detail"] = "start in the shore margin: exit segment checked on raw land"
+                v0 = 0
             rec["land_ok"] = bool(ok)
             rec["bad_index"] = None if bad is None else int(bad) + v0
         self.routes.append(rec)
@@ -273,6 +297,11 @@ class TabletClient(threading.Thread):
                 self.on_route(rec)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _starts_in_margin(self, xs: Any, ys: Any) -> bool:
+        m = self.mask
+        assert m is not None
+        return bool(not m.points_clear(xs[:1], ys[:1])[0] and m.raw_points_clear(xs[:1], ys[:1])[0])
 
     # -- queries -----------------------------------------------------------------------------
     def live(self) -> bool:
@@ -330,6 +359,29 @@ class TabletClient(threading.Thread):
     def routes_after(self, t: float) -> list[dict]:
         with self.lock:
             return [dict(r) for r in self.routes if r["t_wall"] >= t]
+
+    def summary(self, t0: float) -> dict[str, Any]:
+        """Transitions (seconds after t0) and counters, for the report."""
+        with self.lock:
+            return {
+                "connects": self.connects,
+                "conn_errors": self.conn_errors,
+                "diag": self.diag_count,
+                "nav": self.nav_count,
+                "transitions": {
+                    s.name: [(round(t - t0, 3), v) for t, v in s.transitions]
+                    for s in (self.conn, self.wind, self.pos)
+                },
+                "wind_sources": [(round(t - t0, 3), src) for t, src in self.wind_sources],
+                "route_states": [
+                    (round(t - t0, 3), b.get("state"), b.get("version"), b.get("reason"))
+                    for t, b in self.route_blocks
+                ],
+            }
+
+    def clock_valid_since(self, t: float) -> float | None:
+        """Wall time the diag clock was (or became) valid at or after t."""
+        return self.clock_valid.first_true_after(t)
 
     def tick_ratio(self) -> float | None:
         with self.lock:

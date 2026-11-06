@@ -26,6 +26,7 @@ import contextlib
 import json
 import math
 import os
+import random
 import shutil
 import signal
 import socket
@@ -39,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from jabuka.soak import probes
 from jabuka.soak import report as rep
 from jabuka.soak.faults import FAULTS
 from jabuka.soak.pack import build_pack, inside
@@ -47,6 +49,7 @@ from jabuka.soak.supervisor import UNITS, Supervisor, load_policy, repo_root
 from jabuka.soak.tablet import TabletClient
 
 REFUSED_OUT = Path("/var/lib/jabuka")
+SYNTH_KINDS = frozenset({"bus-silent", "garbage", "noise", "unplug", "gps-loss", "clock-jump"})
 LOCAL_TZ = "Europe/Zagreb"
 STARTUP_TIMEOUT_S = 60.0
 FIRST_ROUTE_TIMEOUT_S = 120.0
@@ -136,6 +139,11 @@ class Harness:
         self.policies: dict[str, Any] = {}
         self.setup_error: str | None = None
         self.logcheck_runs: list[dict[str, Any]] = []
+        self.persistence: list[dict[str, Any]] = []
+        self.preapplied: dict[str, float] = {}
+        self._course_check = 0.0
+        self.rng = random.Random(self.seed)
+        self.sampler: probes.Sampler | None = None
         self.started_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # -- timeline ----------------------------------------------------------------------------
@@ -388,6 +396,8 @@ class Harness:
 
     def wait_first(self) -> None:
         assert self.tablet is not None
+        if self.preapplied:  # the run starts inside a fault: its own checks cover the start
+            return
         t = self.tablet.wait_live(self.t0_wall, STARTUP_TIMEOUT_S)
         if t is None:
             raise SoakAbort("the tablet never saw live wind and position")
@@ -404,7 +414,62 @@ class Harness:
     def wait_sim(self, t_sim: float) -> None:
         while self.sim_now() < t_sim:
             self.poll_abort()
+            self.course_upkeep()
             time.sleep(0.05)
+
+    def course_upkeep(self) -> None:
+        """Course finished (the boat is back near Vodice): select the other template, so the
+        closed loop keeps sailing for any duration."""
+        if self.tablet is None:
+            return
+        now = time.time()
+        if now - self._course_check < 1.0:
+            return
+        self._course_check = now
+        with self.tablet.lock:
+            course = ((self.tablet.last_nav or {}).get("course")) or {}
+        if not course.get("finished"):
+            return
+        st, c = self.http("GET", "/api/course")
+        if st != 200:
+            return
+        other = "B" if c.get("template") == "A" else "A"
+        st, _ = self.http(
+            "POST", "/api/course/select", {"template": other, "base_version": c["version"]}
+        )
+        self.log("course_finished", template=c.get("template"), next=other, status=st)
+        self.findings.append(
+            f"course {c.get('template')} finished at sim {self.sim_now():.0f} s: {other} selected"
+        )
+
+    def wind_kw(self) -> dict[str, float]:
+        w, g = self.sc.wind, self.sc.grib
+        return {
+            "twd": float(w.get("twd", 161.0)),
+            "tws_kn": float(w.get("tws_kn", 12.0)),
+            "shift_deg_h": float(w.get("shift_deg_h", 0.0)),
+            "tws_factor": float(g.get("tws_factor", 1.0)),
+            "hours_before": float(g.get("hours_before", 2.0)),
+        }
+
+    def wind_end_utc(self) -> float:
+        return self.start_utc + self.duration + self.sc.grib["hours_after"] * 3600.0
+
+    def write_full_wind(self) -> None:
+        from jabuka.soak.pack import write_wind
+
+        write_wind(
+            self.pack_dir, self.run_dir, self.start_utc, self.wind_end_utc(), **self.wind_kw()
+        )
+
+    def preapply(self) -> None:
+        """Synth faults scheduled at t=0 are switched on before the boot (the gpsclock leg: GPS
+        time arriving late after boot)."""
+        for spec in self.timeline:
+            if spec.at <= 0 and spec.kind in SYNTH_KINDS:
+                self.control(spec.kind, True)
+                self.preapplied[spec.id] = time.time()
+                self.log("fault_preapplied", id=spec.id, kind=spec.kind)
 
     def run_faults(self) -> None:
         settle = self.sc.budget("settle_s")
@@ -429,6 +494,10 @@ class Harness:
                     "ok": False,
                     "notes": f"harness error: {exc!r}",
                 }
+            if "skip" in rec:
+                self.skipped.append({"kind": spec.kind, "id": spec.id, "reason": rec["skip"]})
+                self.log("fault_skipped", id=spec.id, kind=spec.kind, reason=rec["skip"])
+                continue
             self.faults.append(rec)
             self.log("fault_end", **{k: v for k, v in rec.items() if k not in ("t_wall",)})
             self.poll_abort()
@@ -444,16 +513,21 @@ class Harness:
                 self.run_dir,
                 self.fixtures,
                 self.start_utc,
-                self.start_utc + self.duration + self.sc.grib["hours_after"] * 3600.0,
+                self.wind_end_utc(),
                 self.sc.wind,
                 self.sc.grib,
             )
             self.start_synth()
+            self.preapply()
             self.start_services()
             self.tablet = TabletClient(
                 f"ws://127.0.0.1:{self.http_port}/ws", self.pack_dir / "landmask.npz"
             )
             self.tablet.start()
+            self.sampler = probes.Sampler(
+                self.run_dir / "samples.csv", self.probe_pids, self.sim_now
+            )
+            self.sampler.start()
             self.apply_settings()
             self.wait_first()
             self.run_faults()
@@ -464,7 +538,22 @@ class Harness:
             self.shutdown()
         return self.build_report()
 
+    def probe_pids(self) -> dict[str, int | None]:
+        core = self.sup.main_pid("core") if "core" in self.sup.services else None
+        out: dict[str, int | None] = {
+            "core": core,
+            "ingest": self.sup.main_pid("ingest") if "ingest" in self.sup.services else None,
+        }
+        if core is not None:
+            tree = probes.router_tree(core)
+            out["forkserver"] = tree["forkserver"]
+            out["worker"] = tree["workers"][0] if tree["workers"] else None
+        return out
+
     def shutdown(self) -> None:
+        if self.sampler is not None:
+            self.sampler.stop()
+            self.sampler.join(timeout=5)
         if self.tablet is not None:
             self.tablet.stop()
         self.sup.stop_all()
@@ -554,8 +643,19 @@ class Harness:
             c["land"] = rep.check(not bad, len(tb.routes), 0, detail)
         else:
             c["land"] = rep.insufficient("no route adopted")
-        if "persistence" not in c:
+        if self.persistence:
+            bad = [p for p in self.persistence if not p["ok"]]
+            c["persistence"] = rep.check(
+                not bad,
+                len(self.persistence),
+                None,
+                "; ".join(f"{p['id']} ({p['corrupt'] or 'clean'}): {p['checks']}" for p in bad)
+                or ", ".join(f"{p['id']} {p['corrupt'] or 'clean'}" for p in self.persistence),
+            )
+        else:
             c["persistence"] = rep.skipped("no power pull in this run")
+        self.probe_checks()
+        self.log_disk_check()
         final = self.run_logcheck("end")
         bad_runs = [r for r in self.logcheck_runs if r["ok"] is False]
         c["logcheck"] = rep.check(
@@ -612,6 +712,71 @@ class Harness:
                 else rep.insufficient("no diag pairs")
             )
 
+    def log_disk_check(self) -> None:
+        """Log disk usage follows the retention budget (the core's own Retention.status())."""
+        tb = self.tablet
+        with tb.lock if tb is not None else contextlib.nullcontext():
+            disk = (((tb.last_diag or {}).get("core") or {}).get("disk") or {}) if tb else {}
+        if not disk or disk.get("budget_bytes") is None:
+            self.checks["log_disk"] = rep.insufficient("no disk status in the last diag")
+            return
+        used = sum(int(v or 0) for v in (disk.get("used_bytes") or {}).values())
+        budget = int(disk["budget_bytes"])
+        state = disk.get("state")
+        ok = used <= budget and state != "error"
+        self.checks["log_disk"] = rep.check(
+            ok,
+            used,
+            budget,
+            f"state {state}, free {disk.get('free_bytes')} B, deleted {disk.get('deleted')},"
+            f" reserve deletions {disk.get('reserve_deletions')}, errors {disk.get('errors')}",
+        )
+
+    def probe_checks(self) -> None:
+        c = self.checks
+        samples = list(self.sampler.samples) if self.sampler is not None else []
+        if not samples:
+            for name in (
+                "rss_core",
+                "rss_worker",
+                "leak_slope",
+                "fd_growth",
+                "thread_growth",
+                "cpu_per_sim_s",
+            ):
+                c[name] = rep.insufficient("no /proc samples")
+            return
+        b = self.sc.budget
+        c["rss_core"] = probes.max_rss_check(samples, "core", b("rss_core_mb"))
+        c["rss_worker"] = probes.max_rss_check(samples, "worker", b("rss_worker_mb"))
+        leak = probes.leak_check(
+            samples,
+            "core",
+            budget_mb_36h=b("leak_mb_36h"),
+            min_segment_s=b("min_segment_s"),
+            warmup_s=b("warmup_s"),
+        )
+        worker = probes.leak_check(
+            samples,
+            "worker",
+            budget_mb_36h=b("leak_mb_36h"),
+            min_segment_s=b("min_segment_s"),
+            warmup_s=b("warmup_s"),
+        )
+        leak["worker"] = worker
+        if worker["ok"] is False:
+            leak["ok"] = False
+            leak["detail"] += f"; worker slope {worker['value']} MB/36 h"
+        c["leak_slope"] = leak
+        warm = b("warmup_s")
+        c["fd_growth"] = probes.growth_check(
+            samples, ("core", "ingest"), "fds", b("fd_growth"), warm
+        )
+        c["thread_growth"] = probes.growth_check(
+            samples, ("core", "ingest"), "threads", b("thread_growth"), warm
+        )
+        c["cpu_per_sim_s"] = probes.cpu_check(samples, "core", b("cpu_per_sim_s"))
+
     def build_report(self) -> dict[str, Any]:
         try:
             self.compute_checks()
@@ -660,6 +825,7 @@ class Harness:
             "process_events": self.sup.events,
             "routes": self.tablet.routes if self.tablet is not None else [],
             "alerts_seen": self.tablet.alerts_seen if self.tablet is not None else {},
+            "tablet": self.tablet.summary(self.t0_wall) if self.tablet is not None else None,
             "setup_error": self.setup_error,
         }
         rep.finalize(report)

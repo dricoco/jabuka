@@ -1,0 +1,31 @@
+{
+  "name": "ci",
+  "seed": 4,
+  "clock": "sim",
+  "speed": 60,
+  "duration_s": 5400,
+  "start": [43.708265, 15.800369],
+  "start_utc": "2026-11-13T19:00:00Z",
+  "wind": {"twd": 161, "tws_kn": 12, "shift_deg_h": 0, "gust_kn": 0},
+  "grib": {"tws_factor": 1.0, "hours_before": 2, "hours_after": 48},
+  "course": "A",
+  "settings": {},
+  "logs_fs": "auto",
+  "budgets": {},
+  "shim": {
+    "watchdog_sec": 5,
+    "why": "CI gate time budget (W1): the real WatchdogSec=30 makes the hang fault wait 30 s; the full race-36h scenario keeps the unit value"
+  },
+  "faults": [
+    {"kind": "kill-ingest", "at": 120},
+    {"kind": "kill-core", "at": 300},
+    {"kind": "kill-worker", "at": 600},
+    {"kind": "sigterm-storm", "at": 900, "n": 5},
+    {"kind": "power-pull", "at": 1200, "off_s": 120, "corrupt": "garbage"},
+    {"kind": "power-pull", "at": 1500, "off_s": 120},
+    {"kind": "watchdog-hang", "at": 1800}
+  ],
+  "random": null,
+  "quiet_tail_s": 0,
+  "expected_tracebacks": {}
+}

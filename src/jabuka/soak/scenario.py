@@ -331,9 +331,10 @@ def load_scenario(name_or_path: str | Path) -> Scenario:
 def compile_timeline(sc: Scenario, seed: int | None = None) -> list[FaultSpec]:
     """Fixed faults plus the seeded random draws, ordered by time. Deterministic for a seed.
 
-    Random faults are drawn in [0, until_s], at least min_gap_s (sim) from every other fault; a
-    draw that cannot be placed after 200 tries is dropped (the report lists the count). Kinds that
-    restart a process are never drawn inside the quiet tail."""
+    Random faults are drawn in [0, until_s], at least min_gap_s (sim) from every other random
+    fault and min(min_gap_s / 4, 300 s) from a fixed one; a draw that cannot be placed after 200
+    tries is dropped (the report's timeline shows what was placed). Kinds that restart a process
+    are never drawn inside the quiet tail."""
     rng = random.Random(sc.seed if seed is None else seed)
     items: list[tuple[float, int, dict[str, Any], bool]] = []
     for i, f in enumerate(sc.faults):
@@ -342,20 +343,24 @@ def compile_timeline(sc: Scenario, seed: int | None = None) -> list[FaultSpec]:
         r = sc.random
         kinds = list(r["kinds"])
         gap = float(r["min_gap_s"])
+        guard = min(gap / 4.0, 300.0)
         until = float(r["until_s"])
         tail0 = sc.duration_s - sc.quiet_tail_s if sc.quiet_tail_s > 0 else math.inf
-        taken = [float(f["at"]) for f in sc.faults]
+        fixed = [float(f["at"]) for f in sc.faults]
+        drawn: list[float] = []
         for j in range(int(r["count"])):
             kind = kinds[rng.randrange(len(kinds))]
             for _try in range(200):
                 at = round(rng.uniform(0.0, until), 1)
                 if kind in RESTARTING and at >= tail0:
                     continue
-                if all(abs(at - t) >= gap for t in taken):
+                if all(abs(at - t) >= gap for t in drawn) and all(
+                    abs(at - t) >= guard for t in fixed
+                ):
                     break
             else:
                 continue
-            taken.append(at)
+            drawn.append(at)
             doc: dict[str, Any] = {"kind": kind, "at": at}
             if kind in WINDOWED:
                 doc["dur"] = float(r.get("dur_s", {}).get(kind, 120.0))
