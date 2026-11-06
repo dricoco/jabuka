@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import json
 import math
 import os
@@ -241,7 +242,7 @@ class FollowHelm:
         try:
             with urllib.request.urlopen(self.url, timeout=1.0) as r:  # noqa: S310 (dev tool)
                 obj = json.loads(r.read().decode("utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):  # core killed mid-answer
             self.fetch_errors += 1
             return None
         return obj if isinstance(obj, dict) and obj.get("type") == "nav" else None
