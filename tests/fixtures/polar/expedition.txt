@@ -1,0 +1,5 @@
+! Expedition polar test fixture (two TWS lines from the interim X35 ORC polar)
+! TWS  TWA BSP  TWA BSP ...  (knots, degrees)
+8	40.8	5.90	52	6.59	90	6.95	120	6.90	148.3	5.59	150	5.50
+! comment between data lines
+12	37.7	6.50	52	7.19	90	7.69	120	7.93	150	7.14	158.9	6.77
