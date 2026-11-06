@@ -48,6 +48,6 @@ def load_json_with_bak(path: str | Path, default: Any) -> Any:
     for p in (path, path.with_name(path.name + ".bak")):
         try:
             return json.loads(p.read_bytes().decode("utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        except (OSError, ValueError):  # missing, EACCES/EIO, a directory, torn or bad JSON
             continue
     return default

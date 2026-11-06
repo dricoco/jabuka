@@ -60,3 +60,25 @@ def test_atomic_write_bytes_replaces(tmp_path: Path) -> None:
     assert (tmp_path / "blob.bin.bak").read_bytes() == b"one"
     assert not (tmp_path / ".blob.bin.tmp").exists()
     assert not (tmp_path / ".blob.bin.bak.tmp").exists()
+
+
+def test_load_json_with_bak_falls_back_on_os_errors(tmp_path: Path) -> None:
+    """IN-10: EACCES/EIO or a directory with the file's name used to raise instead of falling
+    back to .bak (and crashed jabuka-logcheck)."""
+    from jabuka.common.atomicio import load_json_with_bak
+
+    target = tmp_path / "state.json"
+    target.mkdir()  # IsADirectoryError on read
+    (tmp_path / "state.json.bak").write_text('{"ok": 1}')
+    assert load_json_with_bak(target, None) == {"ok": 1}
+    (tmp_path / "state.json.bak").unlink()
+    assert load_json_with_bak(target, "default") == "default"
+
+
+def test_logcheck_reports_instead_of_crashing_on_unreadable_json(tmp_path: Path) -> None:
+    from jabuka.tools.logcheck import check_json
+
+    target = tmp_path / "state.json"
+    target.mkdir()
+    rep = check_json(target, "state.json")
+    assert rep.errors
