@@ -205,23 +205,37 @@ export function ensureMap(container, opts = {}) {
     mapInstance = map;
     for (const [id, def] of overlays) addOverlay(map, id, def);
     globalThis.jabuka = Object.assign(globalThis.jabuka ?? {}, { map, racepack });
+    // a theme toggled while the map was loading (WR-04)
+    if (wantedTheme !== null && wantedTheme !== currentTheme) setTheme(wantedTheme).catch(() => {});
     return map;
   })();
   return mapPromise;
 }
 
-export async function setTheme(theme) {
+// Theme switches are serialized and only the latest request is applied (WR-04): a fast double
+// tap must never leave the day style under the night UI because the first style fetch finished
+// after the second tap had already returned.
+let wantedTheme = null;
+let themeChain = Promise.resolve();
+
+export function setTheme(theme) {
   const t = theme === "night" ? "night" : "day";
   try {
     globalThis.localStorage?.setItem(THEME_KEY, t);
   } catch {
     /* private mode: per-session only */
   }
-  if (!mapInstance || t === currentTheme) {
-    currentTheme = mapInstance ? currentTheme : t;
-    return;
-  }
+  wantedTheme = t;
+  themeChain = themeChain.catch(() => {}).then(applyWantedTheme);
+  return themeChain;
+}
+
+async function applyWantedTheme() {
+  const t = wantedTheme;
+  // no map yet: ensureMap applies wantedTheme once loaded (currentTheme tracks the real style)
+  if (!mapInstance || t === null || t === currentTheme) return;
   const style = await loadStyle(t);
+  if (t !== wantedTheme) return; // superseded while loading: the queued request applies
   currentTheme = t;
   // transformStyle is a setStyle option (a constructor option would be ignored, Pattern 13)
   mapInstance.setStyle(style, {
