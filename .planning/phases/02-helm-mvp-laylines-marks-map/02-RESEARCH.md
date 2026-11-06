@@ -587,7 +587,9 @@ for o in fp:
 | A9 | Heading with unknown ref (`"?"`) should default to magnetic | Pattern 2 | 4.7° rotation of TWD and laylines; visible on Diag, a setting |
 | A10 | Arrival zone = radius + 0.25 nm, 2 nm gate, 10 s debounce suit offshore marks | Pattern 6 | Early or late advance; undo exists |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Resolution (2026-11-07): Q1 rounding sides → defaults + "Côtés à confirmer (IC)" flag in 02-01, confirm at briefing (human item); Q2 → settings heading_display="M"; Q3 → settings true_wind_source="computed"; Q4 tablet WebGL and Q5 real X35 polar → end-of-phase human items.
 
 1. **Rounding sides and start/finish line (SIs not published / 403).**
    - Known: course order and "check point can be an auxiliary finish".
