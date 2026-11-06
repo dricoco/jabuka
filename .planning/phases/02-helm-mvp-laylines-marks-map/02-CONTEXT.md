@@ -98,3 +98,12 @@ Not in this phase: GRIB, routing, route-based tack countdown, GRIB bias, waves/c
 - Upwash/heel-based TWA correction.
 
 </deferred>
+
+## Addendum — decisions on research open questions (2026-11-07, auto-accepted, user AFK)
+
+- **Port:** the Pi serves on port 80 → Chrome flag value is `http://10.42.0.1` (correction to the decisions above).
+- **Headings on the helm:** setting `heading_display` default **magnetic** (matches the boat compass/B&G displays), always shown with a °M/°T suffix; internal math stays TRUE.
+- **True wind source:** setting `true_wind_source` default **computed** (own AWA/AWS/BSP/HDG computation) when its inputs are fresh, else Hercules TWD/TWS, else MANUAL; cross-check delta shown on Diag. Decide final default on 12 Nov from the capture.
+- **Rounding sides / start-finish:** defaults Course A starboard, Course B port (loop direction), Vodice start/finish placeholder 43.7500N 15.7800E — all editable; confirming against the SIs at the 13 Nov briefing is a human item.
+- **Polar:** ship the ORC X-35 OD 2019-derived Expedition-format polar from 02-RESEARCH.md as the placeholder, with attribution; user's own X35 polar replaces it when provided (human item).
+- **Package legitimacy:** same policy as Phase 1 — no blocking per-install checkpoint (unattended run); pins + hashes in the lock, one end-of-phase human lock review item.
