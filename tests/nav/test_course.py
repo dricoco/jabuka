@@ -179,6 +179,32 @@ def test_select_after_edits_restores_the_template(tmp_path: Path) -> None:
     assert "m2" in cs.marks  # ids are never reused
 
 
+def test_reselecting_the_template_in_use_is_a_no_op(tmp_path: Path) -> None:
+    """WR-05: tapping the highlighted "Parcours A" mid-race keeps the race progress and the
+    briefing's leg edits."""
+    cs = CourseStore(tmp_path)
+    cs.set_leg(2, side="port", radius_nm=1.0)
+    cs.activate(3)  # past Jabuka
+    v = cs.version
+    api = cs.select("A", base_version=v)
+    assert api["version"] == v and api["active_idx"] == 3
+    assert cs.course.seq[2].side == "port" and cs.course.seq[2].radius_nm == 1.0
+    with pytest.raises(VersionConflict):
+        cs.select("A", base_version=v - 1)
+
+
+def test_template_switch_keeps_the_active_mark_when_shared(tmp_path: Path) -> None:
+    """A <-> B share Vodice, Plić Sestre and Jabuka: a template correction on the way to Jabuka
+    keeps Jabuka active; past it (Blitvenica vs Mulo) the new course starts at its first mark."""
+    cs = CourseStore(tmp_path)
+    cs.activate(2)  # Jabuka
+    cs.select("B")
+    assert cs.course.active_idx == 2 and active_id(cs) == "jabuka"
+    cs.activate(3)  # Mulo
+    cs.select("A")
+    assert cs.course.active_idx == 1 and active_id(cs) == "plic-sestre"
+
+
 # -- rounding state machine -----------------------------------------------------------------------
 # Course A, Plić Sestre active (radius 0.3 -> zone 0.55 nm), incoming leg Vodice -> Plić ~161 deg.
 # From the mark: bearing 61 deg is in front of the abeam line, 81 deg is past it.

@@ -330,8 +330,17 @@ class CourseStore:
     def select(self, template: str, base_version: int | None = None) -> dict:
         if template not in self.library.get("templates", {}):
             raise ValueError(f"unknown course template {template!r}")
-        new = course_from_template(self.library, template, self.course.overrides)
-        new.next_mark_n = self.course.next_mark_n
+        old = self.course
+        if template == old.template:  # WR-05: re-selecting the template in use changes nothing
+            self._check_version(base_version)
+            return self.to_api()
+        new = course_from_template(self.library, template, old.overrides)
+        new.next_mark_n = old.next_mark_n
+        # the same mark at the same place in the new sequence stays active (A <-> B share
+        # Vodice, Plić Sestre and Jabuka): race progress survives a template correction
+        i = old.active_idx
+        if 1 <= i < len(new.seq) and new.seq[i].mark_id == old.seq[i].mark_id and not old.finished:
+            new.active_idx = i
         self._commit(
             new, base_version, {"type": "course_edit", "action": "select", "template": template}
         )

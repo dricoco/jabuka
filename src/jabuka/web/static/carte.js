@@ -308,10 +308,36 @@ export function mount(ctx) {
 
   const version = () => (course ? course.version : null);
 
+  // WR-05: a template change rebuilds the course (custom marks and leg edits dropped), so it
+  // takes two taps like "Supprimer"; the template already in use is a no-op.
+  const tplLabel = (b) => `Parcours ${b.dataset.template}`;
+  let tplTimer = null;
+  const tplReset = () => {
+    clearTimeout(tplTimer);
+    for (const b of [btnA, btnB]) {
+      delete b.dataset.confirm;
+      b.textContent = tplLabel(b);
+    }
+  };
   for (const b of [btnA, btnB]) {
-    b.addEventListener("click", () =>
-      act(() => ctx.api.post("/api/course/select", { template: b.dataset.template, base_version: version() })),
-    );
+    b.addEventListener("click", () => {
+      if (!course) return;
+      if (course.template === b.dataset.template) {
+        tplReset();
+        status.textContent = `${tplLabel(b)} déjà actif`;
+        return;
+      }
+      if (b.dataset.confirm !== "1") {
+        tplReset();
+        b.dataset.confirm = "1";
+        b.textContent = `Confirmer ${tplLabel(b)}`;
+        status.textContent = "Le parcours sera réinitialisé";
+        tplTimer = setTimeout(tplReset, 5000);
+        return;
+      }
+      tplReset();
+      act(() => ctx.api.post("/api/course/select", { template: b.dataset.template, base_version: version() }));
+    });
   }
   btnPrev.addEventListener("click", () => act(() => ctx.api.post("/api/course/prev")));
   btnNext.addEventListener("click", () => act(() => ctx.api.post("/api/course/next")));

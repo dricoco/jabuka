@@ -175,6 +175,7 @@ def test_tabs_course_and_settings(page, feeder) -> None:
     assert pg.locator("#sides-warning").is_visible()
     # wait for each POST's own response: the list may already show the change through the
     # WebSocket refetch while the button's request is still in flight
+    pg.click("button[data-template=B]")  # WR-05: first tap asks for confirmation
     with pg.expect_response(lambda r: r.url.endswith("/api/course/select")) as sel:
         pg.click("button[data-template=B]")
     assert sel.value.status == 200, sel.value.status
