@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from jabuka.sim.msg_replay import replay_messages
 
 from jabuka.common import messages
 from jabuka.common.clock import SimClock, SystemClock
@@ -19,6 +18,7 @@ from jabuka.core.web import create_app
 from jabuka.ingest.fastnet_decode import decode_to_values
 from jabuka.ingest.fastnet_framing import CountingFramer, chunks_from_capture
 from jabuka.ingest.rawlog import iter_log_lines
+from jabuka.sim.msg_replay import replay_messages
 
 FIX = Path(__file__).resolve().parent.parent / "fixtures" / "fastnet"
 EXAMPLE2 = FIX / "example2_fastnet_data.txt"
