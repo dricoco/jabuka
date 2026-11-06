@@ -12,9 +12,8 @@ if os.environ.get("JABUKA_REQUIRE_ROUTE") == "1":
 else:  # Phase 2 worktrees without numpy skip instead of failing
     np = pytest.importorskip("numpy")
 
-from jabuka.route.rounding import expand  # noqa: E402
-
 from jabuka.route.frame import DEFAULT_FRAME  # noqa: E402
+from jabuka.route.rounding import expand  # noqa: E402
 from jabuka.route.types import CourseMark  # noqa: E402
 
 
@@ -72,12 +71,14 @@ def test_port_rounding_sweeps_counter_clockwise(course) -> None:
 
 def test_pass_by_turning_away_from_the_mark_needs_no_loop(course) -> None:
     """Course B passes Plić Sestre to port while the course bends 42 deg to starboard: the
-    string rule only requires passing on the right side (one abeam waypoint, no 318 deg loop)."""
+    string rule only requires passing on the right side (abeam waypoint, no 318 deg loop),
+    entered from the right side (entry waypoint 45 deg before it, counter-clockwise)."""
     start, marks = course("B")
     plic = marks[0]
     wps = [w for w in expand(start, marks, start.lat, start.lon) if w.mark_index == 0]
-    assert len(wps) == 1
-    assert _brg(plic, wps[0]) == pytest.approx(161.0 + 90.0, abs=1.5)  # west of the beacon
+    assert len(wps) == 2
+    assert _brg(plic, wps[0]) == pytest.approx(161.0 + 90.0 + 45.0, abs=1.5)  # north-west
+    assert _brg(plic, wps[1]) == pytest.approx(161.0 + 90.0, abs=1.5)  # west of the beacon
 
 
 def test_previous_mark_not_the_boat_fixes_the_geometry(course) -> None:

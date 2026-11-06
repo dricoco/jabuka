@@ -61,10 +61,14 @@ def test_course_scenario(run, key, wind, mask, path_tools, plic_beacon) -> None:
     # never within 200 m of the Plić Sestre beacon
     assert path_tools["min_dist_m"](r.path, mask, *plic_beacon) >= 200.0
     # every mark on its side: signed winding (counter-clockwise +) around each rounding mark
-    for m in req.marks:
+    etas = [req.t0, *(leg.eta for leg in r.legs)]
+    for i, m in enumerate(req.marks):
         if m.side == "none":
             continue
-        w = path_tools["winding"](r.path, mask, m.lat, m.lon, max(3.0 * m.radius_nm, 2.0))
+        t_to = etas[i + 2] if i + 2 < len(etas) else None
+        w = path_tools["winding"](
+            r.path, mask, m.lat, m.lon, max(3.0 * m.radius_nm, 2.0), etas[i], t_to
+        )
         if m.side == "stbd":
             assert w < -30.0, f"{m.name}: winding {w:.0f} deg, starboard needs clockwise"
         else:

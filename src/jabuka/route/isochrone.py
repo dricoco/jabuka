@@ -29,16 +29,18 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from jabuka.route.fields import Fields
+from jabuka.route.fields import Fields, hs_from_tws, uv_to_dir_speed
 from jabuka.route.frame import NM_M
 from jabuka.route.landmask import GeoField, LandMask, compute_geofield
 from jabuka.route.polar_grid import PolarGrid, normalize_curves
+from jabuka.route.rounding import expand
 from jabuka.route.types import (
     CourseMark,
     LegResult,
     PathPoint,
     RouteRequest,
     RouteResult,
+    RouterSettings,
     TackPoint,
     Waypoint,
 )
@@ -151,13 +153,57 @@ class _Ctx:
 
 
 # ---------------------------------------------------------------------------- sampling
+class _Wx(NamedTuple):
+    """Weather per point: water-referenced TWD (rad) / TWS (kn), current (kn, towards) or None,
+    Hs (m) or None when waves are off."""
+
+    twd: np.ndarray
+    tws: np.ndarray
+    cu: np.ndarray | None
+    cv: np.ndarray | None
+    hs: np.ndarray | None
+
+
+def wave_factor(hs, twa_abs, settings: RouterSettings) -> np.ndarray:
+    """Speed multiplier max(floor, 1 - k Hs), k by |TWA| sector (< 60, 60-120, > 120 deg)."""
+    a = np.abs(np.asarray(twa_abs, dtype=np.float64))
+    k0, k1, k2 = settings.wave_k
+    k = np.where(a < 60.0, k0, np.where(a <= 120.0, k1, k2))
+    return np.maximum(settings.wave_floor, 1.0 - k * np.asarray(hs, dtype=np.float64))
+
+
+def _sample(ctx: _Ctx, t: float, x, y) -> _Wx:
+    """Wind (bias applied) minus current = the wind over the water fed to the polar; the
+    current itself (added to the displacement); Hs from the wave file, else from TWS."""
+    s = ctx.req.settings
+    f = ctx.env.fields
+    u, v = f.wind.uv_kn(t, x, y, ctx.req.bias)
+    cu = cv = None
+    if f.current is not None and s.use_current:
+        cu, cv = f.current.uv_kn(t, x, y)
+        u, v = u - cu, v - cv
+    twd, tws = uv_to_dir_speed(u, v)
+    hs = None
+    if s.use_waves:
+        hs = hs_from_tws(tws)
+        if f.waves is not None:
+            w = f.waves.hs(t, x, y)
+            hs = np.where(np.isfinite(w), w, hs)
+    return _Wx(twd, tws, cu, cv, hs)
+
+
 def _wind(ctx: _Ctx, t: float, x, y):
-    """(TWD rad, TWS kn) per point."""
-    return ctx.env.fields.wind.sample(t, x, y, ctx.req.bias)
+    """(TWD rad, TWS kn) over the water per point."""
+    wx = _sample(ctx, t, x, y)
+    return wx.twd, wx.tws
 
 
-def _speed(ctx: _Ctx, tws, twa_abs):
-    return ctx.polar.speed(tws, twa_abs)
+def _speed(ctx: _Ctx, tws, twa_abs, hs=None):
+    """Polar x efficiency x wave factor (kn)."""
+    b = ctx.polar.speed(tws, twa_abs)
+    if hs is not None:
+        b = b * wave_factor(hs, twa_abs, ctx.req.settings)
+    return b
 
 
 # ---------------------------------------------------------------------------- one leg
@@ -178,7 +224,7 @@ class _Shots(NamedTuple):
     bsp2: np.ndarray
 
 
-def _shots(ctx: _Ctx, t, dt, px, py, ptack, target, twd, tws, force_tack: int) -> _Shots:
+def _shots(ctx: _Ctx, t, dt, px, py, ptack, target, wx: _Wx, force_tack: int) -> _Shots:
     """Exact arrivals by direct shot (one board) and by two boards on the VMG targets when the
     target lies inside the upwind or downwind cone (the layline tack is not quantised to the
     step). The wind is sampled at the parent, so a shot may last at most max(2 dt, 1 h)."""
@@ -186,15 +232,26 @@ def _shots(ctx: _Ctx, t, dt, px, py, ptack, target, twd, tws, force_tack: int) -
     pen = s.tack_penalty_s
     horizon = max(2.0 * dt, SHOT_HORIZON_S)
     tx, ty = target
+    twd, tws, cu, cv, hs = wx
     n = px.size
     dx, dy = tx - px, ty - py
     dist = np.hypot(dx, dy)
-    hdg = np.mod(np.arctan2(dx, dy), 2.0 * math.pi)
-    twa_b = np.degrees(_wrap_pi(twd - hdg))
-    bsp_b = _speed(ctx, tws, np.abs(twa_b))
+    brg = np.mod(np.arctan2(dx, dy), 2.0 * math.pi)
+    twa_b = np.degrees(_wrap_pi(twd - brg))
+    bsp_b = _speed(ctx, tws, np.abs(twa_b), hs)
+    along = bsp_b
+    if cu is not None:  # course to steer: cancel the cross-track current (iterated with BSP)
+        c_along = cu * np.sin(brg) + cv * np.cos(brg)
+        c_cross = cu * np.cos(brg) - cv * np.sin(brg)
+        h = brg
+        for _ in range(3):
+            h = brg + np.arcsin(np.clip(-c_cross / np.maximum(bsp_b, 1e-6), -1.0, 1.0))
+            twa_b = np.degrees(_wrap_pi(twd - h))
+            bsp_b = _speed(ctx, tws, np.abs(twa_b), hs)
+        along = np.where(np.abs(c_cross) < bsp_b, bsp_b * np.cos(h - brg) + c_along, 0.0)
     tack_b = tack_of(twa_b)
     with np.errstate(divide="ignore", invalid="ignore"):
-        need = np.where(bsp_b > 1e-6, dist / np.maximum(bsp_b, 1e-6) * 3600.0, np.inf)
+        need = np.where(along > 1e-6, dist / np.maximum(along, 1e-6) * 3600.0, np.inf)
     need = need + np.where((tack_b != ptack) & (ptack != 0), pen, 0.0)
     ok1 = (np.abs(twa_b) >= MIN_TWA_DEG - 1e-9) & (need <= horizon)
     if force_tack:
@@ -224,11 +281,14 @@ def _shots(ctx: _Ctx, t, dt, px, py, ptack, target, twd, tws, force_tack: int) -
     if two.any():
         i2 = idx[two]
         th = theta[two]
-        v = _speed(ctx, tws[two], th)
+        v = _speed(ctx, tws[two], th, hs[two] if hs is not None else None)
         hp = twd[two] - np.radians(th)  # starboard board (TWA +theta)
         hm = twd[two] + np.radians(th)  # port board
         gpx, gpy = v * np.sin(hp), v * np.cos(hp)
         gmx, gmy = v * np.sin(hm), v * np.cos(hm)
+        if cu is not None:  # ground velocities: the current is added to both boards
+            gpx, gpy = gpx + cu[two], gpy + cv[two]
+            gmx, gmy = gmx + cu[two], gmy + cv[two]
         det = gpx * gmy - gpy * gmx
         with np.errstate(divide="ignore", invalid="ignore"):
             tp = (dx[two] * gmy - dy[two] * gmx) / det * 3600.0
@@ -308,7 +368,8 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
     for _step in range(s.max_steps):
         ctx.steps += 1
         n = fx.size
-        twd, tws = _wind(ctx, t, fx, fy)
+        wx = _sample(ctx, t, fx, fy)
+        twd, tws = wx.twd, wx.tws
         dtt = np.hypot(tx - fx, ty - fy)
         dt = s.dt_for(t - req.t0)
         lead = np.argsort(dtt)[: max(1, int(math.ceil(0.2 * n)))]
@@ -320,7 +381,7 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         if fine:
             dt = min(dt, s.fine_dt_s)
         # ---- exact arrival: keep the best shot until the front time passes it
-        sh = _shots(ctx, t, dt, fx, fy, ftack, (tx, ty), twd, tws, 0)
+        sh = _shots(ctx, t, dt, fx, fy, ftack, (tx, ty), wx, 0)
         best_t = best[0] if best is not None else math.inf
         row = _best_shot(ctx, sh, fx, fy, (tx, ty), best_t)
         if row is not None:
@@ -334,12 +395,15 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         )
         twa = np.concatenate([twa_abs, -twa_abs], axis=1)
         tack = np.where(twa > 0, 1, -1).astype(np.int8)
-        bsp = _speed(ctx, tws[:, None], np.abs(twa))
+        bsp = _speed(ctx, tws[:, None], np.abs(twa), wx.hs[:, None] if wx.hs is not None else None)
         hdg = twd[:, None] - np.radians(twa)
         flip = (tack != ftack[:, None]) & (ftack[:, None] != 0)
         d = bsp * np.maximum(dt - np.where(flip, s.tack_penalty_s, 0.0), 0.0) / 3600.0
         cx = fx[:, None] + d * np.sin(hdg)
         cy = fy[:, None] + d * np.cos(hdg)
+        if wx.cu is not None:  # the current carries the boat for the whole step
+            cx = cx + wx.cu[:, None] * dt / 3600.0
+            cy = cy + wx.cv[:, None] * dt / 3600.0
         par = np.broadcast_to(np.arange(n)[:, None], cx.shape)
         cx, cy, par = cx.ravel(), cy.ravel(), par.ravel()
         twa_f, tack_f, bsp_f = twa.ravel(), tack.ravel(), bsp.ravel()
@@ -443,13 +507,26 @@ def _backtrack(start: _Pt, hist: list[tuple], idx: int, last_seg: _Seg) -> list[
 
 
 # ---------------------------------------------------------------------------- whole route
-def _waypoints(req: RouteRequest) -> list[Waypoint]:
-    """Task 1: every mark is a point to reach (rounding comes with rounding.expand)."""
-    out = []
-    for i, m in enumerate(req.marks):
-        kind = "finish" if i == len(req.marks) - 1 else "mark"
-        out.append(Waypoint(m.lat, m.lon, m.mark_id, kind, i))
-    return out
+def _waypoints(ctx: _Ctx) -> list[Waypoint]:
+    """Rounding waypoints of the remaining marks, truncated for leg_only / max_marks_ahead."""
+    req = ctx.req
+    try:
+        wps = expand(req.prev_mark, req.marks, req.lat, req.lon, ctx.env.mask, ctx.notes)
+    except ValueError as exc:
+        raise RouteFailure(str(exc)) from None
+    if not wps:
+        raise RouteFailure("aucune marque à rallier")
+    first = wps[0].mark_index
+    limit = None
+    if req.leg_only:
+        limit = 1
+    elif req.settings.max_marks_ahead is not None:
+        limit = int(req.settings.max_marks_ahead)
+        if len({w.mark_index for w in wps}) > limit:
+            ctx.notes.append(f"routage limité aux {limit} prochaines marques")
+    if limit is not None:
+        wps = [w for w in wps if w.mark_index < first + limit]
+    return wps
 
 
 def _validate_request(req: RouteRequest) -> None:
@@ -509,7 +586,7 @@ def _start(ctx: _Ctx) -> tuple[list[_Pt], _Pt, bool]:
     twa = float(np.degrees(_wrap_pi(twd[0] - hdg)))
     tack = int(req.tack0) if req.tack0 else (1 if twa >= 0 else -1)
     up, _down = ctx.polar.targets(tws)
-    bsp = float(_speed(ctx, tws, max(abs(twa), float(up[0])))[0])
+    bsp = float(ctx.polar.speed(tws, max(abs(twa), float(up[0])))[0])
     dist = math.hypot(sx - x, sy - y)
     t1 = req.t0 + dist / max(bsp, EXIT_MIN_KN) * 3600.0
     seg = _Seg(math.copysign(abs(twa), tack), tack, bsp, float(np.degrees(twd[0])), float(tws[0]))
@@ -614,7 +691,7 @@ def _route(ctx: _Ctx, t_start: float) -> RouteResult:
     req, env = ctx.req, ctx.env
     frame = env.frame
     prefix, cur, start_in_margin = _start(ctx)
-    wps = _waypoints(req)
+    wps = _waypoints(ctx)
     pts: list[_Pt] = list(prefix)
     legs: list[LegResult] = []
     tack = int(req.tack0) if not start_in_margin else cur.seg.tack

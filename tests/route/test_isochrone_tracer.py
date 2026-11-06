@@ -82,8 +82,11 @@ def test_golden_sign_heading_is_twd_minus_twa(twa_deg: float) -> None:
 
 # --------------------------------------------------------------------------- open water
 def _open_case(env_factory, uniform_wind, make_request, mark_point, bearing, twd, tws, **kw):
+    from jabuka.route.types import RouterSettings
+
     env = env_factory(uniform_wind(twd, tws))
     tgt = _offset(OPEN, bearing, 8.0)
+    kw.setdefault("settings", RouterSettings(use_waves=False))  # pure polar (waves: Task 2)
     req = make_request(*OPEN, [mark_point(*tgt)], **kw)
     r = route_ok(req, env)
     return r, (r.eta - T0) / 3600.0
@@ -145,7 +148,7 @@ def test_tack_penalty_charged(env_factory, uniform_wind, make_request, mark_poin
         0.0,
         0.0,
         12.0,
-        settings=RouterSettings(tack_penalty_s=0.0),
+        settings=RouterSettings(tack_penalty_s=0.0, use_waves=False),
     )
     _b, h1 = _open_case(
         env_factory,
@@ -155,7 +158,7 @@ def test_tack_penalty_charged(env_factory, uniform_wind, make_request, mark_poin
         0.0,
         0.0,
         12.0,
-        settings=RouterSettings(tack_penalty_s=300.0),
+        settings=RouterSettings(tack_penalty_s=300.0, use_waves=False),
     )
     assert (h1 - h0) * 3600.0 >= 250.0  # at least one tack, about 300 s more
 

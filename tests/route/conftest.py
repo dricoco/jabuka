@@ -223,11 +223,19 @@ def densify(path, mask, step_nm: float = 0.05):
     return np.array(out_x), np.array(out_y)
 
 
-def winding_deg(path, mask, lat: float, lon: float, within_nm: float) -> float:
+def winding_deg(
+    path, mask, lat: float, lon: float, within_nm: float, t_from=None, t_to=None
+) -> float:
     """Signed winding (deg) of the path around (lat, lon), x east / y north, counter-clockwise
-    positive, over the contiguous stretch within ``within_nm`` around the closest approach."""
+    positive, over the contiguous stretch within ``within_nm`` around the closest approach
+    (only the path points with t_from <= t <= t_to when given: one rounding, not a later leg
+    passing the same mark)."""
     import numpy as np
 
+    if t_from is not None or t_to is not None:
+        lo_t = -math.inf if t_from is None else t_from
+        hi_t = math.inf if t_to is None else t_to
+        path = [p for p in path if lo_t <= p.t <= hi_t]
     x, y = densify(path, mask)
     mx, my = mask.frame.to_xy(lat, lon)
     d = np.hypot(x - mx, y - my)
