@@ -13,7 +13,16 @@ Outputs:
 - GPS (both modes): an embedded FakeGpsd on --gpsd-port (default 2948, never the real 2947).
 
 Faults ``KIND@START+DUR`` (sim seconds, active while START <= t < START+DUR): bus-silent,
-gps-loss, garbage, clock-jump.
+gps-loss, garbage, clock-jump, noise (pty: seeded bit flips in emitted frames, the parity-error
+proxy since a pty drops PARENB), unplug (pty: close the pty, then a fresh pty and --link re-pointed
+when the window ends).
+
+Soak hooks (plan 04-01, all optional): ``--control HOST:PORT`` takes UDP JSON
+``{"fault": KIND, "on": bool}`` to switch a fault on/off at run time (OR-ed with the static
+windows; malformed datagrams are counted, never raised); ``--clock-udp HOST:PORT`` sends a 1 Hz-sim
+health message (src "simclock") carrying t_sim, the same UTC as the TPVs (clock jumps included), so
+a core on --clock sim keeps its time while the bus or the GPS is silent; ``--progress`` prints JSON
+progress lines; ``--follow-nowait`` never lets a slow or stopped core stall the simulated time.
 
 Closed loop (``--follow URL``, plan 02-04): each simulated second the boat reads the core's own
 GET URL/api/nav and steers to it like a helmsman: on twa_up/twa_down it holds the target TWA on
@@ -56,8 +65,11 @@ from jabuka.nav.polar import Polar, default_polar
 from jabuka.sim.fake_gpsd import DEVICE_PATH, FakeGpsd, utc_iso
 from jabuka.sim.pty_replay import PtyFeeder
 
-FAULT_KINDS = ("bus-silent", "gps-loss", "garbage", "clock-jump")
+FAULT_KINDS = ("bus-silent", "gps-loss", "garbage", "clock-jump", "noise", "unplug")
 EARTH_R = 6371000.0
+PROGRESS_EVERY_S = 60  # --progress: one line per this many simulated seconds
+NOISE_P = 0.5  # noise fault: probability that an emitted frame gets one flipped bit
+PTY_FULL_WAIT_S = 0.05  # a frame the pty cannot take within this (no reader) is dropped
 BSP_MAX_KN = 8.5
 
 
@@ -112,6 +124,10 @@ class SynthConfig:
     wait_reader_s: float = 0.0  # pty mode: wait for a reader to open the pty before starting
     follow: str | None = None  # core base URL: closed-loop steering from its /api/nav
     follow_route: bool = False  # --follow sails the core's route when it has a valid one
+    follow_nowait: bool = False  # fetch /api/nav in the background, never stall sim time on it
+    clock_udp: tuple[str, int] | None = None  # 1 Hz-sim "simclock" health message (t_sim)
+    control: tuple[str, int] | None = None  # UDP JSON fault on/off at run time (port 0: any)
+    progress: bool = False  # JSON progress lines on stdout every PROGRESS_EVERY_S sim seconds
 
 
 # -- boat model --------------------------------------------------------------------------------
@@ -400,12 +416,71 @@ async def _wait_reader(slave_path: str, timeout: float) -> bool:
     return False
 
 
+# -- run-time fault control (--control) --------------------------------------------------------
+class FaultControl(asyncio.DatagramProtocol):
+    """UDP JSON ``{"fault": KIND, "on": bool}`` -> the run-time active set. Anything else is
+    counted in ``bad`` and ignored (never raised into the loop)."""
+
+    def __init__(self) -> None:
+        self.active: set[str] = set()
+        self.good = 0
+        self.bad = 0
+
+    def datagram_received(self, data: bytes, addr: Any) -> None:
+        try:
+            obj = json.loads(data.decode("utf-8"))
+            kind, on = obj["fault"], obj["on"]
+            if kind not in FAULT_KINDS or not isinstance(on, bool):
+                raise ValueError(f"bad control {obj!r}")
+        except Exception:  # noqa: BLE001 - hostile/malformed datagram: count and ignore
+            self.bad += 1
+            return
+        self.good += 1
+        if on:
+            self.active.add(kind)
+        else:
+            self.active.discard(kind)
+
+    def error_received(self, exc: Exception) -> None:  # pragma: no cover - ICMP noise
+        pass
+
+
+def noisy(data: bytes, rng: random.Random) -> bytes:
+    """One random bit flipped with probability NOISE_P (what a parity error leaves behind)."""
+    if not data or rng.random() >= NOISE_P:
+        return data
+    b = bytearray(data)
+    i = rng.randrange(len(b))
+    b[i] ^= 1 << rng.randrange(8)
+    return bytes(b)
+
+
+async def _write_or_drop(feeder: PtyFeeder, data: bytes) -> int:
+    """Write into the pty; whatever it cannot take within PTY_FULL_WAIT_S (no reader, e.g. the
+    ingest is being restarted) is dropped, as on a real bus. Returns the bytes dropped."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PTY_FULL_WAIT_S
+    view = bytes(data)
+    while view:
+        try:
+            n = feeder.offer(view)
+        except OSError:  # the pty was closed under us (unplug)
+            return len(view)
+        view = view[n:]
+        if view:
+            if loop.time() >= deadline:
+                return len(view)
+            await asyncio.sleep(0.002)
+    return 0
+
+
 # -- runner ------------------------------------------------------------------------------------
 async def run_synth(
     cfg: SynthConfig,
     *,
     on_ready: Callable[[dict], None] | None = None,
     stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
     """Run the synthetic boat for cfg.duration sim seconds (or until stop() is true). Returns a
     summary with the last emitted Fastnet state, per-fault active seconds, the tacks made in
@@ -414,6 +489,7 @@ async def run_synth(
         raise ValueError(f"mode must be udp or pty, got {cfg.mode!r}")
     speed = cfg.speed if cfg.speed > 0 else 1.0
     rng = random.Random(cfg.seed)
+    noise_rng = random.Random(cfg.seed + 1)
     start_utc = float(cfg.start_utc) if cfg.start_utc is not None else float(int(time.time()))
     helm = FollowHelm(cfg.follow, cfg.twa, cfg.follow_route) if cfg.follow else None
     boat = SynthBoat(cfg)
@@ -425,16 +501,44 @@ async def run_synth(
     fake = FakeGpsd(cfg.gpsd_host, cfg.gpsd_port)
     gpsd_port = await fake.start()
     sock: socket.socket | None = None
+    clock_sock: socket.socket | None = None
     feeder: PtyFeeder | None = None
-    counts = {"deltas": 0, "frames": 0, "heartbeats": 0, "tpv": 0, "garbage": 0, "dropped": 0}
+    control: FaultControl | None = None
+    control_tr: asyncio.BaseTransport | None = None
+    fetch_task: asyncio.Future | None = None
+    # soak mode (a control channel or a sim clock): a pty nobody reads drops frames, as a bus would
+    soak = cfg.control is not None or cfg.clock_udp is not None
+    counts = {
+        "deltas": 0,
+        "frames": 0,
+        "heartbeats": 0,
+        "tpv": 0,
+        "garbage": 0,
+        "dropped": 0,
+        "noisy": 0,
+        "unplugs": 0,
+        "clock": 0,
+        "control": 0,
+        "control_bad": 0,
+    }
     fault_secs = {str(f): 0 for f in cfg.faults}
     last: SynthState | None = None
+    loop = asyncio.get_running_loop()
     try:
         if cfg.mode == "udp":
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setblocking(False)
         else:
             feeder = PtyFeeder(cfg.link)
+        if cfg.clock_udp is not None:
+            clock_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            clock_sock.setblocking(False)
+        control_port = None
+        if cfg.control is not None:
+            control_tr, control = await loop.create_datagram_endpoint(
+                FaultControl, local_addr=cfg.control
+            )
+            control_port = control_tr.get_extra_info("sockname")[1]
         ready = {
             "gpsd_port": gpsd_port,
             "mode": cfg.mode,
@@ -442,6 +546,7 @@ async def run_synth(
             "pty": feeder.slave_path if feeder is not None else None,
             "link": str(feeder.link_path) if feeder and feeder.link_path else None,
             "start_utc": utc_iso(start_utc),
+            "control_port": control_port,
         }
         if on_ready is not None:
             on_ready(ready)
@@ -457,7 +562,14 @@ async def run_synth(
             except (BlockingIOError, ConnectionRefusedError, OSError):
                 counts["dropped"] += 1
 
-        loop = asyncio.get_running_loop()
+        async def pty_write(data: bytes) -> None:
+            assert feeder is not None
+            if soak:
+                counts["dropped"] += bool(await _write_or_drop(feeder, data))
+            else:
+                await feeder.awrite(data)  # historical behaviour: block, never drop
+
+        unplugged = False
         t0 = loop.time()
         n = max(0, int(math.ceil(cfg.duration)))
         for k in range(n):
@@ -466,13 +578,27 @@ async def run_synth(
             s = boat.state
             t = s.t
             active = {f.kind for f in cfg.faults if f.active(t)}
+            if control is not None:
+                active |= control.active
             for f in cfg.faults:
                 if f.active(t):
                     fault_secs[str(f)] += 1
             utc = start_utc + t + (cfg.jump_s if "clock-jump" in active else 0.0)
             silent = "bus-silent" in active
 
+            if clock_sock is not None:
+                assert cfg.clock_udp is not None
+                hb = messages.health_message(
+                    "simclock", {"t": t}, time.monotonic(), time.time(), t_sim=utc
+                )
+                try:
+                    clock_sock.sendto(messages.encode(hb), cfg.clock_udp)
+                    counts["clock"] += 1
+                except (BlockingIOError, ConnectionRefusedError, OSError):
+                    counts["dropped"] += 1
+
             if sock is not None:
+                silent = silent or "unplug" in active
                 mono, wall = time.monotonic(), time.time()
                 hb = messages.health_message(
                     "fastnet",
@@ -495,12 +621,24 @@ async def run_synth(
                         send(d)
                         counts["garbage"] += 1
             elif feeder is not None:
-                if not silent:
-                    await feeder.awrite(fastnet_frame(s, cfg.variation))
+                if "unplug" in active and not unplugged:
+                    feeder.close()  # the reader sees EIO/EOF, --link disappears
+                    unplugged = True
+                    counts["unplugs"] += 1
+                elif "unplug" not in active and unplugged:
+                    feeder.reopen()  # a fresh pty, --link atomically re-pointed (replug)
+                    unplugged = False
+                if not silent and not unplugged:
+                    data = fastnet_frame(s, cfg.variation)
+                    if "noise" in active:
+                        flipped = noisy(data, noise_rng)
+                        counts["noisy"] += flipped != data
+                        data = flipped
+                    await pty_write(data)
                     counts["frames"] += 1
                     last = s
-                if "garbage" in active:
-                    await feeder.awrite(rng.randbytes(64))
+                if "garbage" in active and not unplugged:
+                    await pty_write(rng.randbytes(64))
                     counts["garbage"] += 1
 
             if "gps-loss" in active:
@@ -515,12 +653,25 @@ async def run_synth(
                 counts["tpv"] += 1
 
             if helm is not None:
-                nav = await asyncio.to_thread(helm.fetch)
+                if cfg.follow_nowait:
+                    nav = None
+                    if fetch_task is None or fetch_task.done():
+                        if fetch_task is not None and not fetch_task.cancelled():
+                            nav = fetch_task.result()
+                        fetch_task = asyncio.ensure_future(asyncio.to_thread(helm.fetch))
+                else:
+                    nav = await asyncio.to_thread(helm.fetch)
                 eff = _num(((nav or {}).get("polar") or {}).get("eff"))
                 if eff is not None and eff > 0:
                     boat.eff = eff
                 hdg_deg, boat.bsp_factor = helm.command(nav, s)
                 boat.hdg_cmd = math.radians(hdg_deg)
+            if (cfg.progress or on_progress is not None) and int(t) % PROGRESS_EVERY_S == 0:
+                rec = {"type": "progress", "t": t, "utc": utc, "lat": s.lat, "lon": s.lon}
+                if on_progress is not None:
+                    on_progress(rec)
+                if cfg.progress:
+                    print(json.dumps(rec, separators=(",", ":")), flush=True)
             boat.step(1.0)
             delay = t0 + (k + 1) / speed - loop.time()
             if delay > 0:
@@ -528,6 +679,18 @@ async def run_synth(
         if feeder is not None:
             await asyncio.sleep(0.3)  # let the reader drain before the pty disappears
     finally:
+        if fetch_task is not None and not fetch_task.done():
+            try:
+                await asyncio.wait_for(fetch_task, 2.0)
+            except (Exception, asyncio.CancelledError):  # noqa: BLE001 - best effort
+                pass
+        if control is not None:
+            counts["control"] = control.good
+            counts["control_bad"] = control.bad
+        if control_tr is not None:
+            control_tr.close()
+        if clock_sock is not None:
+            clock_sock.close()
         if sock is not None:
             sock.close()
         if feeder is not None:
@@ -627,6 +790,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="with --follow: sail the core's valid route (its tack and target TWA) instead of "
         "the laylines",
     )
+    p.add_argument(
+        "--follow-nowait",
+        action="store_true",
+        help="with --follow: fetch the nav in the background (a stopped core never stalls time)",
+    )
+    p.add_argument(
+        "--clock-udp",
+        type=_hostport,
+        default=None,
+        metavar="HOST:PORT",
+        help="send a 1 Hz-sim health message (src simclock) carrying t_sim to HOST:PORT",
+    )
+    p.add_argument(
+        "--control",
+        type=_hostport,
+        default=None,
+        metavar="HOST:PORT",
+        help='UDP JSON {"fault": KIND, "on": true|false}: switch faults at run time (port 0: any)',
+    )
+    p.add_argument(
+        "--progress",
+        action="store_true",
+        help=f"JSON progress lines on stdout every {PROGRESS_EVERY_S} simulated seconds",
+    )
     return p
 
 
@@ -654,6 +841,10 @@ def config_from_args(args: argparse.Namespace) -> SynthConfig:
         wait_reader_s=args.wait_reader,
         follow=args.follow,
         follow_route=args.follow_route,
+        follow_nowait=args.follow_nowait,
+        clock_udp=args.clock_udp,
+        control=args.control,
+        progress=args.progress,
     )
 
 
@@ -666,6 +857,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"jabuka-sim: deltas to {info['udp']}", flush=True)
         if info["pty"]:
             print(f"jabuka-sim: pty {info['pty']} link {info['link']}", flush=True)
+        if info.get("control_port") is not None:
+            print(f"jabuka-sim: control on 127.0.0.1:{info['control_port']}", flush=True)
         print(f"jabuka-sim: sim UTC starts {info['start_utc']}", flush=True)
 
     try:

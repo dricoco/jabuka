@@ -14,7 +14,8 @@ ensure_venv() {
         echo "bootstrap: creating $venv ($python_spec)"
         uv venv -p "$python_spec" "$venv"
     fi
-    if "$venv/bin/python" - "$ROOT/src" <<'PY' >/dev/null 2>&1
+    # an editable venv made before a console script was added lacks its entry point: reinstall
+    if [ -x "$venv/bin/jabuka-soak" ] && "$venv/bin/python" - "$ROOT/src" <<'PY' >/dev/null 2>&1
 import os, sys
 import fastapi, fastnet_decoder, numpy, pmtiles, playwright, pygrib, pytest, shapely  # noqa: F401
 import jabuka

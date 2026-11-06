@@ -1,0 +1,21 @@
+{
+  "name": "tracer",
+  "seed": 1,
+  "clock": "sim",
+  "speed": 60,
+  "duration_s": 1200,
+  "start": [43.708265, 15.800369],
+  "start_utc": "2026-11-13T19:00:00Z",
+  "wind": {"twd": 161, "tws_kn": 12, "shift_deg_h": 0, "gust_kn": 0},
+  "grib": {"tws_factor": 1.0, "hours_before": 2, "hours_after": 48},
+  "course": "A",
+  "settings": {},
+  "logs_fs": "none",
+  "budgets": {"process": 30, "route": 60},
+  "faults": [
+    {"kind": "kill-core", "at": 300}
+  ],
+  "random": null,
+  "quiet_tail_s": 0,
+  "expected_tracebacks": {}
+}
