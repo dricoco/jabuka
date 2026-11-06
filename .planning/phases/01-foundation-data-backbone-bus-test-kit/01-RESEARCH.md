@@ -744,10 +744,10 @@ def frame(body: bytes, to=0xFF, frm=0x05, cmd=0x01) -> bytes:
 | A10 | brltty might grab FTDI devices if present | provision.sh | Harmless purge |
 | A11 | DTECH auto-direction RS-485 never drives the bus without TX data, so skipping DTR/RTS setup is safe | Pattern 1 | Very low. The fd can't write anyway, but this is the reason the bus stays quiet. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **AWA sign convention on this Hercules.** Known: values are signed via `layoutSign` (`-[data]`/`=[data]`/`L[data]`/`H[data]` → −1). Unclear: whether negative means port. Recommendation: the Phase 1 diagnostics show the raw `display_text` glyph next to the value, plus a config `awa_sign: +1|-1` (default +1, SK convention). The commissioning runbook checks it.
-2. **`°T` layout byte value.** Unknown upstream. Recommendation: log any unknown layout byte with its channel in the inventory. The probe inventory JSON includes `layouts_seen` per channel, so the boat capture on 12 Nov answers it.
+1. **AWA sign convention on this Hercules.** RESOLVED: deferred to on-board check via `awa_sign` config (plans 01-01/01-03) + commissioning runbook. Known: values are signed via `layoutSign` (`-[data]`/`=[data]`/`L[data]`/`H[data]` → −1). Unclear: whether negative means port. Recommendation: the Phase 1 diagnostics show the raw `display_text` glyph next to the value, plus a config `awa_sign: +1|-1` (default +1, SK convention). The commissioning runbook checks it.
+2. **`°T` layout byte value.** RESOLVED: deferred to 12 Nov capture via `layouts_seen` in probe inventory (plan 01-02). Unknown upstream. Recommendation: log any unknown layout byte with its channel in the inventory. The probe inventory JSON includes `layouts_seen` per channel, so the boat capture on 12 Nov answers it.
 3. **Whether the core should log every received delta (L1 source).** Recommendation: yes, a `bus-*.log` of received datagrams (cheap, ~1–5 KB/s). It makes L1 replay of a real session trivial.
 4. **gpsfake on the laptop.** gpsd isn't installed (`sudo` needed). Recommendation: tests use `sim/fake_gpsd.py`. gpsfake is an optional human-run integration step.
 

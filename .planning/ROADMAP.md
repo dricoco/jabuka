@@ -45,7 +45,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. With the VK-162 plugged in and no internet, the system clock is set from GPS time. The diagnostics page shows the clock as unsynced until GPS time is valid, and the routing time gate reports "blocked" until then.
   4. A developer can replay a recorded raw Fastnet/GPS capture, or run the synthetic boat simulator with injected faults (bus silent, GPS loss, garbage bytes), at accelerated speed. The values flow through the same pipeline and appear on the diagnostics page exactly as live data would.
   5. Raw data and 1 Hz derived state are logged continuously, and an event marker dropped from the UI shows up in the log. After a killed process or a pulled power plug, all services come back on their own and logs and state files are not corrupted.
-**Plans**: TBD
+**Plans:** 4 plans (wave 1: 01; wave 2: 02 ‖ 03 ‖ 04)
+
+Plans:
+- [ ] 01-01-PLAN.md — Walking skeleton: replayed Fastnet bytes → receive-only ingest (raw-first) → UDP → core state → diagnostics page; 1 Hz/raw/event logs + event marker; atomic IO, sd_notify
+- [ ] 01-02-PLAN.md — Bus-test kit: `fastnet-probe` (verdicts, inventory, capture), pty fault injection, self-healing ingest + 1 Hz bus heartbeat, static receive-only guard, L1 message replay
+- [ ] 01-03-PLAN.md — GPS & time: gpsd client + fake gpsd/NMEA, GpsClock + routing time gate, conventions golden tests, L2 synthetic boat with faults (UDP + real-ingest pty)
+- [ ] 01-04-PLAN.md — Pi appliance: provision.sh (AP 10.42.0.1, udev, gpsd/chrony), hardened systemd units + watchdog, hash-locked aarch64 wheelhouse, `jabuka-logcheck` + crash-recovery tests, PI-SETUP.md runbook
 **UI hint**: yes
 **Notes**: The UI here is a plain diagnostics page, so a full UI-design pass is optional. It gains a routing-health row once Phase 3 lands. Research flag: which channels the DTECH 2-wire wiring and the Hercules 2000/390 actually expose can only be known on the boat, so plan the capture procedure now. Conventions module (true/magnetic, u/v FROM/TOWARDS, kn vs m/s) and golden tests start here.
 
@@ -102,7 +108,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation, Data Backbone & Bus-Test Kit | 0/TBD | Not started | - |
+| 1. Foundation, Data Backbone & Bus-Test Kit | 0/4 | Planned | - |
 | 2. Helm MVP — Laylines, Marks & Map | 0/TBD | Not started | - |
 | 3. Weather Routing & Tack Advice | 0/TBD | Not started | - |
 | 4. Race Readiness — Hardening & Commissioning | 0/TBD | Not started | - |
