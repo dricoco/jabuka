@@ -871,8 +871,6 @@ class RouterService:
             self._failed(req, f"{out.status}: {out.error}" if out.error else out.status)
             return
         res: CycleResult = out.value
-        if req.want_forced:  # cost of not tacking: every forced routing (kept between, L5)
-            self.cost_s = None if res.cost_s is None else max(0.0, float(res.cost_s))
         opt = res.optimal
         if not opt.ok:
             reason = opt.reason or "échec du routage"
@@ -919,7 +917,7 @@ class RouterService:
             if res.old_valid is not False:  # the cycle re-checked the displayed route: still good
                 self._route_conf_t = max(self._route_conf_t or 0.0, now)
             return
-        self._adopt(req, shown, kind, course_version)
+        self._adopt(req, shown, kind, course_version, res)
 
     def _failed(self, req: CycleRequest, reason: str) -> None:
         """A routing cycle that produced no usable route (CR-02 bookkeeping)."""
@@ -978,7 +976,14 @@ class RouterService:
             return f"{REASON_OUT_FAIL} : {self._last_fail}"
         return None
 
-    def _adopt(self, req: CycleRequest, shown: RouteResult, kind: str, course_version: int):
+    def _adopt(
+        self,
+        req: CycleRequest,
+        shown: RouteResult,
+        kind: str,
+        course_version: int,
+        res: CycleResult | None = None,
+    ):
         now = self.now()
         self.version += 1
         self._counts["adopted"] += 1
@@ -998,6 +1003,11 @@ class RouterService:
             course_version=course_version,
             marks=tuple(_mark_key(m) for m in req.base.marks),
         )
+        if res is not None and req.want_forced:
+            # cost of not tacking, from the cycle that produced the displayed route only
+            # (03-REVIEW MD-04: a kept or superseded cycle's cost belongs to another route);
+            # a non-forced adoption (L5 alternate cycles) keeps the last forced cost
+            self.cost_s = None if res.cost_s is None else max(0.0, float(res.cost_s))
         self._on_new_route()
         self._force_carry = False
         self._fail_streak = 0

@@ -113,6 +113,24 @@ def test_cost_of_not_tacking(routing_core, fake_pool, rh, cost, text) -> None:
     assert nav["route"]["cost_text"] == text
 
 
+def test_cost_belongs_to_the_displayed_route(routing_core, fake_pool, rh) -> None:
+    """03-REVIEW MD-04: a cycle whose route is kept (hysteresis) or dropped (course changed
+    meanwhile) must not replace the cost shown next to the displayed route's countdown."""
+    fake_pool.cost_s = 240.0
+    core, pos = _start(routing_core, fake_pool, rh)
+    assert _run(core, pos, 1)["route"]["cost_text"] == "+4 min"
+    fake_pool.cost_s = 900.0
+    fake_pool.script = _kept(fake_pool)
+    core.call(core.router.request, "timer", False)
+    nav = _run(core, pos, 1)
+    assert fake_pool.requests[-1].want_forced
+    assert nav["route"]["version"] == 1 and nav["route"]["cost_text"] == "+4 min"
+    # a forced cycle whose route is adopted brings its own cost
+    core.call(core.router.request, "manuel", True)
+    nav = _run(core, pos, 1)
+    assert nav["route"]["version"] == 2 and nav["route"]["cost_text"] == "+15 min"
+
+
 def test_l5_runs_the_forced_routing_every_other_cycle(routing_core, fake_pool, rh) -> None:
     core, pos = _start(routing_core, fake_pool, rh)
     v = core.client.get("/api/settings").json()["version"]
