@@ -194,7 +194,8 @@ def test_delete_reorder_finish_activate_confirm_select(make_client) -> None:
         c = client.post("/api/course/finish", json={"idx": 1, "base_version": 2}).json()
         assert c["finish_idx"] == 1 and c["active_idx"] == 1
         assert client.get("/api/nav").json()["course"]["finish_idx"] == 1
-        assert client.post("/api/course/next").json()["active_idx"] == 1  # stops at the finish
+        nxt = client.post("/api/course/next", json={"base_version": 3}).json()
+        assert nxt["active_idx"] == 1  # stops at the finish
         c = client.post("/api/course/finish", json={"idx": None, "base_version": 3}).json()
         assert c["finish_idx"] is None
         assert client.post("/api/course/finish", json={"base_version": 4}).status_code == 422

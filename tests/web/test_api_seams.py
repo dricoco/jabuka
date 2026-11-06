@@ -67,13 +67,13 @@ def test_course_select_next_prev_and_persistence(make_client) -> None:
         r = client.post("/api/course/select", json={"template": "A", "base_version": 0})
         assert r.status_code == 409 and r.json()["version"] == 1
         assert client.post("/api/course/select", json={"template": "Z"}).status_code == 422
-        n = client.post("/api/course/next").json()
+        n = client.post("/api/course/next", json={"base_version": 1}).json()
         assert n["active_idx"] == 2 and n["version"] == 2
-        p = client.post("/api/course/prev").json()
+        p = client.post("/api/course/prev", json={"base_version": 2}).json()
         assert p["active_idx"] == 1
         nav = client.get("/api/nav").json()
         assert nav["course_version"] == 3 and nav["course"]["template"] == "B"
-        client.post("/api/course/next")
+        client.post("/api/course/next", json={"base_version": 3})
     _, client2 = make_client()
     with client2:
         c = client2.get("/api/course").json()
@@ -100,7 +100,7 @@ def test_write_failure_is_503(make_client, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("jabuka.nav.course.atomic_write_json", full)
     monkeypatch.setattr("jabuka.nav.settings.atomic_write_json", full)
     with client:
-        assert client.post("/api/course/next").status_code == 503
+        assert client.post("/api/course/next", json={"base_version": 0}).status_code == 503
         r = client.put("/api/settings", json={"base_version": 0, "patch": {"efficiency": 0.9}})
         assert r.status_code == 503
         assert client.get("/api/course").json()["active_idx"] == 1

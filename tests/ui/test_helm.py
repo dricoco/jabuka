@@ -158,3 +158,30 @@ def test_course_up_north_up_and_centre(page, feeder) -> None:
     )
     assert page.external_requests == []
     assert page.bad_responses == [], page.bad_responses
+
+
+ALERTS_JS = """() => {
+  const nav = {type: "nav", wind: null, helm: {primary: null},
+               alerts: ["Écart TWA calculé/B&G > 10°", "Erreur de calcul nav"]};
+  window.jabuka.bus.dispatchEvent(new CustomEvent("nav", {detail: nav}));
+  const shown = [...document.querySelectorAll('#badges [data-badge^="alert-"]')]
+    .filter((e) => e.getBoundingClientRect().height > 0).map((e) => e.textContent);
+  const label = document.getElementById("primary-label").textContent;
+  window.jabuka.bus.dispatchEvent(new CustomEvent("nav", {detail: {...nav, alerts: []}}));
+  const after = document.querySelectorAll('#badges [data-badge^="alert-"]').length;
+  return {shown, label, after};
+}"""
+
+
+def test_nav_alerts_are_visible_on_every_tab(page, feeder) -> None:
+    """CR-01: nav alerts are red badges in the top bar (visible on every tab, here Carte) and a
+    failed nav computation reads ERREUR CALCUL on the helm; the badges go with the alert."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    _live(pg)
+    pg.click('#topbar [data-tab="carte"]')
+    res = pg.evaluate(ALERTS_JS)
+    assert res["shown"] == ["Écart TWA calculé/B&G > 10°", "Erreur de calcul nav"], res
+    assert res["label"] == "ERREUR CALCUL"
+    assert res["after"] == 0

@@ -83,7 +83,8 @@ def test_fmt_countdown_and_durations() -> None:
 
 def test_source_badge_and_deviation_class() -> None:
     assert js("sourceBadge({source: 'LIVE_BG'})")["text"] == "LIVE B&G"
-    assert js("sourceBadge({source: 'MANUEL'})") == {"text": "MANUEL", "cls": "warn"}
+    # WR-03: no trusted UTC -> the age is unknown, said so (never guessed from the system clock)
+    assert js("sourceBadge({source: 'MANUEL'})") == {"text": "MANUEL âge ?", "cls": "warn"}
     assert js("sourceBadge({source: 'MANUEL', manual_age_s: 720})")["text"] == "MANUEL 12 min"
     assert js("sourceBadge({source: 'LIVE', stale: true})")["text"] == "PÉRIMÉ"
     assert js("sourceBadge({source: 'NONE'})")["text"] == "PAS DE VENT"
@@ -229,3 +230,25 @@ def test_dom_built_without_inner_html() -> None:
     """T-02-01-02: data (mark names, alerts) is rendered with textContent only."""
     for name in ("app.js", "helm.js", "carte.js", "reglages.js", "map.js", "overlays.js"):
         assert "innerHTML" not in (STATIC / name).read_text(), name
+
+
+def test_nav_alerts_are_listed_and_a_nav_failure_is_not_no_wind() -> None:
+    """CR-01: every nav alert reaches the helm view; a crashed nav computation (wind null) reads
+    "ERREUR CALCUL", never "PAS DE VENT"."""
+    crashed = {
+        "wind": None,
+        "helm": {"primary": None},
+        "alerts": ["Réglages illisibles", "Erreur de calcul nav"],
+    }
+    v = js(f"helmView({json.dumps(crashed)})")
+    assert v["primary"]["label"] == "ERREUR CALCUL"
+    assert v["badge"] == {"text": "ERREUR CALCUL", "cls": "bad"}
+    assert v["alerts"] == ["Réglages illisibles", "Erreur de calcul nav"]
+    assert js(f"windBadge({json.dumps(crashed)})")["text"] == "ERREUR CALCUL"
+    # the B&G cross-check alert is shown; "PAS DE VENT" is the wind badge, not repeated
+    live = dict(NAV, alerts=["Écart TWA calculé/B&G > 10°", "PAS DE VENT", "PAS DE VENT"])
+    assert js(f"navAlerts({json.dumps(live)})") == ["Écart TWA calculé/B&G > 10°"]
+    assert js(f"windBadge({json.dumps(live)})") == {"text": "LIVE", "cls": "good"}
+    no_wind = {"wind": {"source": "NONE"}, "helm": {"primary": None}, "alerts": ["PAS DE VENT"]}
+    assert js(f"primaryView({json.dumps(no_wind)})")["label"] == "PAS DE VENT"
+    assert js("navAlerts({})") == [] and js("navAlerts(null)") == []

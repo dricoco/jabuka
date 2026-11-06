@@ -104,7 +104,7 @@ function manualPanel(ctx) {
     let text = SOURCE_TEXT[w.source] ?? String(w.source);
     if (w.source === "MANUEL") {
       const age = fmtAge(w.manual_age_s);
-      if (age) text += ` — saisi ${age}`;
+      text += age ? ` — saisi ${age}` : " — âge inconnu"; // no trusted UTC (WR-03)
       if (w.stale) text += " — PÉRIMÉ";
     }
     source.textContent = text;

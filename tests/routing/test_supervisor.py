@@ -98,7 +98,8 @@ def test_route_older_than_20_min_is_replaced(routing_core, fake_pool, rh) -> Non
 def test_course_change_forces_a_replacement(routing_core, fake_pool, rh) -> None:
     core, pos = _start(routing_core, fake_pool, rh)
     fake_pool.script = lambda creq: _with_old(fake_pool, creq, -600.0)  # new one is worse
-    resp = core.client.post("/api/course/next", json={})
+    base = core.client.get("/api/course").json()["version"]
+    resp = core.client.post("/api/course/next", json={"base_version": base})
     assert resp.status_code == 200, resp.text
     nav = _run(core, pos, 1)
     assert nav["route"]["version"] == 2

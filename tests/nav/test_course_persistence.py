@@ -67,6 +67,25 @@ def test_pending_advance_banner_survives_a_restart(tmp_path: Path) -> None:
     assert CourseStore(tmp_path).course.banner is None  # and the expiry was persisted
 
 
+def test_banner_window_without_trusted_utc(tmp_path: Path) -> None:
+    """WR-03: the banner window is stamped with trusted (GPS) UTC only. Unsynced (None): no
+    stamp, and a restart offers the full window instead of trusting the system clock."""
+    cs = CourseStore(tmp_path, wall=lambda: None)
+    cs._advance(100.0, 1, cs.marks["plic-sestre"])
+    b = cs.course.banner
+    assert b is not None and b.at_wall is None and b.until_wall is None
+    again = CourseStore(tmp_path, wall=lambda: None)
+    again.on_tick(None, None, 5.0)  # never raises
+    assert again.status()["banner"]["undo_until_s"] == pytest.approx(65.0)
+    # stamped while synced, restarted before the GPS is back: the full window, no crash
+    utc = [1_000_000.0]
+    cs = CourseStore(tmp_path, wall=lambda: utc[0])
+    cs._advance(10.0, 1, cs.marks["plic-sestre"])
+    unsynced = CourseStore(tmp_path, wall=lambda: None)
+    unsynced.on_tick(None, None, 2.0)
+    assert unsynced.status()["banner"]["undo_until_s"] == pytest.approx(62.0)
+
+
 # -- kill -9 during edits -----------------------------------------------------------------------
 def _free(kind: int) -> int:
     with socket.socket(socket.AF_INET, kind) as s:

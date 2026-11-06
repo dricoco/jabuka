@@ -177,7 +177,16 @@ def test_mark_sheet_side_reorder_finish_delete_and_course_b(page, core_server) -
     ]
     pg.locator("#carte-sheet").wait_for(state="hidden")
 
+    # WR-05: a template change needs a confirming second tap; the active template is a no-op
+    requests: list[str] = []
+    pg.on("request", lambda r: requests.append(r.url) if "/api/course/select" in r.url else None)
+    pg.click("button[data-template=A]")  # custom after the edits: A asks for confirmation...
+    pg.click("button[data-template=B]")  # ...and so does B (the A confirmation is dropped)
+    assert pg.locator("button[data-template=B]").inner_text() == "Confirmer Parcours B"
+    pg.wait_for_timeout(300)
+    assert requests == [] and course(page)["template"] == "custom"
     _click_and_wait(pg, "button[data-template=B]", "/api/course/select", "POST")
+    assert pg.locator("button[data-template=B]").inner_text() == "Parcours B"
     c = course(page)
     assert c["template"] == "B"
     names = ["vodice", "plic-sestre", "jabuka", "mulo", "vodice"]
@@ -186,6 +195,13 @@ def test_mark_sheet_side_reorder_finish_delete_and_course_b(page, core_server) -
         "() => [...document.querySelectorAll('#course-list .name')].map(e => e.textContent)"
         ".join(',') === 'Vodice,Plić Sestre,Jabuka,Mulo,Vodice'"
     )
+    v = course(page)["version"]
+    pg.click("button[data-template=B]")  # the template in use: nothing posted
+    pg.wait_for_function(
+        "() => document.getElementById('carte-status').textContent === 'Parcours B déjà actif'"
+    )
+    pg.wait_for_timeout(300)
+    assert len(requests) == 1 and course(page)["version"] == v
     assert page.external_requests == []
     assert page.bad_responses == [], page.bad_responses
 

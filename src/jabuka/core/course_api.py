@@ -22,6 +22,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from jabuka.common.clock import utc_epoch
 from jabuka.nav.course import MAX_SEQ, NAME_MAX, BannerGone, UnknownMark, clean_name
 from jabuka.nav.settings import VersionConflict
 
@@ -114,7 +115,7 @@ def router(ctx: CoreContext) -> APIRouter:
             log.exception("course event write failed")
 
     course.on_event = write_event
-    course.wall = ctx.clock.wall
+    course.wall = lambda: utc_epoch(ctx.clock)  # trusted UTC, None while unsynced (WR-03)
 
     def mutate(fn: Callable[[], dict]) -> dict | JSONResponse:
         try:
@@ -140,13 +141,15 @@ def router(ctx: CoreContext) -> APIRouter:
     async def api_course_select(body: SelectIn) -> dict | JSONResponse:
         return mutate(lambda: course.select(body.template, body.base_version))
 
+    # IN-01: next/prev carry base_version too (two tablets tapping "Suiv." for the same rounding
+    # must not skip a mark: the second one gets 409)
     @r.post("/api/course/next", response_model=None)
-    async def api_course_next() -> dict | JSONResponse:
-        return mutate(course.next)
+    async def api_course_next(body: VersionIn) -> dict | JSONResponse:
+        return mutate(lambda: course.next(body.base_version))
 
     @r.post("/api/course/prev", response_model=None)
-    async def api_course_prev() -> dict | JSONResponse:
-        return mutate(course.prev)
+    async def api_course_prev(body: VersionIn) -> dict | JSONResponse:
+        return mutate(lambda: course.prev(body.base_version))
 
     # -- editing (plan 02-04) ----------------------------------------------------------------
     @r.post("/api/marks", response_model=None)

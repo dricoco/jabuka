@@ -4,6 +4,8 @@
 //   ensureMap(container, {theme}) -> Promise<Map>   idempotent singleton; rejects Error("webgl")
 //                                                   when WebGL/MapLibre is unavailable
 //   getMap() -> Promise<Map> | null
+//   mapReady() -> Promise<Map>                      resolves once a map has loaded, even after a
+//                                                   failed first attempt (never rejects)
 //   registerOverlay(id, {sources: {name: spec}, layers: (theme) => LayerSpec[]})
 //   setOverlayData(sourceName, geojson)             keeps the data across style switches
 //   setOverlayVisible(id, bool)
@@ -30,6 +32,10 @@ let mapInstance = null;
 let currentTheme = null;
 let racepack = { tiles: false, seamarks: false, coastline: false };
 const overlays = new Map(); // id -> {sources, layers, visible}
+let readyResolve = null;
+const ready = new Promise((resolve) => {
+  readyResolve = resolve;
+});
 
 export function storedTheme() {
   try {
@@ -99,9 +105,21 @@ async function fetchJson(url) {
   return res.json();
 }
 
+// The vendored styles declare the full extract's maxzoom (14). A degraded race pack (prep fallback
+// to maxzoom 12 or 10) must say its real maxzoom, or MapLibre asks for tiles the core answers 204
+// and draws nothing above it instead of overzooming the last level (WR-06).
+export function fitStyleToPack(style, info) {
+  const z = info?.maxzoom;
+  if (!info?.tiles || !Number.isInteger(z) || z < 0) return style;
+  for (const src of Object.values(style.sources ?? {})) {
+    if (src.type === "vector") src.maxzoom = z;
+  }
+  return style;
+}
+
 async function loadStyle(theme) {
   let style;
-  if (racepack.tiles) style = await fetchJson(`/style-${theme}.json`);
+  if (racepack.tiles) style = fitStyleToPack(await fetchJson(`/style-${theme}.json`), racepack);
   else if (racepack.coastline) style = coastlineStyle(theme);
   else style = backgroundStyle(theme);
   return absolutizeStyle(style, location.origin);
@@ -165,9 +183,16 @@ export function getMap() {
   return mapPromise;
 }
 
+export function mapReady() {
+  return ready;
+}
+
+// A failed attempt (load timeout on a busy Pi, style fetch error) is torn down and forgotten
+// (IN-02): the next ensureMap() call retries instead of returning the same rejection forever.
 export function ensureMap(container, opts = {}) {
   if (mapPromise) return mapPromise;
-  mapPromise = (async () => {
+  let built = null;
+  const attempt = (async () => {
     const gl = globalThis.maplibregl;
     if (!gl || typeof gl.Map !== "function") throw new Error("webgl");
     if (typeof gl.supported === "function" && !gl.supported()) throw new Error("webgl");
@@ -194,6 +219,7 @@ export function ensureMap(container, opts = {}) {
       console.error("map construction failed", e);
       throw new Error("webgl");
     }
+    built = map;
     map.on("error", (ev) => console.warn("map:", ev?.error?.message ?? ev));
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("map load timeout")), LOAD_TIMEOUT_MS);
@@ -205,23 +231,48 @@ export function ensureMap(container, opts = {}) {
     mapInstance = map;
     for (const [id, def] of overlays) addOverlay(map, id, def);
     globalThis.jabuka = Object.assign(globalThis.jabuka ?? {}, { map, racepack });
+    // a theme toggled while the map was loading (WR-04)
+    if (wantedTheme !== null && wantedTheme !== currentTheme) setTheme(wantedTheme).catch(() => {});
+    readyResolve(map);
     return map;
   })();
-  return mapPromise;
+  const p = attempt.catch((e) => {
+    try {
+      built?.remove(); // frees the WebGL context of the half-built map
+    } catch {
+      /* already gone */
+    }
+    if (mapPromise === p) mapPromise = null;
+    throw e;
+  });
+  mapPromise = p;
+  return p;
 }
 
-export async function setTheme(theme) {
+// Theme switches are serialized and only the latest request is applied (WR-04): a fast double
+// tap must never leave the day style under the night UI because the first style fetch finished
+// after the second tap had already returned.
+let wantedTheme = null;
+let themeChain = Promise.resolve();
+
+export function setTheme(theme) {
   const t = theme === "night" ? "night" : "day";
   try {
     globalThis.localStorage?.setItem(THEME_KEY, t);
   } catch {
     /* private mode: per-session only */
   }
-  if (!mapInstance || t === currentTheme) {
-    currentTheme = mapInstance ? currentTheme : t;
-    return;
-  }
+  wantedTheme = t;
+  themeChain = themeChain.catch(() => {}).then(applyWantedTheme);
+  return themeChain;
+}
+
+async function applyWantedTheme() {
+  const t = wantedTheme;
+  // no map yet: ensureMap applies wantedTheme once loaded (currentTheme tracks the real style)
+  if (!mapInstance || t === null || t === currentTheme) return;
   const style = await loadStyle(t);
+  if (t !== wantedTheme) return; // superseded while loading: the queued request applies
   currentTheme = t;
   // transformStyle is a setStyle option (a constructor option would be ignored, Pattern 13)
   mapInstance.setStyle(style, {

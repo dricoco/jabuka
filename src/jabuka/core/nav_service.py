@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from jabuka.common.clock import Clock
+from jabuka.common.clock import Clock, utc_epoch
 from jabuka.common.conventions import current_towards_uv
 from jabuka.common.units import ms_to_kn, wrap_pi
 from jabuka.core.state import StateStore
@@ -74,6 +74,7 @@ class NavService:
         self.errors = 0
         self._prev_leg: str | None = None
         self._prev_primary: str | None = None
+        self._prev_target: tuple[int, str] | None = None  # hysteresis is per mark (IN-07)
 
     @property
     def settings(self):
@@ -138,7 +139,7 @@ class NavService:
             lat = _r(pos["value"].get("latitude"), 7)
             lon = _r(pos["value"].get("longitude"), 7)
         # wind first: it owns the TRUE heading (compass, or COG inside the Jabuka zone)
-        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=self.clock.wall())
+        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=utc_epoch(self.clock))
         hdg_t = w.hdg
         cog = wind.num(inputs.get(wind.COG))
         sog_ms = wind.num(inputs.get(wind.SOG))
@@ -227,6 +228,9 @@ class NavService:
                 "btw_t": None,
                 "ttw_s": None,
             }
+        if target is not None and (target.idx, target.mark.id) != self._prev_target:
+            self._prev_target = (target.idx, target.mark.id)
+            self._prev_leg = self._prev_primary = None  # a new leg starts without hysteresis
         if target is not None and lat is not None and lon is not None:
             boat = laylines.BoatState(
                 lat=lat, lon=lon, hdg=hdg_t, cog=cog, sog_kn=sog_kn, bsp_kn=speed_kn

@@ -7,7 +7,8 @@
 //   map buttons: "Nord en haut" / "Cap en haut" and "Centrer" (localStorage jabuka.mapMode,
 //                jabuka.centred; overlays.js turns the map on the next nav message)
 //   bottom band: countdown, BSP / target, % polar, mark + DTW · TTW, bearing, other-tack heading
-//   #badges:     wind source (app.js) + CAP NON FIABLE / COURANT / ANGLES RÉELS
+//   #badges:     wind source (app.js) + CAP NON FIABLE / COURANT / ANGLES RÉELS + one red badge
+//                per nav alert (B&G cross-check, unreadable files, nav computation failure...)
 import { helmView } from "./helm_logic.js";
 
 const $ = (id) => document.getElementById(id);
@@ -95,6 +96,8 @@ function renderMapButtons() {
   $("map-centre")?.setAttribute("aria-pressed", mapCentred() ? "true" : "false");
 }
 
+let shownAlerts = 0; // alert badges currently shown
+
 export function render(nav, badge) {
   const v = helmView(nav);
   setText("primary-label", v.primary.label);
@@ -112,6 +115,10 @@ export function render(nav, badge) {
     const keys = new Set(v.flags.map((f) => f.key));
     for (const key of ["cap", "courant", "angles"]) if (!keys.has(key)) badge(`flag-${key}`, null);
     for (const f of v.flags) badge(`flag-${f.key}`, f.text, f.cls);
+    // nav alerts (CR-01): one red badge each in the top bar, so they show on every tab
+    const n = Math.max(v.alerts.length, shownAlerts);
+    for (let i = 0; i < n; i++) badge(`alert-${i}`, i < v.alerts.length ? v.alerts[i] : null, "bad");
+    shownAlerts = v.alerts.length;
   }
   return v;
 }

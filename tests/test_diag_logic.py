@@ -111,3 +111,9 @@ def test_error_counters_alert_while_increasing() -> None:
 def test_error_counter_seen_nonzero_on_page_load_alerts() -> None:
     out = js("errorAlerts({core: {events_errors: 3}}, {}, 5)")
     assert out == ["Core: event log write failed (3 since start)"]
+
+
+def test_nav_errors_counter_alerts() -> None:
+    """CR-01: a failing nav computation (core nav_errors) turns the Diag page red."""
+    out = js("errorAlerts({core: {nav_errors: 4}}, {}, 5)")
+    assert out == ["Core: nav computation failed (4 since start)"]

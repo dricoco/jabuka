@@ -21,11 +21,13 @@ turns the latest instrument values into a WindSolution once per tick (RESEARCH P
    with an alert after 60 s continuously above 10 deg.
 4. Damping: vector EMAs on (TWS sin TWD, TWS cos TWD) with tau_helm_s (twd, helm) and
    tau_layline_s (twd_lay, laylines). TWS uses a scalar EMA with tau_helm_s. The filters reset
-   whenever the source changes. TWA is reported to the bow: wrap(twd_helm - current heading).
+   whenever the source changes, except between LIVE and LIVE_BG (same wind); a live source that
+   drops out is held for LIVE_HOLD_S before MANUEL/NONE takes over (no reset on a flap). TWA is
+   reported to the bow: wrap(twd_helm - current heading).
 
 Inputs are StateStore.latest() rows keyed by path ({value, unit, src, ref, ...} or None); stale
 rows are already None (wind/heading 5 s). Radians and m/s throughout; time from the injected
-monotonic clock (t_mono) and the injected wall clock (t_wall, manual age only).
+monotonic clock (t_mono) and the trusted UTC epoch (t_wall, manual age only; None if not synced).
 """
 
 from __future__ import annotations
@@ -71,6 +73,8 @@ INPUT_PATHS = (
 COG_MIN_SOG_KN = 1.0  # below this, COG is noise: no heading from it
 CHECK_DTWA_DEG = 10.0
 CHECK_HOLD_S = 60.0
+ZONE_HOLD_S = 300.0  # last "in the Jabuka zone" kept this long through a GPS dropout (IN-05)
+LIVE_HOLD_S = 5.0  # a live source missing one tick is held this long before MANUEL/NONE (WR-02)
 MIN_WEIGHT_MS = 1e-3  # vector weight floor so a 0 kn manual entry keeps its direction
 
 ALERT_ZONE = "CAP NON FIABLE (zone Jabuka)"
@@ -204,6 +208,8 @@ class WindPipeline:
         self._ema_tws = ScalarEma(settings.tau_helm_s)
         self._source: tuple[str, str | None] | None = None
         self._check_since: float | None = None
+        self._live: tuple | None = None  # (t_mono, source, twd, twd_lay, tws) of the last live
+        self._zone_at: float | None = None  # t_mono of the last fix inside the Jabuka zone
 
     # -- heading -----------------------------------------------------------------------------
     def heading(self, inputs: Inputs) -> float | None:
@@ -235,8 +241,13 @@ class WindPipeline:
         self._ema_lay.tau = s.tau_layline_s
         self._ema_tws.tau = s.tau_helm_s
 
-        # 1. heading: compass, or COG inside the Jabuka zone
+        # 1. heading: compass, or COG inside the Jabuka zone. A GPS dropout near Jabuka keeps the
+        # zone (untrusted compass) for ZONE_HOLD_S after the last fix inside it (IN-05)
         zone = self.in_zone(inputs)
+        if position(inputs) is not None:
+            self._zone_at = t_mono if zone else None
+        elif self._zone_at is not None and 0.0 <= t_mono - self._zone_at <= ZONE_HOLD_S:
+            zone = True
         cog = num(inputs.get(COG))
         sog = num(inputs.get(SOG))
         cog_ok = cog is not None and sog is not None and ms_to_kn(sog) > COG_MIN_SOG_KN
@@ -273,11 +284,13 @@ class WindPipeline:
         self._cross_check(sol, comp, twa_i, tws_i, t_mono)
 
         # 4. arbitration
-        raw = None
+        raw = held = None
         if comp is not None and (s.true_wind_source == "computed" or instr is None):
             sol.source, raw = "LIVE", (comp[0], comp[1])
         elif instr is not None:
             sol.source, raw = "LIVE_BG", instr
+        elif self._live is not None and 0.0 <= t_mono - self._live[0] <= LIVE_HOLD_S:
+            sol.source, held = self._live[1], self._live[2:]  # WR-02: hold, no new sample
         elif manual is not None:
             sol.source = "MANUEL"
             raw = (wrap_2pi(math.radians(manual.twd_t_deg)), kn_to_ms(manual.tws_kn))
@@ -294,8 +307,10 @@ class WindPipeline:
             hdg, hdg_src = cog, "cog"
         sol.hdg, sol.heading_src = hdg, hdg_src
 
-        # 5. damping (filters reset on a source change, or a new manual entry: applies at once)
-        key = (sol.source, manual.model_dump_json() if sol.source == "MANUEL" and manual else None)
+        # 5. damping (filters reset on a source change, or a new manual entry: applies at once).
+        # LIVE and LIVE_BG measure the same wind: flipping between them keeps the filters (WR-02)
+        family = "LIVE" if sol.source in ("LIVE", "LIVE_BG") else sol.source
+        key = (family, manual.model_dump_json() if sol.source == "MANUEL" and manual else None)
         if key != self._source:
             self._ema_helm.reset()
             self._ema_lay.reset()
@@ -313,6 +328,12 @@ class WindPipeline:
                 sol.twa = wrap_pi(twa_i)
             elif sol.source == "GRIB":
                 sol.twd_lay = None  # no heading: no laylines (Phase 2 NONE handling)
+            if family == "LIVE":
+                self._live = (t_mono, sol.source, sol.twd, sol.twd_lay, sol.tws)
+        elif held is not None:
+            sol.twd, sol.twd_lay, sol.tws = held
+            if hdg is not None:
+                sol.twa = wrap_pi(sol.twd - hdg)
         self.last = sol
         return sol
 
@@ -357,8 +378,8 @@ class WindPipeline:
             sol.alerts.append(ALERT_CHECK)
 
     def _manual_age(self, sol: WindSolution, manual: ManualWind, t_wall: float | None) -> None:
-        if t_wall is None:
-            return
+        if t_wall is None or manual.t_set_wall is None:
+            return  # trusted UTC unknown (now or at entry): age unknown, "MANUEL âge ?" (WR-03)
         age = max(0.0, t_wall - manual.t_set_wall)
         sol.manual_age_s = age
         limit_min = self.settings.manual_wind_max_age_min

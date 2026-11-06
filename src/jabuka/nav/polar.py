@@ -87,6 +87,8 @@ class Polar:
             if clean[0][0] > 0.0:
                 clean.insert(0, (0.0, 0.0))
             prepared.append((tws, [a for a, _ in clean], [b for _, b in clean]))
+        if prepared[-1][0] <= 0.0:  # IN-04: targets() needs a real wind curve
+            raise ValueError("polar: no TWS curve above 0 kn")
         if prepared[0][0] > 0.0:
             # implicit TWS 0 curve: zero everywhere
             prepared.insert(0, (0.0, [0.0, 180.0], [0.0, 0.0]))
@@ -261,14 +263,20 @@ def default_polar() -> Polar:
 
 def load_racepack_polar(racepack_dir: str | Path | None) -> Polar:
     """<racepack>/polar.json when it parses and validates, else default_polar().
-    Polar.source says which one was used ("racepack:polar.json" or "builtin:...")."""
+    Polar.source says which one was used ("racepack:polar.json" or "builtin:...").
+    The smoke check runs what the nav tick runs (speed and the VMG targets, light and strong
+    wind): a polar that would raise there every tick falls back to the builtin one (IN-04)."""
     if racepack_dir is not None:
         path = Path(racepack_dir) / "polar.json"
         try:
             p = polar_from_json(json.loads(path.read_text("utf-8")))
-            p.speed(12.0, 45.0)  # smoke check
+            for tws in (6.0, 12.0, 20.0):
+                p.speed(tws, 45.0)
+                t = p.targets(tws)
+                if not all(math.isfinite(x) for x in (t.up_twa, t.up_bsp, t.down_twa, t.down_bsp)):
+                    raise ValueError("polar: non-finite targets")
             p.source = "racepack:polar.json"
             return p
-        except (OSError, ValueError, TypeError):
+        except Exception:  # anything the tick would hit: the builtin polar, never a dead helm
             pass
     return default_polar()

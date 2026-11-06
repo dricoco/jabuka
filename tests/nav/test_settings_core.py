@@ -86,4 +86,6 @@ def test_pipeline_live_only_with_all_inputs() -> None:
     assert sol.source == "LIVE" and sol.ok
     assert sol.twd == sol.twd_lay
     sol = p.update({**rows, HEADING: None}, 2.0)
+    assert sol.source == "LIVE"  # held LIVE_HOLD_S after the last full set (WR-02)
+    sol = p.update({**rows, HEADING: None}, 7.0)
     assert sol.source == "NONE" and not sol.ok

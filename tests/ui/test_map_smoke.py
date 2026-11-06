@@ -128,6 +128,29 @@ def test_absolutize_style() -> None:
     assert out["sources"]["ext"]["tiles"] == ["http://other/{z}/{x}/{y}.mvt"]
 
 
+def test_style_maxzoom_follows_a_degraded_pack() -> None:
+    """WR-06: a race pack extracted at maxzoom 10 (prep fallback) overzooms z10 tiles instead
+    of going blank above it: every vector source gets the pack's maxzoom."""
+    style = json.loads((STATIC / "style-day.json").read_text())
+    code = (
+        f"import {{ fitStyleToPack }} from {json.dumps((STATIC / 'map.js').as_uri())};\n"
+        f"const s = {json.dumps(style)};\n"
+        "const out = [fitStyleToPack(structuredClone(s), {tiles: true, maxzoom: 10}),\n"
+        "  fitStyleToPack(structuredClone(s), {tiles: true, maxzoom: null}),\n"
+        "  fitStyleToPack(structuredClone(s), {tiles: false, maxzoom: 10})]\n"
+        "  .map((st) => Object.values(st.sources).filter((x) => x.type === 'vector')\n"
+        "  .map((x) => x.maxzoom));\n"
+        "process.stdout.write(JSON.stringify(out));\n"
+    )
+    proc = subprocess.run(
+        [NODE, "--input-type=module", "-e", code], capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == 0, proc.stderr
+    degraded, unknown, no_tiles = json.loads(proc.stdout)
+    assert degraded and set(degraded) == {10}
+    assert set(unknown) == {14} and set(no_tiles) == {14}  # untouched
+
+
 # -- browser -----------------------------------------------------------------------------------
 def test_map_renders_offline_with_overlays(page, feeder) -> None:
     _near_plic_sestre(feeder)
@@ -158,6 +181,63 @@ def test_map_renders_offline_with_overlays(page, feeder) -> None:
     assert "CARTE INDISPONIBLE" not in pg.locator("#badges").inner_text()
 
 
+def test_a_failed_map_load_is_retried(page, feeder) -> None:
+    """IN-02: a first map load that fails (here the style fetch, like a load timeout on a busy
+    Pi) is torn down and retried: the map and its overlays come up without a page reload."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    hits: list[str] = []
+
+    def flaky(route, request) -> None:
+        hits.append(request.url)
+        if len(hits) == 1:
+            route.abort()
+        else:
+            route.continue_()
+
+    pg.route("**/style-day.json", flaky)
+    pg.goto(page.base_url + "/")
+    pg.wait_for_function(
+        "() => document.getElementById('badges').textContent.includes('CARTE INDISPONIBLE')",
+        timeout=15000,
+    )
+    pg.wait_for_function("() => window.jabuka && window.jabuka.map", timeout=30000)
+    pg.wait_for_function(
+        "() => !document.getElementById('badges').textContent.includes('CARTE INDISPONIBLE')",
+        timeout=10000,
+    )
+    pg.wait_for_function(
+        f"async () => {{ const t = await ({SOURCE_JS})('laylines'); return t && t.length === 2; }}",
+        timeout=15000,
+    )
+    assert len(hits) >= 2
+    assert pg.evaluate("() => document.querySelectorAll('#map canvas').length") == 1
+
+
+def test_security_headers_do_not_break_the_app(page, feeder) -> None:
+    """IN-01: the Content-Security-Policy is served and the app runs under it: map (blob:
+    workers), WebSocket, the Diag iframe and the wake-lock video, with no CSP violation."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    violations: list[str] = []
+    pg.on("console", lambda m: violations.append(m.text) if "Content Security" in m.text else None)
+    resp = pg.goto(page.base_url + "/")
+    assert "default-src 'self'" in resp.headers["content-security-policy"]
+    pg.wait_for_function("() => window.jabuka && window.jabuka.map", timeout=30000)
+    pg.wait_for_function(
+        "() => { const t = document.getElementById('primary').textContent; "
+        "return t && t !== '—'; }",
+        timeout=15000,
+    )
+    pg.click("button[data-tab=diag]")  # same-origin iframe (frame-ancestors 'self')
+    frame = pg.frame_locator("#diag-frame")
+    frame.locator("body").wait_for(timeout=10000)
+    pg.click("button[data-tab=barre]")
+    pg.wait_for_timeout(1500)
+    assert violations == [], violations
+    assert "CARTE INDISPONIBLE" not in pg.locator("#badges").inner_text()
+
+
 def test_tabs_course_and_settings(page, feeder) -> None:
     """Only the active tab shows; Carte lists the course and switches A/B in one tap (CRSE-01);
     Réglages renders the schema form (modules mounted after the first events still get them)."""
@@ -175,6 +255,7 @@ def test_tabs_course_and_settings(page, feeder) -> None:
     assert pg.locator("#sides-warning").is_visible()
     # wait for each POST's own response: the list may already show the change through the
     # WebSocket refetch while the button's request is still in flight
+    pg.click("button[data-template=B]")  # WR-05: first tap asks for confirmation
     with pg.expect_response(lambda r: r.url.endswith("/api/course/select")) as sel:
         pg.click("button[data-template=B]")
     assert sel.value.status == 200, sel.value.status

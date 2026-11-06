@@ -56,7 +56,7 @@ def test_bias_is_learned_shown_and_applied(routing_core, fake_pool, rh, tmp_path
     assert rows["nav.bias.dir"] == pytest.approx(10.0, abs=0.2)
     assert rows["nav.bias.ratio"] == pytest.approx(1.2, abs=0.01)
     # the GRIB-only wind uses the same parameters (bus silent)
-    nav = _gps_only(core, pos, 8)
+    nav = _gps_only(core, pos, 12)  # stale (5 s) + live hold (5 s, WR-02)
     assert nav["wind"]["source"] == "GRIB"
     assert nav["wind"]["twd_t"] == pytest.approx(55.0, abs=0.3)
     assert nav["wind"]["tws_kn"] == pytest.approx(21.6, abs=0.2)
@@ -99,7 +99,7 @@ def test_bias_switch_off_and_on(routing_core, fake_pool, rh) -> None:
         assert resp.status_code == 200
 
     put({"bias_enabled": False})
-    nav = _gps_only(core, pos, 8)
+    nav = _gps_only(core, pos, 12)  # stale (5 s) + live hold (5 s, WR-02)
     assert nav["route"]["bias"]["state"] == "désactivé"
     assert nav["route"]["bias"]["enabled"] is False
     assert nav["wind"]["twd_t"] == pytest.approx(45.0, abs=0.1)  # GRIB unbiased

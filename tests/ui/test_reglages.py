@@ -53,10 +53,11 @@ def test_manual_wind_form_and_settings(page, feeder) -> None:
         "() => document.getElementById('manual-wind-stored').textContent.includes('200°M')"
     )
     # the source badge in the top bar says so too, with the entry's age (02-05 sourceBadge:
-    # "MANUEL 0 min"; plain "MANUEL" only when the core reports no age)
+    # "MANUEL 0 min"; "MANUEL âge ?" when the core has no trusted UTC, as here with
+    # --clock system, WR-03)
     pg.wait_for_function(
         "() => [...document.querySelectorAll('#badges .badge[data-badge=wind]')].some(b => "
-        "/^MANUEL( \\d+ min)?$/.test(b.textContent))"
+        "/^MANUEL( \\d+ min| âge \\?)$/.test(b.textContent))"
     )
 
     # settings form: one field saved, version bumped

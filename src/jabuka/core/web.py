@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from jabuka.core import course_api, nav_api, route_api
+from jabuka.core.hardening import harden
 from jabuka.core.tiles import racepack_router
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ def create_app(ctx: CoreContext) -> FastAPI:
 
     app = FastAPI(title="Jabuka core", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.ctx = ctx
+    harden(app)  # Host check, JSON-only mutations, 64 KiB body cap, security headers (IN-01)
 
     @app.get("/api/state")
     async def api_state() -> dict:

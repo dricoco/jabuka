@@ -84,7 +84,7 @@ def test_source_ranking_live_manual_grib(routing_core, fake_pool, rh) -> None:
     # a manual entry outranks GRIB once the instruments are stale
     resp = core.client.post("/api/wind/manual", json={"twd": 90.0, "tws_kn": 10.0, "ref": "T"})
     assert resp.status_code == 200
-    nav = _gps_only(core, pos, 0.0, 6.0, 8)
+    nav = _gps_only(core, pos, 0.0, 6.0, 12)  # stale (5 s) + live hold (5 s, WR-02)
     assert nav["wind"]["source"] == "MANUEL"
     assert core.client.delete("/api/wind/manual").status_code == 200
     nav = _gps_only(core, pos, 0.0, 6.0, 1)

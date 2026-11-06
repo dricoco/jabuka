@@ -241,3 +241,34 @@ def test_overlays_survive_theme_switches_and_carte_tab(page, feeder) -> None:
     pg.wait_for_function(f"() => ({vis_js})('helm-course').every((v) => v === 'visible')")
     assert page.external_requests == []
     assert page.bad_responses == [], page.bad_responses
+
+
+SLOW_DAY_STYLE_JS = """() => {
+  const f = window.fetch;
+  window.fetch = (u, ...a) => String(u).includes("style-day.json")
+    ? new Promise((r) => setTimeout(r, 1200)).then(() => f(u, ...a))
+    : f(u, ...a);
+}"""
+
+
+def test_double_tap_night_toggle_never_leaves_the_day_map(page, feeder) -> None:
+    """WR-04: at night a fast double tap (Jour, then Nuit) while the day style is still loading
+    ends with the night UI AND the night map, never the bright day basemap under the night UI."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    _wait_overlays(pg)
+    pg.click("#night-toggle")
+    pg.wait_for_function("() => window.jabuka.map.getStyle().name === 'jabuka-night'")
+    pg.evaluate(SLOW_DAY_STYLE_JS)
+    pg.evaluate(
+        "() => { const b = document.getElementById('night-toggle'); b.click(); b.click(); }"
+    )
+    pg.wait_for_timeout(2500)  # the slow day style has arrived by now
+    assert pg.evaluate("() => document.body.classList.contains('theme-night')")
+    assert pg.evaluate("() => localStorage.getItem('jabuka.theme')") == "night"
+    assert _style_name(pg) == "jabuka-night"
+    # and a single tap still switches (the queue is not stuck)
+    pg.click("#night-toggle")
+    pg.wait_for_function("() => window.jabuka.map.getStyle().name === 'jabuka-day'", timeout=5000)
+    assert page.bad_responses == [], page.bad_responses

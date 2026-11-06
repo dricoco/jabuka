@@ -84,6 +84,24 @@ def test_grid_tab_separated_lowercase_header_gives_the_same_polar() -> None:
         pp.parse_grid(text.replace(";", "   ").replace(",", "."), "grid")
 
 
+def test_grid_with_tws_0_column_and_twa_0_row_of_zeros() -> None:
+    """WR-07: the usual qtVlm/OpenCPN export starts with a TWS 0 column and a TWA 0 row of
+    zeros; they are skipped (the polar adds its own origin), giving the same polar."""
+    text = GRID.read_text("utf-8")
+    ref = pp.parse_grid(text, "grid")
+    lines = text.splitlines()
+    head = next(k for k, line in enumerate(lines) if line.upper().startswith("TWA"))
+    out = lines[:head]
+    out.append(lines[head].replace(";", ";0;", 1))  # TWA\TWS;0;6;10;16
+    out.append("0;0;0;0;0")
+    out += [line.replace(";", ";0;", 1) for line in lines[head + 1 :]]
+    got = pp.parse_any("\n".join(out) + "\n", "grid")
+    assert got.source == "grid" and got.curves == ref.curves
+    # tab-separated with dots, the qtVlm layout
+    tab = "\n".join(out).replace(";", "\t").replace(",", ".")
+    assert pp.parse_any(tab + "\n", "grid").curves == ref.curves
+
+
 # -- parse_any dispatch + validation ------------------------------------------------------------
 def test_parse_any_dispatches_by_content() -> None:
     assert pp.parse_any(ORC.read_text("utf-8"), "a").source == "orc-table"
@@ -110,6 +128,9 @@ def test_parse_any_dispatches_by_content() -> None:
         ("TWA\\TWS;6;10\n40;4.8;nan\n90;6.1;7.4\n", "line 2"),
         ("TWA\\TWS;6;70\n40;4.8;6.2\n90;6.1;7.4\n", "TWS"),
         ("TWA\\TWS;6;10\n40;4.8;6.2\n200;6.1;7.4\n", "line 3"),
+        ("TWA\\TWS;0;6;10\n40;0,5;4.8;6.2\n90;0;6.1;7.4\n", "TWS 0 column"),
+        ("TWA\\TWS;6;10\n0;0;1.0\n40;4.8;6.2\n90;6.1;7.4\n", "TWA 0 row"),
+        ("TWA\\TWS;-1;6;10\n40;0;4.8;6.2\n90;0;6.1;7.4\n", "TWS"),
         ("TWA\\TWS;6\n40;4.8\n90;6.1\n", "2 TWS"),
         ('{"curves": [[8, [[40, 5.9]]], [12, [[40, 45.0]]]]}', "BSP"),
         ("hello world\n", "line 1"),

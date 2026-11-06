@@ -13,7 +13,7 @@
 // Day colours, or red shades only at night (HELM-03, Pitfall 4). Labels use text-field only (no
 // HTML, T-02-05-01). Sources are prefixed "helm-" except the 02-01 names (laylines, anchor, mark,
 // boat) the smoke test reads, so the 02-04 "carte" sources never collide with them.
-import { ensureMap, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
+import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
 
 const EMPTY = { type: "FeatureCollection", features: [] };
 const HEADING_LINE_NM = 0.3;
@@ -412,7 +412,9 @@ export async function mount(ctx) {
   try {
     map = await ensureMap(document.getElementById("map"));
   } catch {
-    return; // no map on this tablet: app.js shows "CARTE INDISPONIBLE", the numbers keep going
+    // no map yet: app.js shows "CARTE INDISPONIBLE" and retries; the numbers keep going and the
+    // overlays come up whenever a retry succeeds (IN-02)
+    map = await mapReady();
   }
   const src = () => ({ type: "geojson", data: EMPTY });
   registerOverlay("seamarks", { sources: { seamarks: src() }, layers: seamarkLayers });

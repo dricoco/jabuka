@@ -164,13 +164,20 @@ def parse_grid(text: str, name: str = "polar") -> Polar:
     _, tws_cells = _cells(head, sep)
     while tws_cells and not tws_cells[-1]:
         tws_cells.pop()
-    tws = [_check_tws(_num(c, head_no, dec_comma), head_no) for c in tws_cells]
+    # qtVlm/OpenCPN files often carry a TWS 0 column and a TWA 0 row of zeros: skipped (Polar
+    # adds the (0, 0) origin and the TWS-0 curve itself), rejected only if a speed there is > 0
+    tws = [_num(c, head_no, dec_comma) for c in tws_cells]
+    for t in tws:
+        if t != 0.0:
+            _check_tws(t, head_no)
     if len(set(tws)) != len(tws):
         raise ValueError(f"line {head_no}: duplicate TWS column")
     curves: list[list[tuple[float, float]]] = [[] for _ in tws]
     for lineno, line in lines[start + 1 :]:
         label, cells = _cells(line, sep)
-        twa = _check_twa(_num(label, lineno, dec_comma), lineno)
+        twa = _num(label, lineno, dec_comma)
+        if twa != 0.0:
+            _check_twa(twa, lineno)
         while len(cells) > len(tws) and not cells[-1]:
             cells.pop()
         if len(cells) > len(tws) or (sep is None and len(cells) != len(tws)):
@@ -179,9 +186,13 @@ def parse_grid(text: str, name: str = "polar") -> Polar:
             if not cell:
                 continue
             bsp = _check_bsp(_num(cell, lineno, dec_comma), lineno)
+            if bsp > 0.0 and (twa == 0.0 or tws[j] == 0.0):
+                where = "TWA 0 row" if twa == 0.0 else "TWS 0 column"
+                raise ValueError(f"line {lineno}: BSP {bsp:g} kn in the {where} (must be 0)")
             if bsp > 0.0:
                 curves[j].append((twa, bsp))
-    return _finish(name, list(zip(tws, curves, strict=True)), "grid")
+    pairs = [(t, c) for t, c in zip(tws, curves, strict=True) if t != 0.0]
+    return _finish(name, pairs, "grid")
 
 
 def _orc_key(label: str) -> str | None:

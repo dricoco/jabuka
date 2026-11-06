@@ -22,9 +22,13 @@ Gate d <= 2 nm. The candidate must hold DEBOUNCE_S consecutive seconds of t_mono
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
 Annuler). undo() restores the previous mark and suppresses that mark until the boat has left its
-zone. The finish leg finishes on entering its radius ("ARRIVÉE — <nom>"), no further advance.
-Hairpin marks (Jabuka in Course A: in 203 deg, out 009 deg) advance when abeam of the island:
-slightly early but safe, the laylines then point to the next mark. Debounce state lives in memory.
+zone; leaving that zone then counts as the rounding (10 s debounce), so the real rounding after
+an early advance + Annuler still advances. The finish leg finishes on entering its radius
+("ARRIVÉE — <nom>"), no further advance.
+Hairpin marks (course change > 90 deg, Jabuka in both courses: in 203 deg, out 009/038 deg) need
+more than abeam of the incoming leg, which comes half a lap before the island is rounded (WR-01):
+the boat must also be past the mark along the outgoing leg (the far side of the island), or have
+left the zone. Debounce state lives in memory.
 """
 
 from __future__ import annotations
@@ -54,10 +58,14 @@ MAX_SEQ = 30
 NAME_MAX = 40
 
 ZONE_MARGIN_NM = 0.25  # arrival zone = leg radius + this (RESEARCH A10)
-GATE_NM = 2.0  # nothing fires further than this from the active mark
+GATE_NM = 2.0  # nothing fires further than this from the active mark...
+GATE_OVER_ZONE_NM = 0.5  # ...or than this beyond a large zone (radius up to 3 nm, IN-07)
+WRITE_ALERT = "Écriture du parcours impossible"
 DEBOUNCE_S = 10.0  # rounding evidence must hold this long
+FSM_GAP_S = 3.0  # a longer gap between position samples restarts the debounce (IN-05)
 BANNER_S = 60.0  # Annuler window
 FINISH_MIN_NM = 0.05  # finish radius floor (a radius-0 custom finish is still reachable)
+HAIRPIN_DEG = 90.0  # course change above which abeam also needs "past the mark" on the way out
 
 Side = Literal["port", "stbd", "none"]
 
@@ -111,8 +119,9 @@ class MarkOverride(BaseModel):
 
 
 class Banner(BaseModel):
-    """Pending advance (Annuler offered) or the finish notice. Times are wall-clock seconds so a
-    restart can tell how much of the window is left; the live window runs on t_mono."""
+    """Pending advance (Annuler offered) or the finish notice. Times are trusted UTC epochs (GPS,
+    never the unsynced system clock, WR-03; None when not synced) so a restart can tell how much
+    of the window is left; the live window runs on t_mono."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -211,13 +220,16 @@ class CourseStore:
         self.version = 0
         self.course = course_from_template(self.library, "A")
         self.boat: tuple[float, float, float] | None = None  # (lat, lon, t_mono)
-        # set by the course API router: event lines and the wall clock for the banner window
+        # set by the course API router: event lines and the trusted UTC (epoch | None) for the
+        # banner window
         self.on_event = on_event
         self.wall = wall
         # rounding state machine (memory only)
         self._fsm_key: tuple[int, str] | None = None
         self._entered = False
         self._cand_since: float | None = None
+        self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
+        self._last_fsm_t: float | None = None  # t_mono of the previous position sample
         self._banner_until: float | None = None  # t_mono end of the banner window
         raw = load_json_with_bak(self.path, None)
         if raw is not None:
@@ -268,6 +280,7 @@ class CourseStore:
         self._check_version(base_version)
         version = self.version + 1
         self._write(course, version)
+        self._clear_write_alert()
         self._set(course, version)
         if event is not None:
             self._emit({**event, "version": version})
@@ -289,7 +302,8 @@ class CourseStore:
             self._commit(course, None, event)
         except OSError:
             log.exception("course write failed during the tick")
-            self.alerts.append("Écriture du parcours impossible")
+            if WRITE_ALERT not in self.alerts:
+                self.alerts.append(WRITE_ALERT)
             self._set(course, self.version + 1)
             self._emit({**event, "version": self.version, "persisted": False})
 
@@ -297,11 +311,17 @@ class CourseStore:
         """Banner expiry / suppression cleared: persisted without a version bump."""
         try:
             self._write(course, self.version)
+            self._clear_write_alert()
         except OSError:
             log.exception("course write failed")
         self.course = course
         if course.banner is None:
             self._banner_until = None
+
+    def _clear_write_alert(self) -> None:
+        """A successful write ends a transient disk failure's alert (IN-07)."""
+        if WRITE_ALERT in self.alerts:
+            self.alerts.remove(WRITE_ALERT)
 
     def _copy(self, **update: Any) -> Course:
         return self.course.model_copy(deep=True, update=update)
@@ -322,8 +342,17 @@ class CourseStore:
     def select(self, template: str, base_version: int | None = None) -> dict:
         if template not in self.library.get("templates", {}):
             raise ValueError(f"unknown course template {template!r}")
-        new = course_from_template(self.library, template, self.course.overrides)
-        new.next_mark_n = self.course.next_mark_n
+        old = self.course
+        if template == old.template:  # WR-05: re-selecting the template in use changes nothing
+            self._check_version(base_version)
+            return self.to_api()
+        new = course_from_template(self.library, template, old.overrides)
+        new.next_mark_n = old.next_mark_n
+        # the same mark at the same place in the new sequence stays active (A <-> B share
+        # Vodice, Plić Sestre and Jabuka): race progress survives a template correction
+        i = old.active_idx
+        if 1 <= i < len(new.seq) and new.seq[i].mark_id == old.seq[i].mark_id and not old.finished:
+            new.active_idx = i
         self._commit(
             new, base_version, {"type": "course_edit", "action": "select", "template": template}
         )
@@ -393,7 +422,11 @@ class CourseStore:
         new = self._copy(template="custom", next_mark_n=n + 1, banner=None, suppress_idx=None)
         new.marks[mark_id] = mark
         new.seq.insert(at, leg)
-        if at <= new.active_idx:
+        # IN-03: inserted right before the active FINISH ("À la fin" on the last leg): the new
+        # mark is the next one to round, so it becomes active (not listed as already done).
+        # Anywhere else the active mark stays the same mark.
+        before_active_finish = at == c.active_idx == self.last_idx and not c.finished
+        if at <= new.active_idx and not before_active_finish:
             new.active_idx += 1
         if new.finish_idx is not None and at <= new.finish_idx:
             new.finish_idx += 1
@@ -547,6 +580,7 @@ class CourseStore:
         self._fsm_key = None
         self._entered = False
         self._cand_since = None
+        self._suppressed_in_zone = False
 
     def _tick_banner(self, t: float) -> None:
         b = self.course.banner
@@ -556,8 +590,8 @@ class CourseStore:
         if self._banner_until is None:  # loaded from disk: how much of the window is left?
             remaining = BANNER_S
             if self.wall is not None and b.at_wall is not None and b.until_wall is not None:
-                now = self.wall()
-                if now >= b.at_wall - 1.0:  # a clock behind the advance is not trusted
+                now = self.wall()  # trusted UTC; None while unsynced -> the full window
+                if now is not None and now >= b.at_wall - 1.0:  # a clock behind it: not trusted
                     remaining = b.until_wall - now
             remaining = min(BANNER_S, remaining)
             if remaining > 0:
@@ -568,8 +602,12 @@ class CourseStore:
         self._save_quiet(self.course.model_copy(update={"banner": None}))
 
     def _abeam(self, lat: float, lon: float, idx: int, mark: Mark) -> bool:
-        """Passed abeam of the mark relative to the incoming leg."""
-        prev = self.course.marks.get(self.course.seq[idx - 1].mark_id)
+        """Passed abeam of the mark relative to the incoming leg. At a turn sharper than
+        HAIRPIN_DEG (Jabuka: in 203 deg, out 009/038 deg) abeam of the incoming leg is reached
+        half a lap before the rounding is done (WR-01): the boat must ALSO be past the mark
+        along the outgoing leg, i.e. round on the far side; otherwise the zone exit decides."""
+        c = self.course
+        prev = c.marks.get(c.seq[idx - 1].mark_id)
         if prev is None:
             return False
         bearing, dist = geo.bearing_distance(prev.lat, prev.lon, mark.lat, mark.lon)
@@ -577,7 +615,22 @@ class CourseStore:
             return False
         px, py = geo.to_local(lat, lon, mark.lat, mark.lon)
         ux, uy = geo.unit(bearing)
-        return px * ux + py * uy > 0.0
+        if px * ux + py * uy <= 0.0:
+            return False
+        nxt = c.marks.get(c.seq[idx + 1].mark_id) if idx + 1 < len(c.seq) else None
+        if nxt is None:
+            return True
+        out, out_dist = geo.bearing_distance(mark.lat, mark.lon, nxt.lat, nxt.lon)
+        if out_dist < 1e-6:
+            return True
+        turn = math.degrees(math.remainder(out - bearing, 2 * math.pi))  # + right, - left
+        if abs(turn) <= HAIRPIN_DEG:
+            return True
+        side = c.seq[idx].side
+        if (side == "stbd" and turn < 0) or (side == "port" and turn > 0):
+            return False  # rounded the long way (> 180 deg): only the zone exit counts
+        vx, vy = geo.unit(out)
+        return px * vx + py * vy > 0.0
 
     def on_tick(self, lat: float | None, lon: float | None, t_mono: float) -> None:
         """Record the boat position and run the rounding state machine (never raises)."""
@@ -591,6 +644,11 @@ class CourseStore:
             log.exception("course state machine failed")
 
     def _fsm(self, lat: float, lon: float, t: float) -> None:
+        # IN-05: the debounce needs DEBOUNCE_S of continuous evidence; after a GPS gap the first
+        # fix starts a fresh candidate instead of advancing on a single sample
+        last, self._last_fsm_t = self._last_fsm_t, t
+        if last is not None and not 0.0 <= t - last <= FSM_GAP_S:
+            self._cand_since = None
         c = self.course
         idx = c.active_idx
         if c.finished or not 1 <= idx < len(c.seq):
@@ -608,17 +666,26 @@ class CourseStore:
         zone = leg.radius_nm + ZONE_MARGIN_NM
         if c.suppress_idx is not None:
             if c.suppress_idx == idx and d <= zone:
+                self._suppressed_in_zone = True
                 return  # Annuler: not again until the boat has left this zone
+            left_this_zone = c.suppress_idx == idx and self._suppressed_in_zone
             self._save_quiet(c.model_copy(update={"suppress_idx": None}))
             self._reset_fsm()
             self._fsm_key = key
             if d <= zone:
                 return
+            # CR-02: leaving the zone the boat was suppressed in (seen inside it after Annuler)
+            # IS the rounding evidence: keep it, the usual 10 s "left the zone" debounce then
+            # advances. Discarding it would leave the course stuck on the mark just rounded,
+            # since the boat never re-enters that zone. Annuler tapped already outside the zone
+            # still needs a fresh entry.
+            if left_this_zone:
+                self._entered = True
         if idx >= self.last_idx:  # the finish
             if d <= max(leg.radius_nm, FINISH_MIN_NM):
                 self._finish(t, idx, mark)
             return
-        if d > GATE_NM:
+        if d > max(GATE_NM, zone + GATE_OVER_ZONE_NM):  # a zone past 2 nm can still be left
             self._entered = False
             self._cand_since = None
             return
@@ -638,8 +705,11 @@ class CourseStore:
         if self.wall is None:
             return None, None
         try:
-            at = float(self.wall())
+            now = self.wall()
+            at = None if now is None else float(now)
         except Exception:
+            return None, None
+        if at is None:  # trusted UTC unknown: a restart offers the full window
             return None, None
         return at, at + BANNER_S
 

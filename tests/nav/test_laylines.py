@@ -120,6 +120,20 @@ def test_polar_mode_ignores_samples() -> None:
     assert _ab(res)[0] == pytest.approx(A_H, abs=0.002)
 
 
+def test_sailed_mode_other_tack_is_the_polar_heading_not_the_ground_track() -> None:
+    """IN-06: "Autre bord" is compared with the compass after the tack: in sailed mode it stays
+    the polar heading (TWD + target TWA = 045), not the port ground track (049, leeway and
+    current included)."""
+    sailed = _sailed(TackSample(-50.0, 5.5), TackSample(49.0, 5.8))
+    res = solve(_boat_at(180.0, 5.0), _wind(), TARGETS, ANCHOR, src="sailed", sailed=sailed)
+    assert res.layline["src"] == "sailed"
+    assert res.layline["other_tack_hdg_t"] == pytest.approx(45.0)
+    res = solve(
+        _boat_at(180.0, 5.0), _wind(twa_deg=-45.0), TARGETS, ANCHOR, src="sailed", sailed=sailed
+    )
+    assert res.layline["other_tack_hdg_t"] == pytest.approx(315.0)
+
+
 # -- leg type hysteresis on twd_lay ---------------------------------------------------------------
 def test_leg_hysteresis_on_layline_twd() -> None:
     # beta = 45 + 3 -> still a beat when coming from a beat; 45 + 6 -> reach
@@ -197,6 +211,65 @@ def test_fetching_gives_the_course_to_steer() -> None:
     assert res.layline["state"] == "fetching"
     assert res.helm["cts_t"] == pytest.approx(312.0, abs=0.1)
     assert res.helm["primary"] == "twa_up"
+
+
+def _no_go(cts_deg: float, twd_deg: float = 0.0) -> float:
+    return abs((cts_deg - twd_deg + 180.0) % 360.0 - 180.0)
+
+
+@pytest.mark.parametrize("twa_deg", [90.0, -90.0, 100.0, -80.0])
+def test_beat_leg_reaching_boat_gets_its_tack_heading_not_the_mark(twa_deg: float) -> None:
+    """CR-03: wind from 000, mark due north, boat reaching at TWA ~90: the course to steer is
+    the current tack's close-hauled heading, never the bearing to the mark (head to wind)."""
+    hdg = (0.0 - twa_deg) % 360.0
+    boat = _boat_at(180.0, 5.0, hdg=R(hdg), bsp_kn=7.0)
+    res = solve(boat, _wind(twa_deg=twa_deg), TARGETS, ANCHOR, reach_bsp_kn=7.0)
+    assert res.leg == "beat"
+    assert res.helm["primary"] == "cts"
+    cts = res.helm["cts_t"]
+    assert _no_go(cts) >= TARGETS.up_twa - 0.5  # outside the no-go zone
+    expected = 315.0 if twa_deg > 0 else 45.0  # starboard: TWD - TWA, port: TWD + TWA
+    assert cts == pytest.approx(expected, abs=0.1) and res.helm["target"] == cts
+    # starboard tack heading 270 must head up to 315 (turn right), port 090 to 045 (turn left)
+    assert (res.helm["deviation"] < 0) == (twa_deg > 0)
+    assert res.target_bsp_kn == TARGETS.up_bsp
+
+
+def test_beat_leg_never_shows_a_downwind_target() -> None:
+    """CR-03: right after rounding a leeward mark onto a beat (|TWA| 150, previous primary
+    twa_down) the target is the upwind TWA with a LOFER deviation."""
+    boat = _boat_at(180.0, 5.0, hdg=R(210.0))
+    for prev in (None, "twa_down", "cts", "twa_up"):
+        res = solve(boat, _wind(twa_deg=150.0), TARGETS, ANCHOR, prev_primary=prev)
+        assert res.leg == "beat"
+        assert res.helm["primary"] == "twa_up", prev
+        assert res.helm["target"] == TARGETS.up_twa
+        assert res.helm["deviation"] == pytest.approx(105.0, abs=0.1)  # > 0: LOFER
+        assert res.target_bsp_kn == TARGETS.up_bsp
+
+
+def test_run_leg_never_shows_an_upwind_target_or_a_dead_run_cts() -> None:
+    """CR-03 on a run leg (mark due south, wind from 000): an upwind |TWA| gets the downwind
+    target; a reaching boat gets its gybe heading, not the dead-run bearing to the mark."""
+    boat = _boat_at(0.0, 5.0, hdg=R(315.0))
+    res = solve(boat, _wind(twa_deg=45.0), TARGETS, ANCHOR, prev_primary="twa_up")
+    assert res.leg == "run" and res.helm["primary"] == "twa_down"
+    assert res.helm["target"] == TARGETS.down_twa
+    res = solve(_boat_at(0.0, 5.0, hdg=R(270.0)), _wind(twa_deg=90.0), TARGETS, ANCHOR)
+    assert res.leg == "run" and res.helm["primary"] == "cts"
+    assert res.helm["cts_t"] == pytest.approx(210.0, abs=0.1)  # TWD - 150 on starboard
+    assert _no_go(res.helm["cts_t"]) <= TARGETS.down_twa + 0.5
+
+
+def test_fetching_reaching_boat_on_a_beat_steers_the_fetch_cts() -> None:
+    """Fetching on a beat leg while reaching: the (sailable) course to the mark."""
+    boat = _boat_at(132.0, 3.0, hdg=R(270.0))  # anchor bears 312, TWA 90 on starboard
+    res = solve(boat, _wind(twa_deg=90.0), TARGETS, ANCHOR, prev_leg="beat")
+    assert res.layline["state"] == "fetching"
+    assert res.helm["primary"] == "cts"
+    assert res.helm["cts_t"] == pytest.approx(312.0, abs=0.1)
+    assert res.helm["target"] == res.helm["cts_t"]
+    assert res.helm["deviation"] == pytest.approx(-42.0, abs=0.1)
 
 
 def test_fetching_cts_is_current_corrected() -> None:
@@ -291,3 +364,25 @@ def test_nav_service_current_ignored_in_the_zone(tmp_path) -> None:
 def test_nav_service_sailed_setting_without_samples_reports_polar(tmp_path) -> None:
     nav, _ = _nav_with_inputs(tmp_path, layline_source="sailed")
     assert nav.update()["layline"]["src"] == "polar"
+
+
+def test_nav_service_hysteresis_restarts_on_a_new_mark(tmp_path, monkeypatch) -> None:
+    """IN-07: the previous leg type / primary number of the mark just rounded never carry over
+    to the next mark (its first ticks would keep the old leg's hysteresis)."""
+    import jabuka.core.nav_service as ns
+
+    nav, _ = _nav_with_inputs(tmp_path)
+    seen: list[tuple] = []
+    real = ns.laylines.solve
+
+    def spy(*a, **k):
+        seen.append((k.get("prev_leg"), k.get("prev_primary")))
+        return real(*a, **k)
+
+    monkeypatch.setattr(ns.laylines, "solve", spy)
+    nav.update()
+    nav.update()
+    assert seen[0] == (None, None) and seen[1][0] == "beat"
+    nav.course.next()
+    nav.update()
+    assert seen[2] == (None, None)
