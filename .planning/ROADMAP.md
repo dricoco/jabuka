@@ -76,13 +76,13 @@ Plans:
   4. Every direction is handled as TRUE, with a configurable variation (~+5°E) and heading offset. True wind is computed and damped from AWA/AWS/BSP/HDG when available. When the bus provides nothing, the user types in TWD/TWS read off the B&G displays and the laylines keep working, with a badge showing the active source (LIVE / MANUAL). Within the configured Jabuka radius, heading is flagged untrusted and GPS COG is used instead.
   5. At night the helm view runs in true-black/red mode without spoiling night vision, a lock mode ignores spray and rain touches, and the tablet screen stays awake for the whole race.
 
-**Plans:** 4/5 plans executed (wave 1: 01; wave 2: 02 ‖ 03 ‖ 04 ‖ 05)
+**Plans:** 5/5 plans executed (wave 1: 01; wave 2: 02 ‖ 03 ‖ 04 ‖ 05)
 
 Plans:
 
 - [x] 02-01-PLAN.md — Helm tracer + every shared seam: live wind → polar targets → laylines → nav WS message → Barre numbers; course A/B + settings REST with atomic persistence; PMTiles tile server + race-pack router; vendored MapLibre 5.24.0/glyphs/sprites + day/night styles + map.js; app shell (diag moved to /diag.html); Pi lock + pyproject declarations; Playwright harness
 - [x] 02-02-PLAN.md — Laptop race-pack prep: `jabuka-prep-map` (Protomaps extract, seamarks + coastline from Geofabrik, fallback chain, manifest, `--check`), `jabuka-prep-polar` (grid/Expedition/ORC CSV/JSON → polar.json), docs/RACE-PACK.md
-- [ ] 02-03-PLAN.md — Wind & laylines complete: manual TWD/TWS (°M/°T) + LIVE > MANUEL > NONE, TRUE boundary + vector damping + Hercules cross-check, Jabuka zone → COG, sailed tacking angles, set/drift opt-in, actual-track countdown, efficiency up/down, Réglages manual-wind form
+- [x] 02-03-PLAN.md — Wind & laylines complete: manual TWD/TWS (°M/°T) + LIVE > MANUEL > NONE, TRUE boundary + vector damping + Hercules cross-check, Jabuka zone → COG, sailed tacking angles, set/drift opt-in, actual-track countdown, efficiency up/down, Réglages manual-wind form
 - [x] 02-04-PLAN.md — Course & marks complete: tap/drag/sheet editing with land warning, reorder/delete/side/radius, "Finir ici", 409 concurrency, kill-safe persistence, auto-advance FSM + banner/Annuler, closed-loop `jabuka-sim --follow`
 - [x] 02-05-PLAN.md — Helm view complete: red-on-black night mode end to end, full map overlays (course, marks + radii, laylines, boat, seamarks), course-up/north-up, big numbers ≥ 20% vh with PERTE DONNÉES, lock mode, Wake Lock/NoSleep, docs/TABLET-SETUP.md
 
@@ -104,13 +104,13 @@ Plans:
   4. The helm sees a countdown to the next recommended tack or gybe from the route (from the laylines when there is no route) and the cost in minutes of not tacking now. Pressing "Stay on this tack" shows the earliest next tack and an updated countdown. If the advised tack time passes by 2 minutes with no tack detected, the display stops saying "tack" and the route recomputes.
   5. On the Pi 3B (benchmarked by 2026-11-09), the optimal route and the forced-current-tack route both finish within the rerun cadence, using either full settings or the documented degraded settings. Laylines and the helm view keep updating at about 1 Hz while routing runs.
 
-**Plans:** 3/6 plans executed (wave 1: 01 ‖ 02 ‖ 04, pure core, can start before Phase 2 merges; wave 2: 03; wave 3: 05 after Phase 2 02-01/02-03/02-04; wave 4: 06 after 02-05)
+**Plans:** 4/6 plans executed (wave 1: 01 ‖ 02 ‖ 04, pure core, can start before Phase 2 merges; wave 2: 03; wave 3: 05 after Phase 2 02-01/02-03/02-04; wave 4: 06 after 02-05)
 
 Plans:
 
 - [x] 03-01-PLAN.md — Never cross land: OSM coastline + hazards (Plić Sestre built in) → 25 m mask with 100/200 m margins (`python -m jabuka.prep.land build/check`), runtime LandMask (segment checks, snap, polyline validation), geodesic fields, run-based flood fill, committed mask fixture, island-crossing + channel connectivity suites, route purity scan, docs/ROUTING.md
 - [x] 03-02-PLAN.md — Weather race pack: `jabuka-prep` wind (ICON-EU run selection + download), waves (EWAM), grib (any GRIB1/GRIB2), current (Copernicus NetCDF), check; Pi-side `route.racepack` loader (no pickle, sha256) + GRIB-02 coverage rules; real DWD samples; docs/WEATHER-PACK.md
-- [ ] 03-03-PLAN.md — Isochrone engine: polar grid, fields (bias, waves, current), rounding waypoints, multi-leg routing with geodesic sector ranking, 8-scenario course A/B island suite, forced-tack routing + cost, old-route re-evaluation, worker cycle, `jabuka-route-bench` + degraded ladder L0–L5 (Pi gate 2026-11-09)
+- [x] 03-03-PLAN.md — Isochrone engine: polar grid, fields (bias, waves, current), rounding waypoints, multi-leg routing with geodesic sector ranking, 8-scenario course A/B island suite, forced-tack routing + cost, old-route re-evaluation, worker cycle, `jabuka-route-bench` + degraded ladder L0–L5 (Pi gate 2026-11-09)
 - [x] 03-04-PLAN.md — Pure tack advice + bias + pool: route follower (target TWA/heading, route-time countdown), tack detector, missed-tack watch, triggers, hysteresis, stay-on-tack state, gated bias estimator, forkserver RouterPool (nice, timeout kill/recreate on 3.13/3.14, coalescing)
 - [ ] 03-05-PLAN.md — Core integration (after Phase 2): numpy in the Pi lock + prep extra + console scripts, RouterService (clock gate, pack alerts, triggers, hysteresis, On reste, cost, missed tack, persistence, invalid-route discard), nav `route` block + route WS/REST, GPS + GRIB-only wind source, bias wiring, tick-latency test
 - [ ] 03-06-PLAN.md — Helm & map (after 02-05): route overlay, route-first countdown/target with layline fallback, ON RESTE (lock-aware), cost, "Route mise à jour…", GRIB badge, bias display, Diag row; real-data dry run script + e2e test; operator and Friday-pack docs
@@ -143,8 +143,8 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
-| 2. Helm MVP — Laylines, Marks & Map | 4/5 | In Progress|  |
-| 3. Weather Routing & Tack Advice | 3/6 | In Progress|  |
+| 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
+| 3. Weather Routing & Tack Advice | 4/6 | In Progress|  |
 | 4. Race Readiness — Hardening & Commissioning | 0/TBD | Not started | - |
 
 ---
