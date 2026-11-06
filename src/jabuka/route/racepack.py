@@ -74,6 +74,48 @@ class RacePack:
     polar_path: Path | None = None
     meta: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    # sidecar sha256 of every file the router uses, read at load (pack_fingerprint)
+    fingerprint: tuple[tuple[str, str | None], ...] = ()
+
+
+FINGERPRINT_STEMS = ("wind", "waves", "current", "landmask")
+
+
+def pack_fingerprint(pack_dir: str | Path) -> tuple[tuple[str, str | None], ...]:
+    """((stem, sidecar sha256 | None when the npz is absent | "?" when the sidecar is
+    unreadable), ...) for wind, waves, current and the land mask: cheap (small JSON reads), so
+    the core and the worker can tell whether they route on the same pack (03-REVIEW MD-05)."""
+    pack_dir = Path(pack_dir)
+    out: list[tuple[str, str | None]] = []
+    for stem in FINGERPRINT_STEMS:
+        if not (pack_dir / f"{stem}.npz").exists():
+            out.append((stem, None))
+            continue
+        try:
+            sha = str(json.loads((pack_dir / f"{stem}.json").read_text(encoding="utf-8"))["sha256"])
+        except (OSError, ValueError, KeyError, TypeError):
+            sha = "?"
+        out.append((stem, sha))
+    return tuple(out)
+
+
+def verify_landmask(path: str | Path) -> None:
+    """The land mask must match the sha256 of its landmask.json sidecar (written by the prep);
+    ValueError (French) otherwise (03-REVIEW MD-05: it was opened without any check)."""
+    path = Path(path)
+    side = path.with_suffix(".json")
+    try:
+        expected = str(json.loads(side.read_text(encoding="utf-8"))["sha256"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"{path.name} : fiche {side.name} absente ou illisible") from exc
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ValueError(f"{path.name} : lecture impossible ({exc})") from exc
+    if digest != expected:
+        raise ValueError(
+            f"{path.name} : empreinte sha256 différente de {side.name} (fichier altéré)"
+        )
 
 
 @dataclass(frozen=True)
@@ -200,6 +242,7 @@ def load_pack(pack_dir: str | Path) -> RacePack:
     """Load and validate the race pack in ``pack_dir`` (fixed file names only)."""
     pack_dir = Path(pack_dir)
     pack = RacePack(dir=pack_dir)
+    pack.fingerprint = pack_fingerprint(pack_dir)
     for comp in ("wind", "waves", "current"):
         grid, meta, err = _load_component(pack_dir, comp)
         setattr(pack, comp, grid)

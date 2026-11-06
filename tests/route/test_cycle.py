@@ -113,3 +113,35 @@ def test_pack_without_mask_fails_cleanly(tmp_path, creq) -> None:
     assert a.status == b.status == "ok"
     assert not a.value.optimal.ok and "landmask.npz" in a.value.optimal.reason
     assert stats["crashes"] == 0 and stats["restarts"] == 0
+
+
+def test_altered_land_mask_is_refused(tmp_path) -> None:
+    """03-REVIEW MD-05: landmask.npz is checked against its landmask.json sha256."""
+    import json
+    import shutil
+
+    pack = assemble_fixture_pack(tmp_path / "pack", with_geofields=False)
+    side = pack / "landmask.json"
+    doc = json.loads(side.read_text())
+    doc["sha256"] = "0" * 64
+    side.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="empreinte sha256"):
+        cycle.build_env(pack)
+    side.unlink()
+    with pytest.raises(ValueError, match="landmask.json"):
+        cycle.build_env(pack)
+    shutil.rmtree(pack)
+
+
+def test_worker_refuses_a_request_for_another_pack(pack_dir, creq) -> None:
+    """03-REVIEW MD-05: a worker restarted after the pack was replaced on disk must not route
+    the helm on a pack the core did not load."""
+    from jabuka.route.racepack import pack_fingerprint
+
+    cycle.init_worker(str(pack_dir))
+    fp = pack_fingerprint(pack_dir)
+    same = cycle.run_cycle(dataclasses.replace(creq, pack_fp=fp))
+    assert same.optimal.ok
+    other = tuple((stem, "f" * 64 if stem == "wind" else sha) for stem, sha in fp)
+    res = cycle.run_cycle(dataclasses.replace(creq, pack_fp=other))
+    assert not res.optimal.ok and res.optimal.reason.startswith(cycle.PACK_CHANGED)

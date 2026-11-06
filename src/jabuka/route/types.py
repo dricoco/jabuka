@@ -187,6 +187,8 @@ class CycleRequest:
     old_path: tuple[PathPoint, ...] | None = None
     # route time of the helm follower's projection on old_path (evaluate_path window, MD-03)
     old_t_here: float | None = None
+    # fingerprint of the pack the core loaded (racepack.pack_fingerprint, MD-05)
+    pack_fp: tuple[tuple[str, str | None], ...] | None = None
 
 
 @dataclass(frozen=True)

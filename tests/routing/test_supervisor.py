@@ -215,10 +215,15 @@ def test_route_persists_across_a_restart(routing_core, fake_pool, rh, tmp_path) 
     core2.sail(*pos, 157.0)
     nav = core2.tick(1.0)
     r = nav["route"]
-    assert r["state"] == "ok" and r["version"] == 1
-    assert r["age_s"] >= 600
-    assert core2.client.get("/api/route").json()["version"] == 1
+    # 03-REVIEW MD-05: restored but not steerable until a worker cycle has re-checked it
+    assert r["state"] == "outdated" and r["version"] == 1
+    assert r["reason"] == "route sauvegardée : vérification en cours"
+    assert r["age_s"] >= 600 and r["target_twa"] is None
+    assert core2.client.get("/api/route").json()["version"] == 1  # drawn greyed on the map
     fake2.hold = False
+    core2.settle()
+    nav = core2.tick(0.0)
+    assert nav["route"]["state"] == "ok" and nav["route"]["version"] == 2
 
 
 def test_corrupt_route_file_is_ignored_with_an_alert(routing_core, fake_pool, rh, tmp_path):
@@ -286,6 +291,37 @@ def test_low_speed_cog_noise_never_fires_off_route(routing_core, fake_pool, rh) 
         core.settle()
     assert nav["route"]["off_route"] is False
     assert not any("off_route" in r for r in _reasons(core))
+
+
+# -- one pack for the core and the worker (03-REVIEW MD-05) ---------------------------------------
+def test_pack_replaced_on_disk_raises_a_restart_alert(routing_core, fake_pool, rh, route_pack):
+    core, pos = _start(routing_core, fake_pool, rh)
+    assert core.router.pack_fp == core.router.pack.fingerprint
+    assert fake_pool.requests[-1].pack_fp == core.router.pack_fp
+    rh.write_wind(route_pack, twd_deg=270.0)  # a new wind.npz + sidecar, core not restarted
+    nav = _run(core, pos, 61)
+    assert "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core" in nav["alerts"]
+
+
+def test_worker_pack_mismatch_raises_the_alert(routing_core, fake_pool, rh) -> None:
+    from jabuka.route import cycle
+    from jabuka.route.types import RouteResult
+
+    core, pos = _start(routing_core, fake_pool, rh)
+
+    def changed(creq):
+        import dataclasses
+
+        b = creq.base
+        bad = RouteResult(
+            ok=False, reason=f"{cycle.PACK_CHANGED} : x", request_id=b.request_id, t0=b.t0
+        )
+        return dataclasses.replace(fake_pool.default(creq), optimal=bad)
+
+    fake_pool.script = changed
+    core.call(core.router.request, "manuel", True)
+    nav = _run(core, pos, 1)
+    assert "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core" in nav["alerts"]
 
 
 # -- pool watchdog (03-REVIEW CR-01) --------------------------------------------------------------

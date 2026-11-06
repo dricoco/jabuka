@@ -53,7 +53,13 @@ from jabuka.route.fields import Fields, fields_from_pack
 from jabuka.route.frame import DEFAULT_FRAME
 from jabuka.route.polar_grid import normalize_curves
 from jabuka.route.pool import PoolOutcome, RouterPool
-from jabuka.route.racepack import RacePack, coverage, load_pack, window_from_local
+from jabuka.route.racepack import (
+    RacePack,
+    coverage,
+    load_pack,
+    pack_fingerprint,
+    window_from_local,
+)
 from jabuka.route.types import (
     LEVELS,
     CourseMark,
@@ -95,6 +101,7 @@ REASON_OUT_COURSE = "parcours modifié : recalcul en cours"
 REASON_OUT_MISSED = "virement manqué : nouvelle route impossible"
 REASON_OUT_AGE = "route périmée"
 REASON_OUT_FAIL = "le routeur échoue"
+REASON_OUT_RESTORED = "route sauvegardée : vérification en cours"
 
 ROUTE_FILE = "route.json"
 BIAS_FILE = "bias.json"
@@ -105,6 +112,8 @@ INVALID_ALERT_S = 300.0  # "ROUTE INVALIDE" stays in the alerts this long
 ALERT_INVALID = "ROUTE INVALIDE : "
 ALERT_RESTORE = "Route sauvegardée illisible : ignorée"
 ALERT_POOL = "ROUTEUR RELANCÉ : "
+ALERT_PACK_CHANGED = "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core"
+PACK_CHECK_S = 60.0  # the pack's sidecars are re-read this often (MD-05)
 POOL_ALERT_S = 300.0  # the router-restart alert stays this long
 MASK_WORDS = ("terre", "invalide", "masque")
 
@@ -191,6 +200,10 @@ class RouterService:
         self.pack_ok = False
         self.pack_reason: str | None = REASON_NOT_LOADED
         self.pack_version = 0
+        self.pack_fp: tuple | None = None  # fingerprint of the loaded pack (MD-05)
+        self._pack_changed = False
+        self._pack_check_mono: float | None = None
+        self._restored_unverified = False  # a route.json route not yet re-checked by a cycle
         self.fields: Fields | None = None
         # routing state
         self.version = 0
@@ -270,6 +283,8 @@ class RouterService:
             return
         pack = load_pack(self.racepack_dir)
         self.pack = pack
+        self.pack_fp = pack.fingerprint
+        self._pack_changed = False
         reasons = []
         if pack.wind is None:
             reasons.append("; ".join(e for e in pack.errors if "wind" in e) or "vent absent")
@@ -377,6 +392,7 @@ class RouterService:
         now = self.now()
         s = self.nav.settings
         self._watch_pool()
+        self._watch_pack()
         self._observe(now, msg)
         block = self._block()
         msg["route"] = block
@@ -586,6 +602,7 @@ class RouterService:
             stay_active=stay,
             old_path=old,
             old_t_here=f.t_route_here if old is not None and f is not None else None,
+            pack_fp=self.pack_fp,
         )
 
     def _bias_params(self, now: float | None) -> BiasParams | None:
@@ -744,6 +761,23 @@ class RouterService:
         self._last_fail = f"routeur relancé : {why}"
         log.warning("router pool: %s", why)
 
+    def _watch_pack(self) -> None:
+        """Every PACK_CHECK_S: the pack on disk must still be the one loaded at startup (the
+        worker reloads it on every restart, MD-05)."""
+        if self.racepack_dir is None or self.pack_fp is None:
+            return
+        mono = self.clock.monotonic()
+        if self._pack_check_mono is not None and mono - self._pack_check_mono < PACK_CHECK_S:
+            return
+        self._pack_check_mono = mono
+        try:
+            fp = pack_fingerprint(self.racepack_dir)
+        except Exception:  # noqa: BLE001 - diagnostics only
+            return
+        if fp != self.pack_fp and not self._pack_changed:
+            log.warning("race pack changed on disk since startup: restart needed")
+            self._pack_changed = True
+
     def _watch_pool(self) -> None:
         """1 Hz pool watchdog (03-REVIEW CR-01): alert on pool faults, recycle a pool whose job
         has been running for more than POOL_STUCK_S, recreate a missing pool."""
@@ -874,6 +908,8 @@ class RouterService:
         opt = res.optimal
         if not opt.ok:
             reason = opt.reason or "échec du routage"
+            if reason.startswith(cycle.PACK_CHANGED):
+                self._pack_changed = True
             if any(w in reason.lower() for w in MASK_WORDS):
                 self._invalid(reason, req)
             else:
@@ -960,6 +996,8 @@ class RouterService:
         r = self.route
         if r is None:
             return None
+        if self._restored_unverified:
+            return REASON_OUT_RESTORED
         if self._course_changed(r, f):
             return REASON_OUT_COURSE
         if self.missed and (
@@ -1013,6 +1051,7 @@ class RouterService:
         self._fail_streak = 0
         self._route_conf_t = float(req.base.t0)
         self.withdrawn = None
+        self._restored_unverified = False
         self.missed = False
         self._missed_failed = False
         self._missed_t = None
@@ -1146,6 +1185,8 @@ class RouterService:
                 self._invalid_alert = None
         if self._restore_alert:
             out.append(ALERT_RESTORE)
+        if self._pack_changed:
+            out.append(ALERT_PACK_CHANGED)
         if self._pool_alert is not None:
             text, until = self._pool_alert
             if self.clock.monotonic() < until:
@@ -1248,6 +1289,9 @@ class RouterService:
         if r.course_version != self.nav.course.version:
             return  # computed for another course
         self.route = r
+        # computed against a pack / mask that may have changed: shown (greyed, withdrawn)
+        # until the first worker cycle replaces it (MD-05)
+        self._restored_unverified = True
         self.version = max(self.version, r.version)
         self._on_new_route()
 
