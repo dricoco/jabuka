@@ -1,11 +1,13 @@
 // App shell: tabs, one WebSocket with a link watchdog, the module bus, version-driven refetch of
 // the course and settings, and the dynamically imported feature modules.
 //
-// Module contract: each module exports mount(ctx), ctx = {section, api, bus, badge}.
+// Module contract: each module exports mount(ctx), ctx = {section, api, bus, badge, latest}.
 //   bus events (CustomEvent detail): "nav" (nav message), "course" (GET /api/course JSON),
 //   "settings" ({version, settings}), "tab" (tab name), "link" ("live" | "stale" | "reconnect").
 //   api: {get, post, put, patch, del} -> parsed JSON; throws ApiError {status, body}.
 //   badge(key, text | null, cls): show/clear a badge in #badges.
+//   latest(type): the last detail emitted for a bus event type (a module mounted after the first
+//   "course"/"settings"/"nav" event starts from it), or null.
 // A module that fails to load or mount never stops the helm numbers.
 
 import { linkState } from "./diag_logic.js";
@@ -13,7 +15,12 @@ import { sourceBadge } from "./helm_logic.js";
 
 const $ = (id) => document.getElementById(id);
 export const bus = new EventTarget();
-const emit = (type, detail) => bus.dispatchEvent(new CustomEvent(type, { detail }));
+const lastEvent = new Map();
+const emit = (type, detail) => {
+  lastEvent.set(type, detail);
+  bus.dispatchEvent(new CustomEvent(type, { detail }));
+};
+export const latest = (type) => lastEvent.get(type) ?? null;
 
 // -- REST helper --------------------------------------------------------------------------------
 export class ApiError extends Error {
@@ -192,12 +199,26 @@ const MODULES = [
   ["helm", "./helm.js", "tab-barre"],
   ["carte", "./carte.js", "tab-carte"],
   ["reglages", "./reglages.js", "tab-reglages"],
+  ["overlays", "./overlays.js", null],
 ];
+
+// The map is optional for the helm: without WebGL (or MapLibre) the numbers keep updating and a
+// badge says so (the Leaflet fallback stays deferred).
+async function loadMap() {
+  try {
+    const m = await import("./map.js");
+    await m.ensureMap($("map"), { theme: m.storedTheme() });
+    badge("map", null);
+  } catch (e) {
+    console.error("map unavailable", e);
+    badge("map", "CARTE INDISPONIBLE", "bad");
+  }
+}
 
 async function loadModule(name, path, sectionId) {
   try {
     const mod = await import(path);
-    await mod.mount({ section: sectionId ? $(sectionId) : null, api, bus, badge });
+    await mod.mount({ section: sectionId ? $(sectionId) : null, api, bus, badge, latest });
   } catch (e) {
     console.error(`module ${name} failed`, e);
     badge(`mod-${name}`, `${name.toUpperCase()} INDISPONIBLE`, "warn");
@@ -215,6 +236,7 @@ function init() {
   loadModule(...MODULES[0]).then(() => {
     connect();
     setInterval(watchdog, 1000);
+    loadMap();
     for (const m of MODULES.slice(1)) loadModule(...m);
   });
   showTab(currentTab);

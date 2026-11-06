@@ -92,7 +92,15 @@ def test_source_badge_and_deviation_class() -> None:
 
 
 def test_static_modules_parse(tmp_path: Path) -> None:
-    for name in ("app.js", "helm.js", "helm_logic.js", "carte.js", "reglages.js"):
+    for name in (
+        "app.js",
+        "helm.js",
+        "helm_logic.js",
+        "carte.js",
+        "reglages.js",
+        "map.js",
+        "overlays.js",
+    ):
         copy = tmp_path / (Path(name).stem + ".mjs")
         copy.write_text((STATIC / name).read_text())
         proc = subprocess.run([NODE, "--check", str(copy)], capture_output=True, text=True)
@@ -121,5 +129,5 @@ def test_static_modules_parse(tmp_path: Path) -> None:
 
 def test_dom_built_without_inner_html() -> None:
     """T-02-01-02: data (mark names, alerts) is rendered with textContent only."""
-    for name in ("app.js", "helm.js", "carte.js", "reglages.js"):
+    for name in ("app.js", "helm.js", "carte.js", "reglages.js", "map.js", "overlays.js"):
         assert "innerHTML" not in (STATIC / name).read_text(), name

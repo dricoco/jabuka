@@ -107,6 +107,7 @@ export function mount(ctx) {
     current = ev.detail;
     if (!form.contains(document.activeElement)) render();
   });
+  current = ctx.latest?.("settings") ?? null;
 
   ctx.api
     .get("/api/settings/schema")

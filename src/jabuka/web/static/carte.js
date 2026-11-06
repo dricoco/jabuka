@@ -91,4 +91,6 @@ export function mount(ctx) {
     course = ev.detail;
     render();
   });
+  course = ctx.latest?.("course") ?? null;
+  render();
 }

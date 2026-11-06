@@ -32,4 +32,6 @@ export function render(nav) {
 
 export function mount(ctx) {
   ctx.bus.addEventListener("nav", (ev) => render(ev.detail));
+  const last = ctx.latest?.("nav");
+  if (last) render(last);
 }

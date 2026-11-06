@@ -77,7 +77,7 @@ button:focus-visible { outline: 2px solid var(--accent); }
 
 main { position: fixed; inset: 56px 0 0 0; z-index: 10; pointer-events: none; }
 .tab { position: absolute; inset: 0; }
-.tab[hidden] { display: none; }
+.tab[hidden] { display: none !important; }
 .tab > * { pointer-events: auto; }
 .panel-full { background: var(--bg); overflow: auto; pointer-events: auto; }
 

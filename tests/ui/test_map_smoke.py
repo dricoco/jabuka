@@ -158,6 +158,56 @@ def test_map_renders_offline_with_overlays(page, feeder) -> None:
     assert "CARTE INDISPONIBLE" not in pg.locator("#badges").inner_text()
 
 
+def test_tabs_course_and_settings(page, feeder) -> None:
+    """Only the active tab shows; Carte lists the course and switches A/B in one tap (CRSE-01);
+    Réglages renders the schema form (modules mounted after the first events still get them)."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    pg.wait_for_function("() => document.getElementById('primary').textContent !== '—'")
+    pg.click("button[data-tab=carte]")
+    assert not pg.locator("#tab-barre").is_visible()
+    pg.wait_for_function("() => document.querySelectorAll('#course-list li').length === 5")
+    pg.wait_for_function(
+        "() => document.querySelector('#course-list li.active .name')?.textContent "
+        "=== 'Plić Sestre'"
+    )
+    assert pg.locator("#sides-warning").is_visible()
+    # wait for each POST's own response: the list may already show the change through the
+    # WebSocket refetch while the button's request is still in flight
+    with pg.expect_response(lambda r: r.url.endswith("/api/course/select")) as sel:
+        pg.click("button[data-template=B]")
+    assert sel.value.status == 200, sel.value.status
+    pg.wait_for_function(
+        "() => [...document.querySelectorAll('#course-list .name')].map(e => e.textContent)"
+        ".join(',') === 'Vodice,Plić Sestre,Jabuka,Mulo,Vodice'"
+    )
+    assert feeder.server.get("/api/course")["template"] == "B"
+    with pg.expect_response(lambda r: r.url.endswith("/api/course/next")) as nxt:
+        pg.click("#course-next")
+    assert nxt.value.status == 200, nxt.value.status
+    pg.wait_for_function(
+        "() => document.querySelector('#course-list li.active .name')?.textContent === 'Jabuka'"
+    )
+    pg.click("button[data-tab=reglages]")
+    pg.wait_for_function(
+        "() => document.querySelectorAll('#settings-form .reglages-row').length > 10"
+    )
+    assert "Efficacité polaire" in pg.locator("#settings-form").inner_text()
+    eff = pg.locator("#settings-form input[name=efficiency]")
+    with pg.expect_response(
+        lambda r: r.url.endswith("/api/settings") and r.request.method == "PUT"
+    ) as put:
+        eff.fill("0.85")
+        eff.dispatch_event("change")
+    assert put.value.status == 200, (put.value.status, put.value.text())
+    feeder.wait_nav(lambda n: n["polar"]["eff"] == 0.85)
+    pg.click("button[data-tab=barre]")
+    assert pg.locator("#tab-barre").is_visible()
+    assert page.external_requests == [], page.external_requests
+    assert page.bad_responses == [], page.bad_responses
+
+
 def test_helm_survives_without_webgl(page, feeder) -> None:
     _near_plic_sestre(feeder)
     pg = page.page
