@@ -146,26 +146,30 @@ class CoreContext:
             self.state.update_health(src, health, t_rx)
 
     # -- gps ---------------------------------------------------------------------------------
-    def _discipline_clock(self, tpv: dict) -> None:
+    def _discipline_clock(self, tpv: dict) -> bool:
         """Feed a TPV to the clock BEFORE stamping t_rx: GpsClock disciplines itself from it,
-        SimClock follows the fix time."""
+        SimClock follows the fix time. False when the GPS clock rejected the fix (no fix,
+        rollover date, ...), so its time must not be published either."""
         clock = self.clock
         on_tpv = getattr(clock, "on_tpv", None)
         if callable(on_tpv):
-            on_tpv(tpv, clock.monotonic())
-        elif isinstance(clock, SimClock):
+            return bool(on_tpv(tpv, clock.monotonic()))
+        if isinstance(clock, SimClock):
             mode = tpv.get("mode")
             if isinstance(mode, int) and not isinstance(mode, bool) and mode >= 2:
                 epoch = tpv_epoch(tpv)
                 if epoch is not None:
                     clock.observe_utc(epoch)
+        return True
 
     def on_gps_object(self, obj: dict, _t_client: float = 0.0) -> None:
         """TPV/SKY from the gpsd client -> state (src "gpsd")."""
         cls = obj.get("class")
         if cls == "TPV":
-            self._discipline_clock(obj)
+            accepted = self._discipline_clock(obj)
             values = tpv_to_values(obj)
+            if not accepted:  # IN-04: a rejected time (e.g. a 2006 rollover date) is not data
+                values = [v for v in values if v["path"] != "navigation.datetime"]
         elif cls == "SKY":
             values = sky_to_values(obj)
         else:

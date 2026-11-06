@@ -261,3 +261,20 @@ def test_rollover_dates_still_rejected() -> None:
     rolled = datetime(2007, 3, 31, tzinfo=UTC).timestamp()
     clk = GpsClock(mono=Fake(1000.0), wall=Fake(rolled))
     assert clk.on_tpv(tpv(rolled), 1000.0) is False
+
+
+def test_rejected_tpv_time_is_not_published(tmp_path) -> None:
+    """IN-04: a TPV the GPS clock rejects (rollover date) must not appear as navigation.datetime."""
+    from jabuka.core.main import CoreContext
+
+    mono = Fake(1000.0)
+    clk = GpsClock(mono=mono, wall=Fake(T0))
+    ctx = CoreContext.create(clk, tmp_path)  # type: ignore[arg-type]
+    try:
+        ctx.on_gps_object({"class": "TPV", "mode": 3, "time": "2006-03-26T19:00:00.000Z"})
+        assert ctx.state.latest("navigation.datetime") is None
+        ctx.on_gps_object(tpv(T0))
+        dt = ctx.state.latest("navigation.datetime")
+        assert dt is not None and dt["value"].startswith("2026-11-13T19:00:00")
+    finally:
+        ctx.close_logs()
