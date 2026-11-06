@@ -207,3 +207,36 @@ def test_stale_tablet_gets_409_and_reloads(page, core_server) -> None:
     )
     assert pg.locator("#sides-warning").is_hidden()  # the 409 body is the current course
     assert course(page)["seq"][2]["side"] == "stbd"  # nothing overwritten
+
+
+def test_advance_banner_on_the_helm_and_annuler(page, feeder) -> None:
+    """The boat sits abeam of Plić Sestre inside its zone: after 10 s the course advances, the
+    banner shows on the Barre tab with Annuler, and Annuler restores Plić Sestre."""
+    import math
+
+    from jabuka.nav import geo
+
+    lat, lon = geo.offset(43.684627, 15.811626, math.radians(81.0), 0.4)
+    feeder.boat.update(lat=lat, lon=lon, twd=161.0, tws_kn=12.0, twa=45.0, bsp_kn=6.0)
+    pg = page.page
+    pg.goto(page.base_url + "/")  # Barre tab
+    nav = feeder.wait_nav(lambda n: n["course"]["active_idx"] == 2, timeout=30.0)
+    assert nav["course"]["banner"]["text"] == "Marque suivante : Jabuka — Annuler"
+    banner = pg.locator("#banner")
+    banner.wait_for(state="visible")
+    pg.wait_for_function(
+        "() => document.getElementById('banner-text')?.textContent === 'Marque suivante : Jabuka'"
+    )
+    assert pg.locator("#tab-barre").is_visible()
+    undo = pg.locator("#banner-undo")
+    undo.wait_for(state="visible")
+    box = undo.bounding_box()
+    assert box["height"] >= 48
+    with pg.expect_response(lambda r: r.url.endswith("/api/course/undo")) as resp:
+        undo.click()
+    assert resp.value.status == 200, resp.value.text()
+    nav = feeder.wait_nav(lambda n: n["course"]["active_idx"] == 1 and not n["course"]["banner"])
+    banner.wait_for(state="hidden")
+    pg.wait_for_timeout(3000)  # still abeam in the zone: suppressed, no new advance
+    assert feeder.server.get("/api/course")["active_idx"] == 1
+    assert page.bad_responses == [], page.bad_responses
