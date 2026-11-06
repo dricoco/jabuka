@@ -1,0 +1,41 @@
+{
+  "version": 0.6,
+  "generator": "hand-written test fixture (Overpass out geom format)",
+  "osm3s": {
+    "timestamp_osm_base": "2026-01-01T00:00:00Z",
+    "copyright": "Hand-written geometry, not OpenStreetMap data."
+  },
+  "elements": [
+    {
+      "type": "way",
+      "id": 1,
+      "tags": {"natural": "coastline"},
+      "geometry": [
+        {"lat": 42.940, "lon": 15.090},
+        {"lat": 42.940, "lon": 15.110},
+        {"lat": 42.955, "lon": 15.110},
+        {"lat": 42.955, "lon": 15.090},
+        {"lat": 42.940, "lon": 15.090}
+      ]
+    },
+    {
+      "type": "way",
+      "id": 2,
+      "tags": {"natural": "coastline"},
+      "geometry": [
+        {"lat": 42.980, "lon": 15.040},
+        {"lat": 42.985, "lon": 15.080}
+      ]
+    },
+    {
+      "type": "way",
+      "id": 3,
+      "tags": {"natural": "coastline"},
+      "geometry": [
+        {"lat": 42.985, "lon": 15.080},
+        {"lat": 42.975, "lon": 15.120},
+        {"lat": 42.980, "lon": 15.160}
+      ]
+    }
+  ]
+}

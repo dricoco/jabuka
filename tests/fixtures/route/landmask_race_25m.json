@@ -1,0 +1,1 @@
+{"bytes":129418,"cell_m":25.0,"created":"2026-11-06T03:40:53Z","file":"landmask.npz","frame":{"lat0":43.4,"lon0":15.65},"hazard_margin_m":200.0,"land_faces":474,"margin_m":100.0,"osm_base":"2026-11-06T02:01:33Z","sha256":"a63eb3b3820435e235882b87b1382433ed3ca44c7fe28c0cd7a84cd19b6c063f","source":"OSM coastline via Overpass"}
