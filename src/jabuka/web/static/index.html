@@ -13,6 +13,12 @@
     <span id="conn" class="conn conn-down">connecting…</span>
   </header>
 
+  <section class="panel event-panel">
+    <input id="event-label" type="text" maxlength="200" placeholder="label (optional)" autocomplete="off">
+    <button id="event-btn" type="button">Event marker</button>
+    <span id="event-ack" aria-live="polite"></span>
+  </section>
+
   <section id="clock-panel" class="panel">
     <div id="gate" class="gate gate-blocked">routing: blocked</div>
     <table id="clock-table" class="kv"></table>

@@ -164,11 +164,19 @@ async def _run(args: argparse.Namespace) -> int:
             return
         ingest.on_chunk(b)
 
+    async def flusher() -> None:
+        # the flush/fsync cadence also applies when the bus goes quiet
+        while True:
+            await asyncio.sleep(1.0)
+            rawlog.maybe_flush()
+
     loop.add_reader(fd, on_readable)
     log.info("reading %s (fd %d) receive-only", args.device, fd)
+    flush_task = asyncio.create_task(flusher())
     try:
         rc = await done
     finally:
+        flush_task.cancel()
         try:
             loop.remove_reader(fd)
         except Exception:

@@ -17,10 +17,15 @@ import uvicorn
 from jabuka.common import messages
 from jabuka.common.clock import Clock, SimClock, make_clock
 from jabuka.core.bus import start_udp_listener
+from jabuka.core.derived_log import DerivedLogger
 from jabuka.core.state import StateStore
 from jabuka.core.web import Hub, create_app
+from jabuka.ingest.rawlog import RotatingAppendLog
 
 log = logging.getLogger("jabuka.core")
+
+
+EVENT_MIN_INTERVAL_S = 1.0
 
 
 @dataclass
@@ -29,6 +34,9 @@ class CoreContext:
     state: StateStore
     hub: Hub
     data_dir: Path
+    bus_log: RotatingAppendLog | None = None
+    derived: DerivedLogger | None = None
+    events_log: RotatingAppendLog | None = None
     udp_host: str = "127.0.0.1"
     udp_port: int = messages.DEFAULT_UDP_PORT
     stats: dict[str, int] = field(
@@ -36,6 +44,8 @@ class CoreContext:
     )
     started_mono: float = 0.0
     ticks: int = 0
+    events_written: int = 0
+    last_event_mono: float | None = None
     _transport: Any = None
     _tasks: list[asyncio.Task] = field(default_factory=list)
 
@@ -49,14 +59,37 @@ class CoreContext:
         udp_port: int = messages.DEFAULT_UDP_PORT,
     ) -> CoreContext:
         data_dir = Path(data_dir)
+        logs = data_dir / "logs"
+        # Every core log runs on the injected clock, so sim replays rotate on sim time.
+        bus_log = RotatingAppendLog(
+            logs / "bus",
+            "bus",
+            mono=clock.monotonic,
+            wall=clock.wall,
+            guard_prefixes=("bus",),
+        )
+        events_log = RotatingAppendLog(
+            logs / "events",
+            "events",
+            suffix=".jsonl",
+            mono=clock.monotonic,
+            wall=clock.wall,
+            guard_prefixes=(),
+        )
         return cls(
             clock=clock,
             state=StateStore(clock),
             hub=Hub(),
             data_dir=data_dir,
+            bus_log=bus_log,
+            derived=DerivedLogger(logs / "derived", clock),
+            events_log=events_log,
             udp_host=udp_host,
             udp_port=udp_port,
         )
+
+    def logs(self) -> list[Any]:
+        return [x for x in (self.bus_log, self.derived, self.events_log) if x is not None]
 
     # -- message handling --------------------------------------------------------------------
     def on_message(self, msg: dict) -> None:
@@ -75,6 +108,30 @@ class CoreContext:
         if isinstance(health, dict):
             self.state.update_health(src, health, t_rx)
 
+    # -- events ------------------------------------------------------------------------------
+    def record_event(self, label: str) -> dict | None:
+        """Append an fsync'd event marker. Returns None when rate-limited (1 per second)."""
+        now = self.clock.monotonic()
+        if self.last_event_mono is not None and now - self.last_event_mono < EVENT_MIN_INTERVAL_S:
+            return None
+        status = self.clock.status()
+        n = self.events_written + 1
+        rec = {
+            "type": "event",
+            "n": n,
+            "label": label,
+            "t_mono": now,
+            "t_wall": self.clock.wall(),
+            "utc": status.get("utc"),
+            "clock": status,
+            "state_ref": self.derived.current_name if self.derived is not None else None,
+        }
+        assert self.events_log is not None
+        self.events_log.write_json(rec, fsync_now=True)
+        self.events_written = n
+        self.last_event_mono = now
+        return rec
+
     # -- diag --------------------------------------------------------------------------------
     def diag_message(self) -> dict:
         snap = self.state.snapshot()
@@ -90,15 +147,30 @@ class CoreContext:
                 "ws_clients": len(self.hub.clients),
                 "uptime_s": round(max(0.0, self.clock.monotonic() - self.started_mono), 3),
             },
-            "log": {"derived": None, "events_written": 0},
+            "log": {
+                "derived": self.derived.current_name if self.derived is not None else None,
+                "events_written": self.events_written,
+            },
         }
 
     def tick_once(self) -> None:
         self.ticks += 1
-        self.hub.publish(json.dumps(self.diag_message(), separators=(",", ":")))
+        diag = self.diag_message()
+        if self.derived is not None:
+            try:
+                self.derived.write(diag)  # derived line BEFORE publishing
+                diag["log"]["derived"] = self.derived.current_name
+            except Exception:
+                log.exception("derived log write failed")
+        for lg in self.logs():
+            try:
+                lg.maybe_flush()
+            except Exception:
+                log.exception("log flush failed")
+        self.hub.publish(json.dumps(diag, separators=(",", ":")))
 
-    async def _tick_loop(self) -> None:
-        target = math.floor(self.clock.monotonic()) + 1
+    async def _tick_loop(self, first_target: float) -> None:
+        target = first_target
         while True:
             await self.clock.sleep_until(target)
             try:
@@ -112,9 +184,15 @@ class CoreContext:
     async def startup(self) -> None:
         self.started_mono = self.clock.monotonic()
         self._transport, _ = await start_udp_listener(
-            self.udp_host, self.udp_port, self.on_message, stats=self.stats
+            self.udp_host,
+            self.udp_port,
+            self.on_message,
+            stats=self.stats,
+            bus_log=self.bus_log,
         )
-        self._tasks.append(asyncio.create_task(self._tick_loop(), name="jabuka-tick"))
+        # first target computed now, not when the task first runs, so no second is skipped
+        first = math.floor(self.clock.monotonic()) + 1
+        self._tasks.append(asyncio.create_task(self._tick_loop(first), name="jabuka-tick"))
 
     async def shutdown(self) -> None:
         for t in self._tasks:
@@ -128,6 +206,14 @@ class CoreContext:
         if self._transport is not None:
             self._transport.close()
             self._transport = None
+        self.close_logs()
+
+    def close_logs(self) -> None:
+        for lg in self.logs():
+            try:
+                lg.close()
+            except Exception:
+                log.exception("log close failed")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

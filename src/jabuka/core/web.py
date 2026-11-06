@@ -9,13 +9,26 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from jabuka.core.main import CoreContext
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 WS_QUEUE_MAX = 4
+EVENT_LABEL_MAX = 200
+
+
+class EventIn(BaseModel):
+    label: str = Field(default="", max_length=EVENT_LABEL_MAX)
+
+
+def strip_control(text: str) -> str:
+    """Drop ASCII control characters (code < 32 or 127). The label is only ever stored inside a
+    JSON line, never used in a file path."""
+    return "".join(ch for ch in text if ord(ch) >= 32 and ord(ch) != 127)
 
 
 class Hub:
@@ -68,6 +81,22 @@ def create_app(ctx: CoreContext) -> FastAPI:
     @app.get("/api/state")
     async def api_state() -> dict:
         return ctx.diag_message()
+
+    @app.post("/api/event", status_code=201, response_model=None)
+    async def api_event(event: EventIn) -> dict | JSONResponse:
+        label = strip_control(event.label)
+        rec = ctx.record_event(label)
+        if rec is None:
+            return JSONResponse(
+                {"ok": False, "error": "too fast", "min_interval_s": 1.0}, status_code=429
+            )
+        return {
+            "ok": True,
+            "n": rec["n"],
+            "t_mono": rec["t_mono"],
+            "t_wall": rec["t_wall"],
+            "utc": rec["utc"],
+        }
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

@@ -135,6 +135,46 @@ function setConn(up, text) {
   el.className = `conn ${up ? "conn-up" : "conn-down"}`;
 }
 
+// -- event marker ---------------------------------------------------------------------------
+function hhmmss(utc) {
+  const d = utc ? new Date(utc) : new Date();
+  return d.toISOString().slice(11, 19);
+}
+
+async function sendEvent() {
+  const ack = $("event-ack");
+  const input = $("event-label");
+  const btn = $("event-btn");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: input.value }),
+    });
+    if (res.status === 201) {
+      const body = await res.json();
+      ack.textContent = `Marker #${body.n} logged at ${hhmmss(body.utc)}${body.utc ? "Z" : " (local clock)"}`;
+      input.value = "";
+    } else if (res.status === 429) {
+      ack.textContent = "Not logged: too fast (max 1 per second)";
+    } else if (res.status === 422) {
+      ack.textContent = "Not logged: label too long (max 200 characters)";
+    } else {
+      ack.textContent = `Not logged: HTTP ${res.status}`;
+    }
+  } catch (e) {
+    ack.textContent = `Not logged: ${e}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("event-btn").addEventListener("click", sendEvent);
+$("event-label").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") sendEvent();
+});
+
 let backoff = 1000;
 
 function connect() {
