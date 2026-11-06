@@ -244,6 +244,7 @@ async function refetch(kind) {
 function onNav(nav) {
   if (nav.course_version !== fetched.course) refetch("course");
   if (nav.settings_version !== fetched.settings) refetch("settings");
+  if (window.jabuka) window.jabuka.lastNav = nav;
   const b = sourceBadge(nav.wind);
   badge("wind", b.text, b.cls);
   emit("nav", nav);

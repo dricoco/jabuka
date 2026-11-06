@@ -6,6 +6,10 @@
 //   "helm-live":   the two laylines to the active mark (starboard solid, port dashed), the rounding
 //                  anchor, the boat and a 0.3 nm heading line.
 //   "seamarks":    /racepack/seamarks.geojson (lights, beacons, buoys, hazards), names from zoom 11.
+// Map orientation (Barre tab only, never while the Carte tab edits the course): course-up turns
+// the map to the boat heading (COG when the heading comes from COG), north-up keeps bearing 0, and
+// "Centrer" keeps the boat in the middle; choices in localStorage jabuka.mapMode / jabuka.centred
+// (helm.js buttons), applied on every nav message and at once on the "mapmode" bus event.
 // Day colours, or red shades only at night (HELM-03, Pitfall 4). Labels use text-field only (no
 // HTML, T-02-05-01). Sources are prefixed "helm-" except the 02-01 names (laylines, anchor, mark,
 // boat) the smoke test reads, so the 02-04 "carte" sources never collide with them.
@@ -295,6 +299,40 @@ export function seamarkLayers(theme) {
   ];
 }
 
+// -- orientation --------------------------------------------------------------------------------
+function load(key) {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const angleDiff = (a, b) => Math.abs(((((a - b) % 360) + 540) % 360) - 180);
+
+// Zoom the map is brought to when "Centrer" is switched on (or found on at load): at the default
+// zoom 9 the race-area maxBounds would stop the map from centring on the boat.
+export const CENTRE_ZOOM = 11;
+
+// easeTo options turning/centring the map for this nav message, or null when nothing changes.
+// view = {bearing, center: [lon, lat], zoom}; prefs = {mode, centred, zoomIn}.
+export function orientation(nav, view, prefs) {
+  const opts = {};
+  const boat = nav?.boat;
+  if (prefs.mode === "course") {
+    const hdg = boatHeading(boat);
+    if (isNum(hdg) && angleDiff(hdg, view.bearing) > 0.5) opts.bearing = hdg;
+  } else if (angleDiff(0, view.bearing) > 0.5) {
+    opts.bearing = 0;
+  }
+  if (prefs.centred && boat && isNum(boat.lat) && isNum(boat.lon)) {
+    const [lon, lat] = view.center;
+    if (Math.abs(lon - boat.lon) > 1e-5 || Math.abs(lat - boat.lat) > 1e-5) opts.center = [boat.lon, boat.lat];
+    if (prefs.zoomIn && isNum(view.zoom) && view.zoom < CENTRE_ZOOM - 0.5) opts.zoom = CENTRE_ZOOM;
+  }
+  return Object.keys(opts).length ? opts : null;
+}
+
 // -- mount --------------------------------------------------------------------------------------
 async function loadSeamarks() {
   if (!globalThis.jabuka?.racepack?.seamarks) return EMPTY;
@@ -325,13 +363,42 @@ export async function mount(ctx) {
     setOverlayData("helm-course-marks", d.marks);
     setOverlayData("helm-course-radius", d.radius);
   };
+  let map = null;
+  let zoomedIn = false; // zoom to CENTRE_ZOOM once per "Centrer" switch-on, then leave pinch alone
+  let lastCentre = null; // do not re-request a centre the race-area bounds refuse every second
+  const orient = () => {
+    if (!map || !nav || tab !== "barre") return;
+    const prefs = {
+      mode: load("jabuka.mapMode") === "course" ? "course" : "north",
+      centred: load("jabuka.centred") === "1",
+      zoomIn: !zoomedIn,
+    };
+    const c = map.getCenter();
+    const view = { bearing: map.getBearing(), center: [c.lng, c.lat], zoom: map.getZoom() };
+    const opts = orientation(nav, view, prefs);
+    if (!opts) return;
+    if (prefs.centred) zoomedIn = true;
+    if (opts.center && !opts.zoom && lastCentre && opts.center[0] === lastCentre[0] && opts.center[1] === lastCentre[1]) {
+      delete opts.center;
+      if (!("bearing" in opts)) return;
+    }
+    if (opts.center) lastCentre = opts.center;
+    map.easeTo({ ...opts, duration: 400, essential: true });
+  };
   const applyTab = () => {
     if (ready) setOverlayVisible("helm-course", tab !== "carte");
+    orient();
   };
 
   ctx.bus.addEventListener("nav", (ev) => {
     nav = ev.detail;
     applyLive();
+    orient();
+  });
+  ctx.bus.addEventListener("mapmode", (ev) => {
+    if (!ev.detail?.centred) zoomedIn = false;
+    lastCentre = null;
+    orient();
   });
   ctx.bus.addEventListener("course", (ev) => {
     course = ev.detail;
@@ -343,7 +410,7 @@ export async function mount(ctx) {
   });
 
   try {
-    await ensureMap(document.getElementById("map"));
+    map = await ensureMap(document.getElementById("map"));
   } catch {
     return; // no map on this tablet: app.js shows "CARTE INDISPONIBLE", the numbers keep going
   }

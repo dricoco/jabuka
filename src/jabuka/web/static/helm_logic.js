@@ -43,7 +43,7 @@ export function fmtDistance(nm) {
 // Time-to-tack line: "Virement dans 12 min", "Empannage dans 4 min 30", "DÉPASSÉE +3 min",
 // "ÇA PASSE"; "" when there is no layline (reach leg, no wind).
 export function fmtCountdown(layline, leg) {
-  if (!layline) return "";
+  if (!layline || leg === "reach") return "";
   switch (layline.state) {
     case "normal": {
       const verb = leg === "run" ? "Empannage" : "Virement";
@@ -68,61 +68,103 @@ export function sourceBadge(wind) {
     case "LIVE_BG":
       return { text: "LIVE B&G", cls: "good" };
     case "MANUEL":
-      return { text: "MANUEL", cls: "warn" };
+      return {
+        text: isNum(wind.manual_age_s) ? `MANUEL ${Math.round(wind.manual_age_s / 60)} min` : "MANUEL",
+        cls: "warn",
+      };
     default:
       return { text: String(wind.source), cls: "warn" };
   }
 }
 
-// Colour class of the deviation (actual - target): small = good.
+// Colour class of the deviation (actual - target): within 2 deg good, within 5 deg warn, else bad.
 export function deviationClass(deviation) {
   if (!isNum(deviation)) return "";
   const a = Math.abs(deviation);
-  if (a <= 3) return "good";
-  if (a <= 8) return "warn";
+  if (a <= 2) return "good";
+  if (a <= 5) return "warn";
   return "bad";
 }
 
-// Primary number by point of sail (D-6): {label, value, unit}.
+// Round half away from zero (-1.5 -> -2, like +1.5 -> +2).
+const roundSym = (x) => Math.sign(x) * Math.round(Math.abs(x));
+
+// Deviation with the steering hint (D-6). On a TWA target, deviation = TWA - target: positive means
+// too far off the wind -> LOFER (head up), negative -> ABATTRE (bear away), upwind and downwind
+// alike. On a course to steer, deviation = heading - CTS: positive -> steer to port.
+export function deviationView(nav) {
+  const helm = nav?.helm;
+  const dev = helm?.deviation;
+  if (!helm || !isNum(dev)) return { text: "—", hint: "", cls: "" };
+  const r = roundSym(dev);
+  const text = `${r > 0 ? "+" : ""}${r}°`;
+  let hint = "";
+  if (helm.primary === "cts") {
+    if (r > 0) hint = "◄ BÂBORD";
+    else if (r < 0) hint = "TRIBORD ►";
+  } else if (r > 0) hint = "LOFER";
+  else if (r < 0) hint = "ABATTRE";
+  return { text, hint, cls: deviationClass(dev) };
+}
+
+// Badges next to the source badge: {key, text, cls}.
+export function helmFlags(nav) {
+  const out = [];
+  const wind = nav?.wind;
+  const lay = nav?.layline;
+  if (wind && wind.heading_trusted === false) out.push({ key: "cap", text: "CAP NON FIABLE", cls: "bad" });
+  if (lay?.current) out.push({ key: "courant", text: "COURANT", cls: "warn" });
+  if (lay?.src === "sailed") out.push({ key: "angles", text: "ANGLES RÉELS", cls: "warn" });
+  return out;
+}
+
+// Primary number by point of sail (D-6): {label, value, main, unit}; value is the full text
+// ("38°", "115°M"), main + unit the same split so the °M/°T suffix can be drawn smaller.
 export function primaryView(nav) {
   const helm = nav?.helm;
+  const plain = (label, value) => ({ label, value, main: value, unit: "" });
   if (!nav || !helm || !helm.primary) {
     const noWind = !nav?.wind || nav.wind.source === "NONE";
-    return { label: noWind ? "PAS DE VENT" : "—", value: "—", unit: "" };
+    return plain(noWind ? "PAS DE VENT" : "—", "—");
   }
   if (helm.primary === "twa_up" || helm.primary === "twa_down") {
     const label = helm.primary === "twa_up" ? "TWA CIBLE ↑" : "TWA CIBLE ↓";
-    return { label, value: isNum(helm.target) ? `${Math.round(helm.target)}°` : "—", unit: "" };
+    return plain(label, isNum(helm.target) ? `${Math.round(helm.target)}°` : "—");
   }
   const h = fmtHeading(helm.cts_t, nav.display);
-  if (h === "—") return { label: "CAP À SUIVRE", value: "—", unit: "" };
-  return { label: "CAP À SUIVRE", value: h.slice(0, -1), unit: h.slice(-1) };
+  if (h === "—") return plain("CAP À SUIVRE", "—");
+  return { label: "CAP À SUIVRE", value: h, main: h.slice(0, -1), unit: h.slice(-1) };
 }
 
-const signed = (x, unit) => (isNum(x) ? `${x > 0 ? "+" : ""}${Math.round(x)}${unit}` : "—");
-
-// Every text of the helm bands from one nav message.
+// Every text of the helm bands from one nav message (missing blocks give "—" or "").
 export function helmView(nav) {
-  const helm = nav?.helm ?? {};
   const polar = nav?.polar ?? {};
   const boat = nav?.boat ?? {};
   const mark = nav?.mark;
   const lay = nav?.layline;
   const bsp = isNum(boat.bsp_kn) ? frNum(boat.bsp_kn, 1) : "—";
   const tgt = isNum(polar.target_bsp_kn) ? frNum(polar.target_bsp_kn, 1) : "—";
+  const dev = deviationView(nav);
+  const other = lay ? fmtHeading(lay.other_tack_hdg_t, nav?.display) : "—";
+  const markName = mark?.name ? String(mark.name) : "—";
+  const dtw = fmtDistance(mark?.dtw_nm);
+  const ttw = fmtDuration(mark?.ttw_s);
   return {
     primary: primaryView(nav),
-    deviation: signed(helm.deviation, "°"),
-    deviationClass: deviationClass(helm.deviation),
-    speed: `${bsp} / ${tgt} kn`,
+    dev,
+    deviation: dev.text,
+    deviationClass: dev.cls,
+    speed: `${bsp} / ${tgt} nds`,
     pct: isNum(polar.pct) ? `${Math.round(polar.pct)} %` : "— %",
-    mark: mark ? mark.name : "—",
-    dtw: fmtDistance(mark?.dtw_nm),
-    ttw: fmtDuration(mark?.ttw_s),
+    mark: markName,
+    dtw,
+    ttw,
+    markLine: mark ? `${markName} ${dtw} · ${ttw}` : "—",
     btw: fmtHeading(mark?.btw_t, nav?.display),
     countdown: fmtCountdown(lay, nav?.leg),
-    otherTack: lay ? `Autre bord ${fmtHeading(lay.other_tack_hdg_t, nav?.display)}` : "",
+    otherTack: other === "—" ? "" : `Autre bord ${other}`,
     badge: sourceBadge(nav?.wind),
+    flags: helmFlags(nav),
     alerts: Array.isArray(nav?.alerts) ? nav.alerts.map(String) : [],
   };
 }
