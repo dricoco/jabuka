@@ -145,3 +145,81 @@ async def test_close_resolves_waiters() -> None:
     assert r2.status == "superseded"
     with pytest.raises(RuntimeError):
         await pool.run_latest(pool_probe.echo, 1)
+
+
+def _flaky_submit(monkeypatch, fail_calls: set[int]) -> dict:
+    """ProcessPoolExecutor.submit raising OSError(ENOMEM) on the given call numbers (1-based),
+    as a fork failing under memory pressure on the Pi (03-REVIEW CR-01)."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    orig = ProcessPoolExecutor.submit
+    calls = {"n": 0}
+
+    def flaky(self, fn, *a, **k):
+        calls["n"] += 1
+        if calls["n"] in fail_calls:
+            raise OSError(12, "Cannot allocate memory")
+        return orig(self, fn, *a, **k)
+
+    monkeypatch.setattr(ProcessPoolExecutor, "submit", flaky)
+    return calls
+
+
+async def test_submit_oserror_is_retried_once(monkeypatch) -> None:
+    calls = _flaky_submit(monkeypatch, {2})
+    pool = make_pool(timeout_s=20.0)
+    try:
+        assert (await pool.run_latest(pool_probe.echo, 1)).status == "ok"
+        out = await asyncio.wait_for(pool.run_latest(pool_probe.echo, 2), 15.0)
+        assert out.status == "ok" and out.value == 2  # recreated and retried
+        assert calls["n"] == 3
+        assert pool.stats["running"] == 0 and pool.stats["faults"] == 0
+    finally:
+        pool.close()
+
+
+async def test_pool_fault_never_wedges_the_pool(monkeypatch) -> None:
+    # CR-01 regression: the submit fails twice in a row (first try and the retry) -> the job
+    # resolves "error", the pool is not left busy and the next jobs run on a fresh executor.
+    _flaky_submit(monkeypatch, {2, 3})
+    pool = make_pool(timeout_s=20.0)
+    try:
+        assert (await pool.run_latest(pool_probe.echo, 1)).status == "ok"
+        out = await asyncio.wait_for(pool.run_latest(pool_probe.echo, 2), 15.0)
+        assert out.status == "error" and "Cannot allocate memory" in (out.error or "")
+        st = pool.stats
+        assert st["running"] == 0 and st["pending"] == 0
+        assert st["faults"] == 1 and "OSError" in st["last_fault"]
+        r3 = await asyncio.wait_for(pool.run_latest(pool_probe.echo, 3), 15.0)
+        assert r3.status == "ok" and r3.value == 3
+        assert pool._task is not None and pool._task.exception() is None
+    finally:
+        pool.close()
+
+
+async def test_pool_fault_launches_the_pending_request(monkeypatch) -> None:
+    from jabuka.route import pool as pool_mod
+
+    pool = make_pool(timeout_s=20.0)
+    real = pool_mod.RouterPool._execute
+    n = {"calls": 0}
+
+    async def boom_once(self, fn, arg):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            await asyncio.sleep(0.2)
+            raise OSError(11, "Resource temporarily unavailable")
+        return await real(self, fn, arg)
+
+    monkeypatch.setattr(pool_mod.RouterPool, "_execute", boom_once)
+    try:
+        first = asyncio.create_task(pool.run_latest(pool_probe.echo, 1))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(pool.run_latest(pool_probe.echo, 2))
+        r1 = await asyncio.wait_for(first, 5.0)
+        r2 = await asyncio.wait_for(second, 15.0)
+        assert r1.status == "error" and "pool fault" in (r1.error or "")
+        assert r2.status == "ok" and r2.value == 2
+        assert pool.stats["running"] == 0
+    finally:
+        pool.close()

@@ -233,3 +233,46 @@ def test_corrupt_route_file_is_ignored_with_an_alert(routing_core, fake_pool, rh
     assert nav["route"]["version"] == 0
     assert "Route sauvegardée illisible : ignorée" in nav["alerts"]
     fake_pool.hold = False
+
+
+# -- pool watchdog (03-REVIEW CR-01) --------------------------------------------------------------
+def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
+    pools = [rh.FakePool(), rh.FakePool()]
+    made: list = []
+
+    def factory():
+        made.append(pools[len(made)])
+        return made[-1]
+
+    pools[0].hold = True  # the first job never completes: a wedged pool
+    core = routing_core(pool_factory=factory)
+    pos = rh.boat_near_plic(2.0)
+    nav = None
+    for _ in range(int(2 * 60 + 5)):
+        core.sail(*pos, 157.0)
+        nav = core.tick(1.0)
+        if len(made) > 1:
+            break
+    assert len(made) == 2, "the watchdog must replace a pool stuck on one job"
+    assert core.router.pool is pools[1]
+    assert core.router.health()["pool_recycled"] == 1
+    for _ in range(3):
+        core.sail(*pos, 157.0)
+        nav = core.tick(1.0)
+        core.settle()
+    nav = core.tick(0.0)
+    assert any(a.startswith("ROUTEUR RELANCÉ") for a in nav["alerts"]), nav["alerts"]
+    assert nav["route"]["state"] == "ok" and nav["route"]["version"] == 1
+    assert not core.router.busy()
+    pools[0].hold = False
+
+
+def test_pool_fault_raises_a_routing_health_alert(routing_core, fake_pool, rh) -> None:
+    core, pos = _start(routing_core, fake_pool, rh)
+    fake_pool.stats_d.update(faults=1, last_fault="OSError(12, 'Cannot allocate memory')")
+    nav = _run(core, pos, 1)
+    alerts = [a for a in nav["alerts"] if a.startswith("ROUTEUR RELANCÉ")]
+    assert alerts and "Cannot allocate memory" in alerts[0]
+    assert core.router.health()["pool"]["faults"] == 1
+    nav = _run(core, pos, 301)  # the alert lasts 5 minutes
+    assert not any(a.startswith("ROUTEUR RELANCÉ") for a in nav["alerts"])

@@ -7,6 +7,9 @@ coalescing (CONTEXT §Router, RESEARCH Pattern 9).
 - A job longer than ``timeout_s`` is killed (3.14 ``kill_workers()``, else every process in the
   private ``_processes`` mapping) and the executor recreated; a dead worker (BrokenProcessPool)
   is recreated too. An ordinary exception raised by the job keeps the pool.
+- Any other failure of the pool machinery (fork ENOMEM while submitting, a second failure in the
+  retry) resolves the request "error", drops the executor and is counted in ``faults``: the pool
+  is never left busy (03-REVIEW CR-01).
 - At most one job runs and one waits (latest wins: an older waiting request resolves
   "superseded").
 - Nothing blocking runs on the event loop: submitting (which may spawn the worker) and killing
@@ -105,6 +108,8 @@ class RouterPool:
             "errors": 0,
             "superseded": 0,
             "restarts": 0,
+            "faults": 0,  # failures of the pool machinery itself (submit/start), see _fault
+            "last_fault": None,
             "last_ms": None,
         }
 
@@ -177,6 +182,9 @@ class RouterPool:
         self._task = asyncio.get_running_loop().create_task(self._job(req))
 
     async def _job(self, req: _Request) -> None:
+        """Run one request; total: whatever happens, ``_busy`` is cleared and the pending
+        request is launched (03-REVIEW CR-01: an exception escaping here used to wedge the
+        pool for the rest of the race)."""
         try:
             outcome = await self._execute(req.fn, req.arg)
         except asyncio.CancelledError:
@@ -184,6 +192,8 @@ class RouterPool:
                 req.fut.set_result(PoolOutcome("error", None, 0.0, "pool closed"))
             self._busy = False
             raise
+        except Exception as exc:  # noqa: BLE001 - e.g. OSError ENOMEM/EAGAIN/EMFILE on fork
+            outcome = await self._fault(exc)
         if not req.fut.done():
             req.fut.set_result(outcome)
         self._busy = False
@@ -193,6 +203,20 @@ class RouterPool:
                 nxt.fut.set_result(PoolOutcome("superseded", None, 0.0, None))
             else:
                 self._launch(nxt)
+
+    async def _fault(self, exc: BaseException) -> PoolOutcome:
+        """An unexpected failure of the pool machinery itself (not of the job): count it,
+        drop the executor (the next job creates a fresh one) and answer "error"."""
+        self._stats["errors"] += 1
+        self._stats["faults"] += 1
+        self._stats["last_fault"] = repr(exc)
+        try:
+            await asyncio.to_thread(self._discard)
+        except Exception:  # noqa: BLE001 - best effort: the executor reference is gone anyway
+            self._executor = None
+        if not self._closed:
+            self._stats["restarts"] += 1
+        return PoolOutcome("error", None, 0.0, f"pool fault: {exc!r}")
 
     async def _execute(self, fn: Callable[[Any], Any], arg: Any) -> PoolOutcome:
         loop = asyncio.get_running_loop()
@@ -211,8 +235,9 @@ class RouterPool:
             assert self._executor is not None
             ex = self._executor
             cfut = await asyncio.to_thread(ex.submit, fn, arg)  # may spawn the worker
-        except (BrokenProcessPool, RuntimeError):
-            # broken or shut down since the last job: recreate once and retry
+        except (BrokenProcessPool, RuntimeError, OSError):
+            # broken or shut down since the last job, or the worker spawn failed (fork ENOMEM,
+            # EAGAIN, EMFILE): recreate once and retry. A second failure reaches _job's _fault.
             await asyncio.to_thread(self._discard)
             if self._closed:
                 return done("error", error="pool closed")

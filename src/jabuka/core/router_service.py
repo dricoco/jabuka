@@ -70,6 +70,8 @@ log = logging.getLogger("jabuka.router")
 ROUTE_MSG_VERSION = 1
 POOL_TIMEOUT_S = 60.0
 POOL_NICE = 10
+POOL_STUCK_S = 2.0 * POOL_TIMEOUT_S  # one job "running" longer than this: the pool is wedged
+POOL_RETRY_S = 30.0  # no pool (creation failed): try again after this
 MAX_ROUTE_POINTS = 300
 RETRY_NO_ROUTE_S = 60.0  # no route yet and the last request failed: retry after this
 PRIMARY_TWA_UP_DEG = 70.0  # |target TWA| below: steer the TWA (upwind)
@@ -90,6 +92,8 @@ ROUTE_FILE_VERSION = 1
 INVALID_ALERT_S = 300.0  # "ROUTE INVALIDE" stays in the alerts this long
 ALERT_INVALID = "ROUTE INVALIDE : "
 ALERT_RESTORE = "Route sauvegardée illisible : ignorée"
+ALERT_POOL = "ROUTEUR RELANCÉ : "
+POOL_ALERT_S = 300.0  # the router-restart alert stays this long
 MASK_WORDS = ("terre", "invalide", "masque")
 
 
@@ -193,7 +197,14 @@ class RouterService:
             "invalid": 0,
             "failed": 0,
             "superseded": 0,
+            "pool_recycled": 0,
         }
+        # pool watchdog (03-REVIEW CR-01): never let routing stop silently
+        self._pool_wanted = False  # startup created a pool: keep one alive
+        self._pool_watch: tuple[Any, float] | None = None  # (running job key, since t_mono)
+        self._pool_faults_seen = 0
+        self._pool_alert: tuple[str, float] | None = None  # (text, until t_mono)
+        self._pool_retry_mono: float | None = None
         self.last_block: dict | None = None
         self._missed_edge = False
         # tack advice (ROUT-06..10)
@@ -268,6 +279,7 @@ class RouterService:
         self.restore()
         self.restore_bias()
         if self.pack_ok and self.pool is None:
+            self._pool_wanted = True
             self.pool = self._make_pool()
             self.pool.start()
         self.record_health()
@@ -339,6 +351,7 @@ class RouterService:
     def _tick(self, msg: dict) -> None:
         now = self.now()
         s = self.nav.settings
+        self._watch_pool()
         self._observe(now, msg)
         block = self._block()
         msg["route"] = block
@@ -680,6 +693,73 @@ class RouterService:
         self.bias = est
 
     # -- worker ------------------------------------------------------------------------------
+    def _pool_alarm(self, why: str) -> None:
+        """Routing-health alert (5 min) and Diag reason for a pool failure or restart."""
+        self._pool_alert = (ALERT_POOL + why, self.clock.monotonic() + POOL_ALERT_S)
+        self._last_fail = f"routeur relancé : {why}"
+        log.warning("router pool: %s", why)
+
+    def _watch_pool(self) -> None:
+        """1 Hz pool watchdog (03-REVIEW CR-01): alert on pool faults, recycle a pool whose job
+        has been running for more than POOL_STUCK_S, recreate a missing pool."""
+        mono = self.clock.monotonic()
+        pool = self.pool
+        if pool is None:
+            self._pool_watch = None
+            if (
+                self._pool_wanted
+                and self.pack_ok
+                and (self._pool_retry_mono is None or mono - self._pool_retry_mono >= POOL_RETRY_S)
+            ):
+                self._pool_retry_mono = mono
+                self.pool = self._new_pool()
+            return
+        try:
+            st = dict(pool.stats)
+        except Exception:  # noqa: BLE001 - a pool that cannot even report is treated as stuck
+            st = {"running": 1, "jobs": None}
+        faults = int(st.get("faults") or 0)
+        if faults > self._pool_faults_seen:
+            self._pool_faults_seen = faults
+            self._pool_alarm(f"erreur du moteur ({st.get('last_fault') or 'inconnue'})")
+        if not int(st.get("running") or 0):
+            self._pool_watch = None
+            return
+        key = st.get("jobs")  # the same job keeps running while the job counter is unchanged
+        if self._pool_watch is None or self._pool_watch[0] != key:
+            self._pool_watch = (key, mono)
+        elif mono - self._pool_watch[1] > POOL_STUCK_S:
+            self._recycle_pool(f"calcul bloqué depuis plus de {POOL_STUCK_S:.0f} s")
+
+    def _new_pool(self) -> Any | None:
+        try:
+            pool = self._make_pool()
+            pool.start()
+            return pool
+        except Exception as exc:  # noqa: BLE001 - retried by the watchdog
+            log.exception("router pool creation failed")
+            self._pool_alarm(f"création du moteur impossible ({exc!r})")
+            return None
+
+    def _recycle_pool(self, why: str) -> None:
+        """Replace a wedged pool: close it, cancel the jobs waiting on it, start a fresh one."""
+        old = self.pool
+        self._counts["pool_recycled"] += 1
+        self._pool_watch = None
+        self._pool_faults_seen = 0
+        self._pool_alarm(why)
+        self.pool = None
+        new = self._new_pool()
+        self.pool = new
+        self._pool_retry_mono = self.clock.monotonic()
+        if old is not None and old is not new:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001
+                log.exception("router pool close failed")
+        for t in list(self._tasks):
+            t.cancel()  # their run_latest may never resolve on a wedged pool
+
     def _submit(self, req: CycleRequest, forced: bool, reasons: tuple[str, ...]) -> None:
         self._counts["jobs_submitted"] += 1
         self._spawn(lambda: self._run(req, forced, reasons, self.nav.course.version))
@@ -715,8 +795,14 @@ class RouterService:
             return
         try:
             out: PoolOutcome = await pool.run_latest(cycle.run_cycle, req)
-        except RuntimeError:  # pool closed
-            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - closed pool, or a pool bug: never silent
+            if self.pool is not pool:
+                return  # closed or replaced meanwhile
+            self.errors += 1
+            log.exception("router pool job failed")
+            out = PoolOutcome("error", None, 0.0, f"pool: {exc!r}")
         try:
             self._on_outcome(req, out, forced, reasons, course_version)
         except Exception:
@@ -919,6 +1005,12 @@ class RouterService:
                 self._invalid_alert = None
         if self._restore_alert:
             out.append(ALERT_RESTORE)
+        if self._pool_alert is not None:
+            text, until = self._pool_alert
+            if self.clock.monotonic() < until:
+                out.append(text)
+            else:
+                self._pool_alert = None
         return out
 
     def _alerts(self, msg: dict) -> None:
@@ -1143,6 +1235,7 @@ class RouterService:
             "last_ms": _r(st.get("last_ms"), 0),
             "running": int(st.get("running", 0)),
             "pending": int(st.get("pending", 0)),
+            "faults": int(st.get("faults", 0) or 0),
         }
 
     def health(self) -> dict:
