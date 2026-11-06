@@ -170,13 +170,25 @@ def parse_gps_time(text: object) -> datetime | None:
     return dt.astimezone(UTC)
 
 
+GPS_YEARS_SPAN = 50
+
+
+def default_gps_years() -> tuple[int, int]:
+    """(build year, build year + 50): the lower bound rejects GPS week-rollover dates (~19.6 years
+    in the past); the upper bound is far enough that a shipped image never expires."""
+    from jabuka import __build_year__
+
+    return (__build_year__, __build_year__ + GPS_YEARS_SPAN)
+
+
 class GpsClock:
     """UTC disciplined by GPS fixes (RESEARCH Pattern 8), monotonic for everything else.
 
     on_tpv(tpv, t_mono) accepts a fix only with mode >= 2, a parseable time and a year in
-    ``years`` (rollover guard); anything else returns False and never counts. Consecutive accepted
-    fixes are consistent when |dGPS - dMono| < tolerance_s. After ``required_fixes`` consistent
-    fixes the clock is synced and anchored: now_utc = ref_utc + (mono() - ref_mono).
+    ``years`` (rollover guard, default default_gps_years()); anything else returns False and never
+    counts. Consecutive accepted fixes are consistent when |dGPS - dMono| < tolerance_s. After
+    ``required_fixes`` consistent fixes the clock is synced and anchored:
+    now_utc = ref_utc + (mono() - ref_mono).
 
     While synced, a fix consistent with the anchor re-anchors it. An inconsistent fix (GPS time
     jump) is counted in ``jumps`` and starts a candidate timeline; the old anchor is kept
@@ -193,13 +205,13 @@ class GpsClock:
         wall: Callable[[], float] = time.time,
         required_fixes: int = 3,
         tolerance_s: float = 0.5,
-        years: tuple[int, int] = (2026, 2031),
+        years: tuple[int, int] | None = None,
     ) -> None:
         self._mono = mono
         self._wall = wall
         self.required_fixes = max(1, int(required_fixes))
         self.tolerance_s = float(tolerance_s)
-        self.years = years
+        self.years = years if years is not None else default_gps_years()
         self._synced = False
         self._ref_utc: float | None = None
         self._ref_mono: float | None = None
@@ -323,12 +335,13 @@ class GpsClock:
             await asyncio.sleep(delay)
 
 
-def make_clock(kind: str) -> Clock:
-    """Factory used by the CLIs: "system" | "sim" | "gps"."""
+def make_clock(kind: str, *, gps_years: tuple[int, int] | None = None) -> Clock:
+    """Factory used by the CLIs: "system" | "sim" | "gps" (gps_years: accepted fix years,
+    default default_gps_years())."""
     if kind == "system":
         return SystemClock()
     if kind == "sim":
         return SimClock()
     if kind == "gps":
-        return GpsClock()
+        return GpsClock(years=gps_years)
     raise ValueError(f"unknown clock kind: {kind!r}")

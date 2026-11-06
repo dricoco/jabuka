@@ -87,7 +87,7 @@ def test_unsynced_until_three_consistent_fixes() -> None:
         {"class": "TPV", "mode": 0, "time": iso(T0)},
         {"class": "TPV", "mode": 3},  # no time
         {"class": "TPV", "mode": 3, "time": "2019-04-07T00:00:00.000Z"},  # week rollover
-        {"class": "TPV", "mode": 3, "time": "2045-01-01T00:00:00.000Z"},
+        {"class": "TPV", "mode": 3, "time": "2099-01-01T00:00:00.000Z"},  # beyond build+50
         {"class": "TPV", "mode": 3, "time": "not a time"},
         {"class": "TPV", "mode": 3, "time": "2026-11-13T19:00:00"},  # no timezone
         {"class": "TPV", "mode": True, "time": iso(T0)},
@@ -228,3 +228,36 @@ def test_core_gps_clock_gate(
         assert c["system_clock"] == "synced"  # the laptop clock is NTP-disciplined
         rows = [r for r in client.get("/api/state").json()["values"] if r["src"] == "gpsd"]
         assert rows and all(r["age_s"] >= 0 for r in rows)
+
+
+# -- WR-09: no built-in expiry date -----------------------------------------------------------
+def test_default_year_window_comes_from_the_build_year() -> None:
+    import jabuka
+    from jabuka.common.clock import default_gps_years
+
+    lo, hi = default_gps_years()
+    assert lo == jabuka.__build_year__
+    assert hi == lo + 50
+    assert GpsClock().years == (lo, hi)
+    clk = make_clock("gps")
+    assert isinstance(clk, GpsClock) and clk.years == (lo, hi)
+    assert make_clock("gps", gps_years=(2030, 2040)).years == (2030, 2040)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("year", [2032, 2040, 2060])
+def test_clock_still_syncs_after_2031(year: int) -> None:
+    """The old fixed window (2026, 2031) blocked routing forever from 1 Jan 2032."""
+    t = datetime(year, 6, 1, 12, 0, 0, tzinfo=UTC).timestamp()
+    mono = Fake(1000.0)
+    clk = GpsClock(mono=mono, wall=Fake(t))
+    for i in range(3):
+        assert clk.on_tpv(tpv(t + i), mono.t) is True
+        mono.t += 1.0
+    assert clk.status()["time_valid"] is True
+
+
+def test_rollover_dates_still_rejected() -> None:
+    """A week-number rollover shows up ~19.6 years before the build: below the lower bound."""
+    rolled = datetime(2007, 3, 31, tzinfo=UTC).timestamp()
+    clk = GpsClock(mono=Fake(1000.0), wall=Fake(rolled))
+    assert clk.on_tpv(tpv(rolled), 1000.0) is False
