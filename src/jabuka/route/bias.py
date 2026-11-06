@@ -4,9 +4,13 @@ RESEARCH Pattern 8. Pure Python (stdlib + jabuka.common), no clock reads: every 
 argument (UTC epoch s from the GPS-disciplined clock). Angles in radians, speeds in m/s.
 
 - The estimator learns only in steady sailing (gate below), with a time-based EMA over gated
-  seconds only (the estimate holds while the gate is closed): a circular mean of the direction
-  offset via EMA(sin)/EMA(cos) and a ratio of mean speeds. Valid after 300 gated seconds,
-  clamped to +-35 deg and 0.6..1.5.
+  seconds only: a circular mean of the direction offset via EMA(sin)/EMA(cos) and a ratio of
+  mean speeds. Valid after 300 gated seconds, clamped to +-35 deg and 0.6..1.5.
+- A gated sample more than ``tau_ema_s`` after the previous one (the gate was closed: Jabuka
+  zone, light air, MANUEL/GRIB source) starts a new learning episode: the old estimate is kept
+  only as a fallback with its original observation time, so it keeps decaying instead of coming
+  back at full weight, until the new EMA is valid again (03-REVIEW HI-02). A restored bias.json
+  is such a fallback too, never the live EMA.
 - The router (per time step) and the core (GRIB-only helm wind) apply BiasParams: the GRIB
   air-motion vector is rotated clockwise by w * d (TWD increases for a positive offset) and
   scaled by 1 + w (k - 1), with w = exp(-max(0, t - t_obs) / tau_decay).
@@ -136,6 +140,8 @@ class BiasEstimator:
         self._gated_s = 0.0
         self._t_obs: float | None = None
         self._manual: tuple[float, float, float] | None = None  # (d raw, k raw, t_obs)
+        # previous episode's estimate (d raw, k raw, t_obs), decaying from its own t_obs
+        self._fallback: tuple[float, float, float] | None = None
         self._reason: str | None = None
         self._cog.clear()
 
@@ -204,6 +210,8 @@ class BiasEstimator:
         if reason is not None:
             return
         assert sample.twd_grib is not None and sample.tws_grib is not None
+        if self._t_obs is not None and sample.t - self._t_obs > self.tau_ema_s:
+            self._new_episode()
         dt = _clamp(float(sample.dt), 0.0, MAX_DT_S)
         delta = wrap_pi(twd - sample.twd_grib)
         if self._t_obs is None or self._gated_s <= 0.0:
@@ -216,6 +224,16 @@ class BiasEstimator:
         self._g += alpha * (sample.tws_grib - self._g)
         self._gated_s += dt
         self._t_obs = sample.t
+
+    def _new_episode(self) -> None:
+        """Keep the current estimate only as a decaying fallback and learn afresh (HI-02)."""
+        if self._ema_valid():
+            raw = self.raw()
+            assert raw is not None and self._t_obs is not None
+            self._fallback = (raw[0], raw[1], self._t_obs)
+        self._s = self._c = self._m = self._g = 0.0
+        self._gated_s = 0.0
+        self._t_obs = None
 
     def observe_manual(
         self, t: float, twd: float, tws: float, grib_twd: float, grib_tws: float
@@ -245,6 +263,8 @@ class BiasEstimator:
             cands.append(("ema", raw[0], raw[1], self._t_obs))
         if self._manual is not None:
             cands.append(("manual", *self._manual))
+        if self._fallback is not None:
+            cands.append(("fallback", *self._fallback))
         if not cands:
             return None
         return max(cands, key=lambda c: c[3])
@@ -315,6 +335,7 @@ class BiasEstimator:
             "gated_s": self._gated_s,
             "t_obs": self._t_obs,
             "manual": list(self._manual) if self._manual is not None else None,
+            "fallback": list(self._fallback) if self._fallback is not None else None,
             "reason": self._reason,
         }
 
@@ -335,6 +356,10 @@ class BiasEstimator:
             if man is not None:
                 d, k, t = (float(x) for x in man)
                 est._manual = (d, k, t)
+            fb = obj.get("fallback")
+            if fb is not None:
+                d, k, t = (float(x) for x in fb)
+                est._fallback = (d, k, t)
             reason = obj.get("reason")
             est._reason = None if reason is None else str(reason)
         except (KeyError, TypeError, ValueError) as exc:
@@ -342,6 +367,9 @@ class BiasEstimator:
         values = [est._s, est._c, est._m, est._g, est._gated_s]
         if not all(math.isfinite(x) for x in values):
             raise ValueError("invalid bias state: non-finite value")
+        # after a restart the learned EMA is history: a decaying fallback, never the live EMA
+        # (03-REVIEW HI-02); learning restarts on the next gated sample
+        est._new_episode()
         return est
 
 
