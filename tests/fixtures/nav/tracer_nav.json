@@ -1,0 +1,131 @@
+{
+ "type": "nav",
+ "v": 1,
+ "t_mono": 3.0,
+ "utc": "2026-11-13T20:00:03Z",
+ "course_version": 0,
+ "settings_version": 0,
+ "boat": {
+  "lat": 43.7161167,
+  "lon": 15.7966933,
+  "hdg_t": 116.0,
+  "cog_t": 116.0,
+  "sog_kn": 4.53,
+  "bsp_kn": 4.53,
+  "heading_src": "compass"
+ },
+ "wind": {
+  "source": "LIVE",
+  "stale": false,
+  "twd_t": 161.0,
+  "twd_lay_t": 161.0,
+  "tws_kn": 12.0,
+  "twa": 45.0,
+  "heading_trusted": true,
+  "in_zone": false,
+  "manual_age_s": null,
+  "check": null
+ },
+ "polar": {
+  "name": "X35 ORC OD 2019 (intérim)",
+  "eff": 0.92,
+  "up": {
+   "twa": 37.7,
+   "bsp_kn": 5.98
+  },
+  "down": {
+   "twa": 158.9,
+   "bsp_kn": 6.23
+  },
+  "target_bsp_kn": 5.98,
+  "pct": 72.0
+ },
+ "mark": {
+  "id": "plic-sestre",
+  "name": "Plić Sestre",
+  "idx": 1,
+  "lat": 43.684627,
+  "lon": 15.811626,
+  "anchor_lat": 43.686277,
+  "anchor_lon": 15.818153,
+  "side": "stbd",
+  "radius_nm": 0.3,
+  "dtw_nm": 2.02,
+  "btw_t": 152.5,
+  "ttw_s": 1519.0
+ },
+ "leg": "beat",
+ "helm": {
+  "primary": "twa_up",
+  "target": 37.7,
+  "deviation": 7.3,
+  "cts_t": null
+ },
+ "layline": {
+  "src": "polar",
+  "tack": "stbd",
+  "state": "normal",
+  "countdown_s": 906.0,
+  "dist_nm": 1.5,
+  "time_s": 1519.0,
+  "overstood_s": null,
+  "other_tack_hdg_t": 198.7,
+  "current": false,
+  "geojson": {
+   "type": "FeatureCollection",
+   "features": [
+    {
+     "type": "Feature",
+     "properties": {
+      "tack": "stbd"
+     },
+     "geometry": {
+      "type": "LineString",
+      "coordinates": [
+       [
+        15.759842,
+        43.713975
+       ],
+       [
+        15.818153,
+        43.686277
+       ]
+      ]
+     }
+    },
+    {
+     "type": "Feature",
+     "properties": {
+      "tack": "port"
+     },
+     "geometry": {
+      "type": "LineString",
+      "coordinates": [
+       [
+        15.840521,
+        43.734064
+       ],
+       [
+        15.818153,
+        43.686277
+       ]
+      ]
+     }
+    }
+   ]
+  }
+ },
+ "course": {
+  "template": "A",
+  "active_idx": 1,
+  "finish_idx": null,
+  "finished": false,
+  "sides_confirmed": false,
+  "banner": null
+ },
+ "display": {
+  "heading_ref": "M",
+  "variation": 4.7
+ },
+ "alerts": []
+}

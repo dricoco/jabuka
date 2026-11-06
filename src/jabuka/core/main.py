@@ -1,4 +1,5 @@
-"""jabuka-core: state store, UDP bus listener, 1 Hz tick, diagnostics web app (one asyncio loop)."""
+"""jabuka-core: state store, UDP bus listener, 1 Hz tick (nav + diag), helm web app (one asyncio
+loop)."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from jabuka.common import messages, sdnotify
 from jabuka.common.clock import Clock, SimClock, make_clock
 from jabuka.core.bus import start_udp_listener
 from jabuka.core.derived_log import DerivedLogger
+from jabuka.core.nav_service import NavService
 from jabuka.core.state import StateStore
 from jabuka.core.web import Hub, create_app
 from jabuka.ingest.gpsd_client import run_gpsd_client, sky_to_values, tpv_epoch, tpv_to_values
@@ -39,6 +41,8 @@ class CoreContext:
     state: StateStore
     hub: Hub
     data_dir: Path
+    nav: NavService
+    racepack_dir: Path | None = None
     bus_log: RotatingAppendLog | None = None
     derived: DerivedLogger | None = None
     events_log: RotatingAppendLog | None = None
@@ -57,6 +61,7 @@ class CoreContext:
             "bus_log_errors": 0,
             "events_errors": 0,
             "flush_errors": 0,
+            "nav_errors": 0,
         }
     )
     started_mono: float = 0.0
@@ -77,10 +82,12 @@ class CoreContext:
         gpsd: tuple[str, int] | None = None,
         bus_log: bool = False,
         log_budget_bytes: int | None = None,
+        racepack_dir: Path | None = None,
     ) -> CoreContext:
         """bus_log: also log every accepted datagram (logs/bus, ~4 GB/day at full bus load; the
         raw log plus the deterministic decoder reproduces it), so it is opt-in."""
         data_dir = Path(data_dir)
+        racepack_dir = Path(racepack_dir) if racepack_dir is not None else data_dir / "racepack"
         logs = data_dir / "logs"
         # Every core log runs on the injected clock, so sim replays rotate on sim time.
         bus = None
@@ -99,11 +106,14 @@ class CoreContext:
             gps_log = RotatingAppendLog(logs / "gps", "gps", mono=clock.monotonic, wall=clock.wall)
         # one retention policy for the whole data volume; the core owns the budgets
         retention = Retention(logs, budget_bytes=log_budget_bytes, mono=clock.monotonic)
+        state = StateStore(clock)
         return cls(
             clock=clock,
-            state=StateStore(clock),
+            state=state,
             hub=Hub(),
             data_dir=data_dir,
+            nav=NavService(state, clock, data_dir, racepack_dir),
+            racepack_dir=racepack_dir,
             bus_log=bus,
             derived=DerivedLogger(logs / "derived", clock),
             events_log=events_log,
@@ -226,6 +236,7 @@ class CoreContext:
                 "bus_log_errors": self.stats.get("bus_log_errors", 0),
                 "events_errors": self.stats.get("events_errors", 0),
                 "flush_errors": self.stats.get("flush_errors", 0),
+                "nav_errors": self.stats.get("nav_errors", 0),
                 "ws_clients": len(self.hub.clients),
                 "uptime_s": round(max(0.0, self.clock.monotonic() - self.started_mono), 3),
                 "disk": self.retention.status() if self.retention is not None else None,
@@ -236,8 +247,36 @@ class CoreContext:
             },
         }
 
+    def update_nav(self) -> dict | None:
+        """One nav computation (never raises; failures counted in stats nav_errors)."""
+        try:
+            msg = self.nav.update()
+        except Exception:
+            self.stats["nav_errors"] = self.stats.get("nav_errors", 0) + 1
+            log.exception("nav update failed")
+            return None
+        self.stats["nav_errors"] = max(self.stats.get("nav_errors", 0), self.nav.errors)
+        return msg
+
+    def nav_text(self, msg: dict | None) -> str | None:
+        if msg is None:
+            return None
+        try:
+            return json.dumps(msg, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            self.stats["nav_errors"] = self.stats.get("nav_errors", 0) + 1
+            log.exception("nav message not serializable")
+            return None
+
+    def publish_nav(self) -> None:
+        """Fresh nav message to every client now (after a course/settings change)."""
+        text = self.nav_text(self.update_nav())
+        if text is not None:
+            self.hub.publish(text)
+
     def tick_once(self) -> None:
         self.ticks += 1
+        nav = self.update_nav()  # first: its nav.* rows go into this tick's derived line
         diag = self.diag_message()
         if self.derived is not None:
             try:
@@ -255,6 +294,9 @@ class CoreContext:
         if self.retention is not None:
             self.retention.maybe_run(protect=self.open_log_paths())  # never raises
         self.hub.publish(json.dumps(diag, separators=(",", ":")))
+        nav_text = self.nav_text(nav)
+        if nav_text is not None:
+            self.hub.publish(nav_text)
 
     async def _tick_loop(self, first_target: float) -> None:
         target = first_target
@@ -348,6 +390,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--udp-port", type=int, default=messages.DEFAULT_UDP_PORT)
     p.add_argument("--data-dir", type=Path, default=Path("./var"))
     p.add_argument(
+        "--racepack",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="race pack directory (race.pmtiles, seamarks.geojson, coastline.geojson, "
+        "polar.json; default <data-dir>/racepack)",
+    )
+    p.add_argument(
         "--clock",
         choices=("system", "sim", "gps"),
         default="system",
@@ -433,6 +483,7 @@ def build_context(args: argparse.Namespace) -> CoreContext:
         log_budget_bytes=(
             int(args.log_budget_gb * 1_000_000_000) if args.log_budget_gb is not None else None
         ),
+        racepack_dir=getattr(args, "racepack", None),
     )
 
 

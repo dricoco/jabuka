@@ -1,0 +1,108 @@
+/* App shell: theme custom properties (used by carte.css, reglages.css and plan 02-05), layout of the
+   full-screen map, the top bar and the helm bands. Touch targets >= 48 px. */
+
+body.theme-day {
+  --bg: #ffffff;
+  --bg-band: rgba(255, 255, 255, 0.88);
+  --fg: #000000;
+  --dim: #555555;
+  --line: #bbbbbb;
+  --good: #0a7d24;
+  --warn: #b36b00;
+  --bad: #c00000;
+  --accent: #0050b3;
+}
+
+/* Night: pure red channel on true black, no green/blue light (HELM-03, Pitfall 4). */
+body.theme-night {
+  --bg: #000000;
+  --bg-band: rgba(0, 0, 0, 0.85);
+  --fg: #ff0000;
+  --dim: #800000;
+  --line: #400000;
+  --good: #ff0000;
+  --warn: #c00000;
+  --bad: #ff0000;
+  --accent: #ff0000;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+#map { position: fixed; inset: 0; z-index: 0; background: var(--bg); }
+
+#topbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg-band); border-bottom: 1px solid var(--line);
+  min-height: 52px; padding: 2px 6px;
+}
+
+.tabs { display: flex; gap: 4px; }
+.tabs button, button.big {
+  min-height: 48px; min-width: 48px; padding: 0 16px;
+  font-size: 18px; font-weight: 600;
+  color: var(--fg); background: transparent;
+  border: 2px solid var(--line); border-radius: 8px;
+}
+.tabs button.active { border-color: var(--fg); }
+button:disabled { opacity: 0.4; }
+button:focus { outline: none; }
+button:focus-visible { outline: 2px solid var(--accent); }
+
+#badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.badge {
+  font-weight: 700; font-size: 16px; padding: 6px 10px; border-radius: 6px;
+  border: 2px solid currentColor;
+}
+.badge.good { color: var(--good); }
+.badge.warn { color: var(--warn); }
+.badge.bad { color: var(--bad); }
+
+#banner {
+  position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 30;
+  background: var(--bg); color: var(--fg); border: 2px solid var(--fg); border-radius: 8px;
+  padding: 10px 16px; font-size: 20px; font-weight: 700;
+}
+
+main { position: fixed; inset: 56px 0 0 0; z-index: 10; pointer-events: none; }
+.tab { position: absolute; inset: 0; }
+.tab[hidden] { display: none; }
+.tab > * { pointer-events: auto; }
+.panel-full { background: var(--bg); overflow: auto; pointer-events: auto; }
+
+/* -- Barre: big numbers over the map ----------------------------------------------------------- */
+#tab-barre { display: flex; flex-direction: column; justify-content: space-between; }
+.band { background: var(--bg-band); padding: 4px 12px; }
+#helm-top { border-bottom: 1px solid var(--line); }
+#helm-bottom { border-top: 1px solid var(--line); }
+.primary-box { text-align: center; }
+.label { color: var(--dim); font-size: 16px; font-weight: 600; text-transform: uppercase; }
+.primary-line { line-height: 1; font-variant-numeric: tabular-nums; }
+#primary { font-size: 22vh; font-weight: 800; }
+#primary-unit { font-size: 6vh; font-weight: 700; margin-left: 0.2em; }
+.secondary { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 8px; }
+.cell { display: flex; flex-direction: column; align-items: center; min-width: 120px; }
+.num { font-size: 5vh; font-weight: 700; font-variant-numeric: tabular-nums; }
+.num.good { color: var(--good); }
+.num.warn { color: var(--warn); }
+.num.bad { color: var(--bad); }
+.countdown { text-align: center; font-size: 6vh; font-weight: 800; min-height: 1.2em; }
+.other { text-align: center; font-size: 3.5vh; color: var(--dim); }
+
+/* link lost: frozen numbers must never look live (Pitfall 5) */
+body.link-stale #tab-barre .band { opacity: 0.35; filter: grayscale(1); }
+
+#diag-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+
+#lock-overlay { position: fixed; inset: 0; z-index: 100; touch-action: none; }

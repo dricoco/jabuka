@@ -115,10 +115,13 @@ def test_in_process_core(
             wait_until(lambda: len(_raw_log_bytes(tmp_data_dir)) >= len(data), timeout=10)
             assert _raw_log_bytes(tmp_data_dir) == data
 
-            page = client.get("/")
+            page = client.get("/diag.html")  # diagnostics moved off / in Phase 2 (Pitfall 13)
             assert page.status_code == 200
             assert "Jabuka diagnostics" in page.text
             assert client.get("/diag.js").status_code == 200
+            shell = client.get("/")  # the helm app shell
+            assert shell.status_code == 200
+            assert 'id="tab-barre"' in shell.text and 'id="primary"' in shell.text
         finally:
             _terminate(proc)
 
@@ -186,8 +189,10 @@ def test_full_stack_subprocesses(
 
         diag = wait_until(poll, timeout=15)
         _check_rows(diag)
-        page = httpx.get(f"http://127.0.0.1:{free_tcp_port}/", timeout=2.0)
+        page = httpx.get(f"http://127.0.0.1:{free_tcp_port}/diag.html", timeout=2.0)
         assert "Jabuka diagnostics" in page.text
+        shell = httpx.get(f"http://127.0.0.1:{free_tcp_port}/", timeout=2.0)
+        assert 'id="tab-barre"' in shell.text
         for p in procs:
             assert p.poll() is None, "a pipeline process died"
     finally:

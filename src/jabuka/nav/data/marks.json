@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "notes": "Positions from OpenStreetMap (Overpass, verified 2026-11-06, see 02-RESEARCH.md 'Race Marks'). Rounding sides are defaults from the loop geometry (Course A starboard, Course B port) and MUST be confirmed against the Sailing Instructions. Vodice is a provisional start/finish placeholder until the SI line is known.",
+  "marks": [
+    {"id": "vodice", "name": "Vodice", "lat": 43.75, "lon": 15.78, "radius_nm": 0.15, "kind": "start-finish", "provisional": true},
+    {"id": "plic-sestre", "name": "Plić Sestre", "lat": 43.684627, "lon": 15.811626, "radius_nm": 0.3, "kind": "mark", "provisional": false},
+    {"id": "jabuka", "name": "Jabuka", "lat": 43.09153, "lon": 15.46054, "radius_nm": 0.6, "kind": "mark", "provisional": false},
+    {"id": "blitvenica", "name": "Blitvenica", "lat": 43.62508, "lon": 15.57476, "radius_nm": 0.55, "kind": "mark", "provisional": false},
+    {"id": "mulo", "name": "Mulo", "lat": 43.5146, "lon": 15.91857, "radius_nm": 0.5, "kind": "mark", "provisional": false}
+  ],
+  "templates": {
+    "A": [
+      {"mark_id": "vodice", "side": "none"},
+      {"mark_id": "plic-sestre", "side": "stbd"},
+      {"mark_id": "jabuka", "side": "stbd"},
+      {"mark_id": "blitvenica", "side": "stbd"},
+      {"mark_id": "vodice", "side": "none"}
+    ],
+    "B": [
+      {"mark_id": "vodice", "side": "none"},
+      {"mark_id": "plic-sestre", "side": "port"},
+      {"mark_id": "jabuka", "side": "port"},
+      {"mark_id": "mulo", "side": "port"},
+      {"mark_id": "vodice", "side": "none"}
+    ]
+  },
+  "sides_confirmed": false
+}

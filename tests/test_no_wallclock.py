@@ -1,5 +1,5 @@
-"""Inject the clock everywhere: core/ and common/ (except common/clock.py) never read the time
-directly."""
+"""Inject the clock everywhere: core/, common/ (except common/clock.py) and nav/ never read the
+time directly."""
 
 from __future__ import annotations
 
@@ -40,13 +40,18 @@ def _violations(path: Path) -> list[str]:
 
 
 def _scanned() -> list[Path]:
-    files = sorted((PKG / "core").glob("*.py")) + sorted((PKG / "common").glob("*.py"))
+    files = (
+        sorted((PKG / "core").glob("*.py"))
+        + sorted((PKG / "common").glob("*.py"))
+        + sorted((PKG / "nav").glob("*.py"))
+    )
     return [f for f in files if f.name != "clock.py"]
 
 
 def test_scan_covers_core_and_common() -> None:
     names = {f.name for f in _scanned()}
     assert {"state.py", "main.py", "web.py", "messages.py"} <= names
+    assert {"laylines.py", "wind.py", "polar.py", "course.py", "nav_service.py"} <= names
     assert "clock.py" not in names
 
 

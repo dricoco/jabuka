@@ -1,0 +1,20 @@
+/* Carte tab: a side panel over the map (the map stays usable on the left). */
+.panel-side { pointer-events: none; }
+.carte-panel {
+  position: absolute; top: 8px; right: 8px; bottom: 8px; width: min(360px, 90vw);
+  overflow: auto; padding: 10px; border-radius: 10px;
+  background: var(--bg-band); color: var(--fg); border: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.carte-row { display: flex; gap: 8px; }
+.carte-row button { flex: 1; }
+.carte-row button.active { border-color: var(--fg); background: var(--line); }
+.carte-warn { color: var(--bad); font-weight: 700; font-size: 18px; }
+.carte-warn[hidden] { display: none; }
+.carte-status { color: var(--warn); min-height: 1.2em; }
+.carte-list { margin: 0; padding-left: 28px; font-size: 18px; }
+.carte-list li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.carte-list li.active { font-weight: 800; }
+.carte-list li.done { color: var(--dim); }
+.carte-list .name { display: block; }
+.carte-list .meta { display: block; font-size: 14px; color: var(--dim); }
