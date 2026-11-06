@@ -15,12 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from jabuka.common.clock import Clock
+from jabuka.common.conventions import current_towards_uv
 from jabuka.common.units import ms_to_kn, wrap_pi
 from jabuka.core.state import StateStore
 from jabuka.nav import laylines, wind
 from jabuka.nav.course import CourseStore
-from jabuka.nav.polar import Targets, load_racepack_polar
+from jabuka.nav.polar import Targets, apply_efficiency, efficiency_for, load_racepack_polar
 from jabuka.nav.settings import ManualWindStore, SettingsStore
+from jabuka.nav.tacks import TackTracker
 
 log = logging.getLogger("jabuka.nav")
 
@@ -65,6 +67,7 @@ class NavService:
         self.settings_store = SettingsStore(self.data_dir)
         self.course = CourseStore(self.data_dir)
         self.manual = ManualWindStore(self.data_dir)
+        self.tacks = TackTracker(self.settings_store.settings)
         self.polar = load_racepack_polar(self.racepack_dir)
         self.wind = wind.WindPipeline(self.settings_store.settings)
         self.last: dict | None = None
@@ -165,18 +168,17 @@ class NavService:
         }
 
         # -- polar -------------------------------------------------------------------------
-        eff_up, eff_down = s.eff_up(), s.eff_down()
         targets_eff: Targets | None = None
         twa_abs = abs(math.degrees(w.twa)) if w.twa is not None else None
+        # factor of the current point of sail (up / down / general), speeds only (Pitfall 9)
+        eff_now = efficiency_for(twa_abs, s.efficiency, s.efficiency_up, s.efficiency_down)
         pct = None
         if w.ok and tws_kn is not None:
-            raw = self.polar.targets(tws_kn)
-            targets_eff = Targets(
-                raw.up_twa, raw.up_bsp * eff_up, raw.down_twa, raw.down_bsp * eff_down
+            targets_eff = apply_efficiency(
+                self.polar.targets(tws_kn), s.efficiency, s.efficiency_up, s.efficiency_down
             )
             if twa_abs is not None and bsp_kn is not None:
-                eff = eff_up if twa_abs < 90.0 else eff_down
-                ref = eff * self.polar.speed(tws_kn, twa_abs)
+                ref = eff_now * self.polar.speed(tws_kn, twa_abs)
                 pct = bsp_kn / ref * 100.0 if ref > 0.05 else None
         msg["polar"] = {
             "name": self.polar.name,
@@ -194,6 +196,10 @@ class NavService:
             "target_bsp_kn": None,
             "pct": _r(pct, 0),
         }
+
+        # -- sailed angles + current -------------------------------------------------------
+        self.tacks.update(t_mono, w.twa, cog, w.twd_lay, sog_kn, w.in_zone)
+        current_kn = self._current_kn(inputs, w)
 
         # -- course + laylines -------------------------------------------------------------
         self.course.on_tick(lat, lon, t_mono)
@@ -221,8 +227,7 @@ class NavService:
             )
             reach_bsp = None
             if w.ok and tws_kn is not None and twa_abs is not None:
-                eff = eff_up if twa_abs < 90.0 else eff_down
-                reach_bsp = eff * self.polar.speed(tws_kn, twa_abs)
+                reach_bsp = eff_now * self.polar.speed(tws_kn, twa_abs)
             res = laylines.solve(
                 boat,
                 w,
@@ -231,7 +236,9 @@ class NavService:
                 prev_leg=self._prev_leg,
                 prev_primary=self._prev_primary,
                 reach_bsp_kn=reach_bsp,
-                src="polar",  # sailed angles arrive with plan 02-03
+                current_kn=current_kn,
+                src=s.layline_source,
+                sailed=self.tacks.angles() if s.layline_source == "sailed" else None,
             )
             self._prev_leg = res.leg
             self._prev_primary = res.helm.get("primary")
@@ -247,6 +254,17 @@ class NavService:
 
         self._write_back(w, tws_kn, pct, msg, t_mono)
         return msg
+
+    def _current_kn(self, inputs: dict, w: wind.WindSolution) -> tuple[float, float] | None:
+        """Hercules set/drift as (east, north) kn when NAV-03 is on, both are fresh and the boat
+        is outside the Jabuka zone (the set is compass-derived, Pitfall 7); else None."""
+        if not self.settings.use_current or w.in_zone:
+            return None
+        cur = wind.current_true(inputs, self.settings)
+        if cur is None:
+            return None
+        u, v = current_towards_uv(cur[0], ms_to_kn(cur[1]))
+        return u, v
 
     def _write_back(self, w, tws_kn, pct, msg: dict, t_mono: float) -> None:
         """Derived values into the StateStore (src "nav"): Diag page + 1 Hz derived log."""
@@ -266,6 +284,8 @@ class NavService:
                 {"path": "nav.heading.src", "value": w.heading_src, "unit": None},
                 {"path": "nav.polar.pct", "value": _r(pct, 1), "unit": "%"},
                 {"path": "nav.layline.countdown", "value": lay.get("countdown_s"), "unit": "s"},
+                {"path": "nav.tacks.stbd", "value": self.tacks.diag("stbd"), "unit": "deg"},
+                {"path": "nav.tacks.port", "value": self.tacks.diag("port"), "unit": "deg"},
             ],
             t_mono,
         )

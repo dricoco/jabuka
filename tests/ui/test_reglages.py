@@ -48,7 +48,10 @@ def test_manual_wind_form_and_settings(page, feeder) -> None:
         "() => document.getElementById('manual-wind-source').dataset.source === 'MANUEL'"
     )
     assert pg.locator("#manual-wind-error").inner_text() == ""
-    assert "200°M" in pg.locator("#manual-wind-stored").inner_text()
+    # the stored entry is re-read after the POST (async): wait for it
+    pg.wait_for_function(
+        "() => document.getElementById('manual-wind-stored').textContent.includes('200°M')"
+    )
     # the source badge in the top bar says so too
     pg.wait_for_function(
         "() => [...document.querySelectorAll('#badges .badge')].some(b => b.textContent === "

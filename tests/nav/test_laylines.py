@@ -10,11 +10,16 @@ import math
 
 import pytest
 
+from jabuka.common.clock import SimClock
+from jabuka.common.conventions import apparent_from_true
+from jabuka.common.units import kn_to_ms
+from jabuka.core.nav_service import NavService
+from jabuka.core.state import StateStore
 from jabuka.nav import geo
 from jabuka.nav.laylines import Anchor, BoatState, solve
 from jabuka.nav.polar import Targets
 from jabuka.nav.tacks import TackSample
-from jabuka.nav.wind import WindSolution
+from jabuka.nav.wind import INPUT_PATHS, WindSolution, current_true
 
 R = math.radians
 ANCHOR = Anchor(43.5, 15.6)
@@ -205,3 +210,68 @@ def test_reach_cts_is_current_corrected() -> None:
     gx, gy = 7.0 * math.sin(cts), 7.0 * math.cos(cts) + 1.0
     assert math.degrees(math.atan2(gx, gy)) % 360.0 == pytest.approx(90.0, abs=0.2)
     assert res.helm["cts_t"] > 90.0
+
+
+# -- NavService wiring ----------------------------------------------------------------------------
+def _nav_with_inputs(tmp_path, **settings) -> tuple[NavService, StateStore]:
+    clock = SimClock()
+    state = StateStore(clock)
+    nav = NavService(state, clock, tmp_path)
+    if settings:
+        nav.settings_store.update(settings, nav.settings_store.version)
+    target = nav.course.active_target()
+    twd, hdg = R(161.0), R(116.0)
+    lat, lon = geo.offset(target.anchor_lat, target.anchor_lon, twd + math.pi, 3.0)
+    aw = apparent_from_true(twd, kn_to_ms(12.0), kn_to_ms(6.0), hdg)
+    values = [
+        {"path": "environment.wind.angleApparent", "value": aw.awa},
+        {"path": "environment.wind.speedApparent", "value": aw.aws},
+        {"path": "navigation.speedThroughWater", "value": kn_to_ms(6.0)},
+        {"path": "navigation.heading", "value": hdg, "ref": "T"},
+        {"path": "navigation.position", "value": {"latitude": lat, "longitude": lon}},
+        {"path": "navigation.courseOverGroundTrue", "value": hdg, "ref": "T"},
+        {"path": "navigation.speedOverGround", "value": kn_to_ms(6.0)},
+        {"path": "environment.current.set", "value": R(85.3), "ref": "M"},  # 090 T
+        {"path": "environment.current.drift", "value": kn_to_ms(1.0)},
+    ]
+    state.update_values("fastnet", values, clock.monotonic())
+    return nav, state
+
+
+def test_nav_service_applies_current_only_when_enabled(tmp_path) -> None:
+    nav, _ = _nav_with_inputs(tmp_path / "a")
+    msg = nav.update()
+    assert msg["leg"] == "beat" and msg["layline"]["current"] is False
+    nav, state = _nav_with_inputs(tmp_path / "b", use_current=True)
+    msg_c = nav.update()
+    assert msg_c["layline"]["current"] is True
+    assert msg_c["layline"]["time_s"] != msg["layline"]["time_s"]
+    rows = {r["path"]: r["value"] for r in state.rows() if r["src"] == "nav"}
+    assert rows["nav.tacks.stbd"] == {"up": [], "down": []}
+    assert rows["nav.tacks.port"] == {"up": [], "down": []}
+
+
+def test_nav_service_current_set_is_converted_to_true(tmp_path) -> None:
+    nav, state = _nav_with_inputs(tmp_path, use_current=True)
+    cur = current_true({p: state.latest(p) for p in INPUT_PATHS}, nav.settings)
+    assert math.degrees(cur[0]) == pytest.approx(90.0, abs=1e-6)  # 85.3 M + 4.7
+    assert cur[1] == pytest.approx(kn_to_ms(1.0))
+
+
+def test_nav_service_current_ignored_in_the_zone(tmp_path) -> None:
+    nav, state = _nav_with_inputs(tmp_path, use_current=True)
+    pos = state.latest("navigation.position")["value"]
+    nav.settings_store.update(
+        {"zone_lat": pos["latitude"], "zone_lon": pos["longitude"], "zone_radius_nm": 1.0},
+        nav.settings_store.version,
+    )
+    msg = nav.update()
+    assert msg["wind"]["in_zone"] is True
+    assert msg["boat"]["heading_src"] == "cog"
+    assert msg["layline"]["current"] is False
+    assert "CAP NON FIABLE (zone Jabuka)" in msg["alerts"]
+
+
+def test_nav_service_sailed_setting_without_samples_reports_polar(tmp_path) -> None:
+    nav, _ = _nav_with_inputs(tmp_path, layline_source="sailed")
+    assert nav.update()["layline"]["src"] == "polar"
