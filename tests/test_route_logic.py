@@ -119,6 +119,15 @@ def test_countdown_now_missed_and_land_release() -> None:
         stay={"active": True, "tack": "stbd", "released_land": True, "release_in_s": 95},
     )
     assert cd(land)["text"] == "Virement imposé (terre) dans 01:35"
+    # 03-REVIEW LO-08: once the release time has passed, the land-forced tack is VIREZ (red),
+    # never "dans 00:00"
+    for left, cdn in ((0, 0), (-30, -30)):
+        due = route(
+            kind="stay",
+            countdown_s=cdn,
+            stay={"active": True, "tack": "stbd", "released_land": True, "release_in_s": left},
+        )
+        assert (cd(due)["text"], cd(due)["cls"]) == ("VIREZ", "alert")
 
 
 def test_countdown_falls_back_to_the_laylines() -> None:

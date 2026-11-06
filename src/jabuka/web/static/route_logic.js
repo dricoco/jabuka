@@ -79,7 +79,8 @@ export function countdownView(nav) {
   const route = (text, cls = "") => ({ text, cls, source: "route" });
   if (r.updating) return route(STR.updating, "warn");
   const stay = r.stay ?? {};
-  if (stay.active && stay.released_land && isNum(stay.release_in_s)) {
+  // only before the release: afterwards the forced tack is due, VIREZ below (03-REVIEW LO-08)
+  if (stay.active && stay.released_land && isNum(stay.release_in_s) && stay.release_in_s > 0) {
     return route(`${STR.landTackIn} ${fmtClock(stay.release_in_s)}`, "warn");
   }
   const cd = r.countdown_s;
