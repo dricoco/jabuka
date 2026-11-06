@@ -332,7 +332,9 @@ class GpsdClient:
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), 1.0)
-            except (OSError, TimeoutError, asyncio.CancelledError):
+            except (OSError, TimeoutError):
+                # never CancelledError (04-01): a cancel landing in this wait must end the task,
+                # or the core's shutdown waits forever on a client that keeps reconnecting
                 pass
 
     async def run(self) -> None:
