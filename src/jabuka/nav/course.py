@@ -410,7 +410,11 @@ class CourseStore:
         new = self._copy(template="custom", next_mark_n=n + 1, banner=None, suppress_idx=None)
         new.marks[mark_id] = mark
         new.seq.insert(at, leg)
-        if at <= new.active_idx:
+        # IN-03: inserted right before the active FINISH ("À la fin" on the last leg): the new
+        # mark is the next one to round, so it becomes active (not listed as already done).
+        # Anywhere else the active mark stays the same mark.
+        before_active_finish = at == c.active_idx == self.last_idx and not c.finished
+        if at <= new.active_idx and not before_active_finish:
             new.active_idx += 1
         if new.finish_idx is not None and at <= new.finish_idx:
             new.finish_idx += 1

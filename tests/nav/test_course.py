@@ -39,6 +39,23 @@ def test_add_mark_positions_and_active_kept(tmp_path: Path) -> None:
         cs.add_mark("x", 43.7, 15.8, base_version=0)
 
 
+def test_add_mark_before_the_active_finish_becomes_active(tmp_path: Path) -> None:
+    """IN-03: on the final leg, "À la fin" inserts before the finish (insert_at = last index):
+    the late committee mark is the next to round, not silently listed as done."""
+    cs = CourseStore(tmp_path)
+    cs.activate(4)  # Vodice finish active
+    cs.add_mark("Comité", 43.70, 15.79, insert_at=4)
+    assert ids(cs) == ["vodice", "plic-sestre", "jabuka", "blitvenica", "m1", "vodice"]
+    assert cs.course.active_idx == 4 and active_id(cs) == "m1"
+    # with "Finir ici" at Blitvenica (active), the same: the new mark comes before the finish
+    cs2 = CourseStore(tmp_path / "b")
+    cs2.set_finish(3)
+    cs2.activate(3)
+    cs2.add_mark("Comité", 43.70, 15.79, insert_at=3)
+    assert active_id(cs2) == "m1" and cs2.course.finish_idx == 4
+    assert cs2.course.seq[cs2.course.finish_idx].mark_id == "blitvenica"
+
+
 def test_move_builtin_mark_is_an_override_that_survives_a_template_switch(tmp_path: Path) -> None:
     lib_before = json.dumps(load_library(), sort_keys=True)
     cs = CourseStore(tmp_path)
