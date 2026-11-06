@@ -269,16 +269,20 @@ def solve(
     cx, cy = current if current is not None else (0.0, 0.0)
     samples = ((sailed or {}).get(leg_key) or {}) if src == "sailed" else {}
 
-    def side(name: str, h: float) -> tuple[tuple[float, float], float, bool]:
-        """(ground vector kn, heading/track shown for that tack rad, sailed?)"""
+    def side(name: str, h: float) -> tuple[tuple[float, float], bool]:
+        """(ground vector kn, sailed?) of one tack; h is its polar heading."""
         smp = samples.get(name)
         if smp is not None and smp.sog_kn > SOG_MIN_KN:
             trk = wrap_2pi(twd + math.radians(smp.theta_deg))
-            return (smp.sog_kn * math.sin(trk), smp.sog_kn * math.cos(trk)), trk, True
-        return (tack_bsp * math.sin(h) + cx, tack_bsp * math.cos(h) + cy), h, False
+            return (smp.sog_kn * math.sin(trk), smp.sog_kn * math.cos(trk)), True
+        return (tack_bsp * math.sin(h) + cx, tack_bsp * math.cos(h) + cy), False
 
-    g_stbd, h_stbd, sailed_stbd = side("stbd", wrap_2pi(twd - math.radians(tack_twa)))
-    g_port, h_port, sailed_port = side("port", wrap_2pi(twd + math.radians(tack_twa)))
+    # polar (compass) headings of the two tacks: what the helmsman steers, also in sailed mode
+    # where the ground vectors come from measured tracks (IN-06: "Autre bord" is a heading)
+    h_stbd = wrap_2pi(twd - math.radians(tack_twa))
+    h_port = wrap_2pi(twd + math.radians(tack_twa))
+    g_stbd, sailed_stbd = side("stbd", h_stbd)
+    g_port, sailed_port = side("port", h_port)
     on_stbd = wind.twa is None or wind.twa >= 0.0
     tack = "stbd" if on_stbd else "port"
     g_cur, g_other = (g_stbd, g_port) if on_stbd else (g_port, g_stbd)
@@ -300,8 +304,7 @@ def solve(
         primary = "twa_down"
     tack_cts = primary == "cts"
     if tack_cts:
-        h_tack = wrap_2pi(twd - math.radians(tack_twa) if on_stbd else twd + math.radians(tack_twa))
-        res.helm = _cts_helm(boat, h_tack)
+        res.helm = _cts_helm(boat, h_stbd if on_stbd else h_port)
         res.target_bsp_kn = tack_bsp
     else:
         tgt = targets_eff.up_twa if primary == "twa_up" else targets_eff.down_twa

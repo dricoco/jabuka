@@ -120,6 +120,20 @@ def test_polar_mode_ignores_samples() -> None:
     assert _ab(res)[0] == pytest.approx(A_H, abs=0.002)
 
 
+def test_sailed_mode_other_tack_is_the_polar_heading_not_the_ground_track() -> None:
+    """IN-06: "Autre bord" is compared with the compass after the tack: in sailed mode it stays
+    the polar heading (TWD + target TWA = 045), not the port ground track (049, leeway and
+    current included)."""
+    sailed = _sailed(TackSample(-50.0, 5.5), TackSample(49.0, 5.8))
+    res = solve(_boat_at(180.0, 5.0), _wind(), TARGETS, ANCHOR, src="sailed", sailed=sailed)
+    assert res.layline["src"] == "sailed"
+    assert res.layline["other_tack_hdg_t"] == pytest.approx(45.0)
+    res = solve(
+        _boat_at(180.0, 5.0), _wind(twa_deg=-45.0), TARGETS, ANCHOR, src="sailed", sailed=sailed
+    )
+    assert res.layline["other_tack_hdg_t"] == pytest.approx(315.0)
+
+
 # -- leg type hysteresis on twd_lay ---------------------------------------------------------------
 def test_leg_hysteresis_on_layline_twd() -> None:
     # beta = 45 + 3 -> still a beat when coming from a beat; 45 + 6 -> reach
