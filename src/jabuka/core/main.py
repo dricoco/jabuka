@@ -48,7 +48,16 @@ class CoreContext:
     udp_host: str = "127.0.0.1"
     udp_port: int = messages.DEFAULT_UDP_PORT
     stats: dict[str, int] = field(
-        default_factory=lambda: {"udp_rx": 0, "udp_rejected": 0, "handler_errors": 0}
+        default_factory=lambda: {
+            "udp_rx": 0,
+            "udp_rejected": 0,
+            "handler_errors": 0,
+            # log write failures: the journal is volatile, so they must show on the page (WR-06)
+            "derived_errors": 0,
+            "bus_log_errors": 0,
+            "events_errors": 0,
+            "flush_errors": 0,
+        }
     )
     started_mono: float = 0.0
     ticks: int = 0
@@ -186,7 +195,12 @@ class CoreContext:
             "state_ref": self.derived.current_name if self.derived is not None else None,
         }
         assert self.events_log is not None
-        self.events_log.write_json(rec, fsync_now=True)
+        try:
+            self.events_log.write_json(rec, fsync_now=True)
+        except (OSError, ValueError):
+            self.stats["events_errors"] = self.stats.get("events_errors", 0) + 1
+            log.exception("event marker write failed")
+            raise
         self.events_written = n
         self.last_event_mono = now
         return rec
@@ -203,6 +217,11 @@ class CoreContext:
             "core": {
                 "udp_rx": self.stats.get("udp_rx", 0),
                 "udp_rejected": self.stats.get("udp_rejected", 0),
+                "handler_errors": self.stats.get("handler_errors", 0),
+                "derived_errors": self.stats.get("derived_errors", 0),
+                "bus_log_errors": self.stats.get("bus_log_errors", 0),
+                "events_errors": self.stats.get("events_errors", 0),
+                "flush_errors": self.stats.get("flush_errors", 0),
                 "ws_clients": len(self.hub.clients),
                 "uptime_s": round(max(0.0, self.clock.monotonic() - self.started_mono), 3),
                 "disk": self.retention.status() if self.retention is not None else None,
@@ -221,11 +240,13 @@ class CoreContext:
                 self.derived.write(diag)  # derived line BEFORE publishing
                 diag["log"]["derived"] = self.derived.current_name
             except Exception:
+                self.stats["derived_errors"] = self.stats.get("derived_errors", 0) + 1
                 log.exception("derived log write failed")
         for lg in self.logs():
             try:
                 lg.maybe_flush()
             except Exception:
+                self.stats["flush_errors"] = self.stats.get("flush_errors", 0) + 1
                 log.exception("log flush failed")
         if self.retention is not None:
             self.retention.maybe_run(protect=self.open_log_paths())  # never raises

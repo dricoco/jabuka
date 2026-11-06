@@ -176,6 +176,10 @@ class FastnetIngest:
             "unknown_ch": sorted(self.unknown_ch)[:MAX_UNKNOWN_CH],
             "reconnects": self.reconnects,
             "last_error": self.last_error,
+            # raw-first is a guarantee: losing the raw log must be visible (WR-06)
+            "raw_errors": self.raw_errors,
+            "send_errors": self.send_errors,
+            "raw_file": self.rawlog.current_path.name if self.rawlog.current_path else None,
             **self._disk(),
         }
 

@@ -267,3 +267,36 @@ async def test_core_tick_runs_retention_and_reports_disk(
     assert disk["deleted"] >= 1
     assert disk["free_bytes"] > 0
     assert set(disk["used_bytes"]) == {"raw", "bus", "derived", "gps", "events"}
+
+
+async def test_log_write_failures_are_counted_in_diag(
+    tmp_data_dir: Path, free_udp_port: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-06: derived and bus log failures used to go only to the volatile journal."""
+    clock = SimClock(start_utc=H10 - 1800)
+    ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port, bus_log=True)
+
+    def broken(*a, **k):
+        raise OSError(30, "Read-only file system")
+
+    assert ctx.derived is not None and ctx.bus_log is not None
+    monkeypatch.setattr(ctx.derived, "write", broken)
+    monkeypatch.setattr(ctx.bus_log, "write_line", broken)
+    await ctx.startup()
+    try:
+        good = messages.encode(messages.delta_message("t", [{"path": "a.b", "value": 1.0}], 1, 2))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.sendto(good, ("127.0.0.1", free_udp_port))
+        clock.advance(1.0)
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if ctx.stats["udp_rx"] >= 1 and ctx.ticks >= 1:
+                break
+    finally:
+        await ctx.shutdown()
+    core = ctx.diag_message()["core"]
+    assert core["derived_errors"] >= 1
+    assert core["bus_log_errors"] == 1
+    assert ctx.stats["udp_rx"] == 1  # state updates kept flowing
+    for key in ("events_errors", "flush_errors", "handler_errors"):
+        assert key in core

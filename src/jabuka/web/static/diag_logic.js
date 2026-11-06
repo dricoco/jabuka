@@ -46,3 +46,44 @@ export function linkState(sinceLastMs) {
   if (sinceLastMs > RX_STALE_MS) return "stale";
   return "live";
 }
+
+// -- log/send error counters (WR-06) --------------------------------------------------------------
+// The counters are cumulative since the process started. An alert is shown for ERROR_ALERT_MS
+// after a counter increases (or is first seen above zero), so a persistent failure keeps the banner
+// red and a transient one fades while its count stays visible in the tables.
+export const ERROR_ALERT_MS = 60000;
+const CORE_ERRORS = {
+  derived_errors: "derived log write failed",
+  bus_log_errors: "bus log write failed",
+  events_errors: "event log write failed",
+  flush_errors: "log flush failed",
+  handler_errors: "message handler failed",
+};
+const SOURCE_ERRORS = {
+  raw_errors: "raw log write failed",
+  send_errors: "UDP send to the core failed",
+};
+
+// memory: an object kept by the caller between messages; nowMs: a monotonic clock in ms.
+export function errorAlerts(msg, memory, nowMs) {
+  const out = [];
+  const check = (key, value, label) => {
+    if (typeof value !== "number") return;
+    const prev = memory[key];
+    if (prev === undefined || value < prev.value) {
+      // first sight, or the counter restarted with its process
+      memory[key] = { value, at: value > 0 && prev === undefined ? nowMs : -Infinity };
+    } else if (value > prev.value) {
+      memory[key] = { value, at: nowMs };
+    }
+    if (nowMs - memory[key].at <= ERROR_ALERT_MS) out.push(`${label} (${value} since start)`);
+  };
+  const core = msg?.core ?? {};
+  for (const [key, text] of Object.entries(CORE_ERRORS)) check(`core.${key}`, core[key], `Core: ${text}`);
+  for (const [src, h] of Object.entries(msg?.health ?? {})) {
+    for (const [key, text] of Object.entries(SOURCE_ERRORS)) {
+      check(`${src}.${key}`, h?.[key], `${src}: ${text}`);
+    }
+  }
+  return out;
+}

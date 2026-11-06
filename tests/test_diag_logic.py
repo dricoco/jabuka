@@ -79,3 +79,35 @@ def test_page_wires_the_watchdog() -> None:
     src = (LOGIC.parent / "diag.js").read_text()
     assert "setInterval(watchdog" in src
     assert "markAllStale" in src and "linkState(" in src
+
+
+def test_error_counters_alert_while_increasing() -> None:
+    """WR-06: raw/derived/bus/event log write failures turn the page red."""
+    out = js(
+        """(() => {
+          const mem = {};
+          const m = (raw, derived) => ({
+            core: { derived_errors: derived, events_errors: 0 },
+            health: { fastnet: { raw_errors: raw, send_errors: 0 } },
+          });
+          return [
+            errorAlerts(m(0, 0), mem, 0),        // all zero: nothing
+            errorAlerts(m(2, 0), mem, 1000),     // raw errors appear
+            errorAlerts(m(2, 0), mem, 30000),    // still within 60 s
+            errorAlerts(m(2, 0), mem, 62000),    // stopped increasing: fades
+            errorAlerts(m(2, 1), mem, 63000),    // derived fails now
+            errorAlerts(m(0, 0), mem, 64000),    // processes restarted: counters reset
+          ];
+        })()"""
+    )
+    assert out[0] == []
+    assert out[1] == ["fastnet: raw log write failed (2 since start)"]
+    assert out[2] == out[1]
+    assert out[3] == []
+    assert out[4] == ["Core: derived log write failed (1 since start)"]
+    assert out[5] == []
+
+
+def test_error_counter_seen_nonzero_on_page_load_alerts() -> None:
+    out = js("errorAlerts({core: {events_errors: 3}}, {}, 5)")
+    assert out == ["Core: event log write failed (3 since start)"]

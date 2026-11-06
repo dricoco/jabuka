@@ -2,7 +2,7 @@
 // Ages and staleness are computed by the server (injected clock); this file only formats, except
 // for the link watchdog: when no message arrives for RX_STALE_MS the whole page turns stale.
 
-import { alertsFor, linkState } from "./diag_logic.js";
+import { alertsFor, errorAlerts, linkState } from "./diag_logic.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -134,9 +134,11 @@ function renderAlerts(lines) {
   el.hidden = lines.length === 0;
 }
 
+const errorMemory = {};
+
 function render(msg) {
   if (msg.type !== "diag") return;
-  renderAlerts(alertsFor(msg));
+  renderAlerts([...alertsFor(msg), ...errorAlerts(msg, errorMemory, performance.now())]);
   renderClock(msg.clock ?? {});
   renderValues(msg.values ?? []);
   renderHealth(msg.health ?? {});
@@ -174,6 +176,8 @@ async function sendEvent() {
       ack.textContent = "Not logged: too fast (max 1 per second)";
     } else if (res.status === 422) {
       ack.textContent = "Not logged: label too long (max 200 characters)";
+    } else if (res.status === 503) {
+      ack.textContent = "NOT LOGGED: the event log cannot be written (disk full?)";
     } else {
       ack.textContent = `Not logged: HTTP ${res.status}`;
     }

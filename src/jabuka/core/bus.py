@@ -25,7 +25,7 @@ class BusProtocol(asyncio.DatagramProtocol):
         self.on_message = on_message
         self.stats = stats
         self.bus_log = bus_log
-        for key in ("udp_rx", "udp_rejected", "handler_errors"):
+        for key in ("udp_rx", "udp_rejected", "handler_errors", "bus_log_errors"):
             self.stats.setdefault(key, 0)
 
     def datagram_received(self, data: bytes, addr: Any) -> None:
@@ -38,6 +38,7 @@ class BusProtocol(asyncio.DatagramProtocol):
             try:
                 self.bus_log.write_line(json.dumps(msg, separators=(",", ":")))
             except Exception as e:  # logging must never stop state updates
+                self.stats["bus_log_errors"] += 1
                 log.warning("bus log write failed: %s", e)
         try:
             self.on_message(msg)

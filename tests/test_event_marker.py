@@ -106,3 +106,24 @@ def test_page_has_event_controls(core) -> None:
     js = client.get("/diag.js").text
     assert "/api/event" in js
     assert "event-ack" in js
+
+
+def test_event_write_failure_is_503_and_counted(core, monkeypatch: pytest.MonkeyPatch) -> None:
+    """IN-08/WR-06: a full or read-only disk returns 503 with a reason (not a bare 500) and shows
+    up as events_errors on the diagnostics page."""
+    client, clock, ctx, _ = core
+
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ctx.events_log, "write_json", full)
+    r = client.post("/api/event", json={"label": "x"})
+    assert r.status_code == 503
+    assert r.json() == {"ok": False, "error": "log write failed"}
+    core_diag = client.get("/api/state").json()["core"]
+    assert core_diag["events_errors"] == 1
+    assert client.get("/api/state").json()["log"]["events_written"] == 0
+    monkeypatch.undo()
+    clock.advance(1.5)
+    assert client.post("/api/event", json={"label": "y"}).status_code == 201  # not rate-limited
+    assert "503" in client.get("/diag.js").text

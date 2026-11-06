@@ -85,7 +85,10 @@ def create_app(ctx: CoreContext) -> FastAPI:
     @app.post("/api/event", status_code=201, response_model=None)
     async def api_event(event: EventIn) -> dict | JSONResponse:
         label = strip_control(event.label)
-        rec = ctx.record_event(label)
+        try:
+            rec = ctx.record_event(label)
+        except (OSError, ValueError):  # disk full / read-only: say so instead of a bare 500
+            return JSONResponse({"ok": False, "error": "log write failed"}, status_code=503)
         if rec is None:
             return JSONResponse(
                 {"ok": False, "error": "too fast", "min_interval_s": 1.0}, status_code=429

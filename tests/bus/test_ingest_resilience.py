@@ -39,6 +39,9 @@ HEALTH_KEYS = {
     "unknown_ch",
     "reconnects",
     "last_error",
+    "raw_errors",
+    "send_errors",
+    "raw_file",
 }
 
 
@@ -304,3 +307,28 @@ def test_ingest_reports_busy_port(tmp_path: Path) -> None:
     finally:
         loop.close()
         rawlog.close()
+
+
+def test_heartbeat_reports_raw_log_and_send_failures(tmp_path: Path) -> None:
+    """WR-06: a full disk or a dead UDP path used to leave the heartbeat at state ok."""
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
+
+    def failing_send(b: bytes) -> None:
+        raise OSError(101, "Network is unreachable")
+
+    ingest = FastnetIngest(rawlog, failing_send)
+    chunks = chunks_from_capture(EXAMPLE2)[:50]
+    ingest.on_chunk(chunks[0])
+    assert ingest.health()["raw_file"] == rawlog.current_path.name
+    rawlog.close()
+    rawlog._fh = None
+
+    def broken(b: bytes) -> None:
+        raise OSError(28, "No space left on device")
+
+    rawlog.write_chunk = broken  # type: ignore[method-assign]
+    for c in chunks[1:]:
+        ingest.on_chunk(c)
+    h = ingest.health()
+    assert h["raw_errors"] == len(chunks) - 1
+    assert h["send_errors"] > 0
