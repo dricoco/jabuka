@@ -351,6 +351,7 @@ Terms chosen (to confirm first):
 | `srv.rOutFail` | le routeur échoue | the router keeps failing | izračun poti ne uspeva |
 | `srv.rOutFailWhy` | le routeur échoue : {r} | the router keeps failing: {r} | izračun poti ne uspeva: {r} |
 | `srv.rOutRestored` | route sauvegardée : vérification en cours | saved route: being checked | shranjena pot: preverjanje |
+| `srv.rOutClock` | heure GPS revenue en arrière : recalcul en cours | GPS time stepped back: recomputing | čas GPS se je vrnil nazaj: ponovni izračun |
 | `srv.rNoPackDir` | pas de dossier de pack | no pack folder | ni mape paketa |
 | `srv.rPackUnreadable` | pack illisible | pack unreadable | paket neberljiv |
 | `srv.rNoWind` | vent absent | no wind | ni vetra |

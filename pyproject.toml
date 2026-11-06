@@ -56,6 +56,8 @@ jabuka-prep-polar = "jabuka.prep.polar:main"          # (02-02) polar converter
 # Phase 3 (plan 03-05 declares them; modules from 03-02 and 03-03).
 jabuka-prep = "jabuka.prep.cli:main"                  # (03-02) race-pack prep (laptop)
 jabuka-route-bench = "jabuka.route.bench:main"        # (03-03) Pi router benchmark
+# Phase 4
+jabuka-soak = "jabuka.tools.soak:main"                # (04-01) accelerated soak harness
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jabuka"]

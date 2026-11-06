@@ -1,0 +1,43 @@
+{
+  "name": "ci",
+  "seed": 4,
+  "clock": "sim",
+  "speed": 60,
+  "duration_s": 5400,
+  "start": [43.708265, 15.800369],
+  "start_utc": "2026-11-13T19:00:00Z",
+  "wind": {"twd": 161, "tws_kn": 12, "shift_deg_h": 0, "gust_kn": 0},
+  "grib": {"tws_factor": 1.0, "hours_before": 2, "hours_after": 48},
+  "course": "A",
+  "settings": {},
+  "logs_fs": "tmpfs:64M",
+  "budgets": {"settle_s": 1},
+  "shim": {
+    "watchdog_sec": 5,
+    "why": "CI gate time budget (W1): the real WatchdogSec=30 makes the hang fault wait 30 s; the full race-36h scenario keeps the unit value"
+  },
+  "faults": [
+    {"kind": "kill-ingest", "at": 60},
+    {"kind": "grib-gap", "at": 120, "dur": 240},
+    {"kind": "kill-core", "at": 240},
+    {"kind": "kill-worker", "at": 480},
+    {"kind": "sigterm-storm", "at": 720, "n": 5},
+    {"kind": "power-pull", "at": 960, "off_s": 120, "corrupt": "garbage"},
+    {"kind": "power-pull", "at": 1200, "off_s": 120},
+    {"kind": "watchdog-hang", "at": 1440},
+    {"kind": "bus-silent", "at": 1680, "dur": 240},
+    {"kind": "garbage", "at": 1920, "dur": 120},
+    {"kind": "noise", "at": 2160, "dur": 120},
+    {"kind": "unplug", "at": 2400, "dur": 120},
+    {"kind": "gps-loss", "at": 2640, "dur": 120},
+    {"kind": "clock-jump", "at": 2880, "dur": 120},
+    {"kind": "disk-full", "at": 3120, "dur": 240},
+    {"kind": "course-change", "at": 3360},
+    {"kind": "stay-toggle", "at": 3600, "dur": 240},
+    {"kind": "ws-stall", "at": 3840, "dur": 240},
+    {"kind": "ws-churn", "at": 4080, "n": 50}
+  ],
+  "random": null,
+  "quiet_tail_s": 0,
+  "expected_tracebacks": {}
+}

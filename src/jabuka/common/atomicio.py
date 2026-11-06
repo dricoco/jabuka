@@ -44,10 +44,26 @@ def atomic_write_json(path: str | Path, obj: Any) -> None:
 
 
 def load_json_with_bak(path: str | Path, default: Any) -> Any:
+    return load_json_status(path, default)[0]
+
+
+def load_json_status(path: str | Path, default: Any) -> tuple[Any, str]:
+    """(value, source): source "main" or "bak" for the file that loaded, "missing" when neither
+    NAME nor NAME.bak exists (first boot: the default is expected), "unreadable" when one exists
+    but none loads (corruption: the caller must say so, never fall back silently)."""
     path = Path(path)
-    for p in (path, path.with_name(path.name + ".bak")):
+    present = False
+    for p, source in ((path, "main"), (path.with_name(path.name + ".bak"), "bak")):
         try:
-            return json.loads(p.read_bytes().decode("utf-8"))
-        except (OSError, ValueError):  # missing, EACCES/EIO, a directory, torn or bad JSON
+            data = p.read_bytes()
+        except FileNotFoundError:
             continue
-    return default
+        except OSError:  # EACCES/EIO, a directory: present but unreadable
+            present = True
+            continue
+        present = True
+        try:
+            return json.loads(data.decode("utf-8")), source
+        except ValueError:  # torn or bad JSON, bad UTF-8
+            continue
+    return default, ("unreadable" if present else "missing")

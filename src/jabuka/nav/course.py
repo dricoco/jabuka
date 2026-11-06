@@ -46,7 +46,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from jabuka.common.atomicio import atomic_write_json, load_json_with_bak
+from jabuka.common.atomicio import atomic_write_json, load_json_status
 from jabuka.nav import geo
 from jabuka.nav.settings import VersionConflict
 
@@ -231,7 +231,9 @@ class CourseStore:
         self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
         self._last_fsm_t: float | None = None  # t_mono of the previous position sample
         self._banner_until: float | None = None  # t_mono end of the banner window
-        raw = load_json_with_bak(self.path, None)
+        raw, source = load_json_status(self.path, None)
+        if source == "unreadable":  # present but neither NAME nor NAME.bak loads (04-01 soak)
+            self.alerts.append("Parcours illisible : Parcours A par défaut")
         if raw is not None:
             try:
                 if not isinstance(raw, dict):
