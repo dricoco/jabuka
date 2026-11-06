@@ -1,10 +1,18 @@
 // Réglages tab:
+// - "Langue / Language / Jezik" (quick 001): FR / EN / SL for this device only (localStorage
+//   "jabuka.lang", i18n.js). A switch reloads the page back on this tab (sessionStorage
+//   "jabuka.tab"): simpler and sturdier than re-rendering every mounted module; the lock and the
+//   night theme are in localStorage and survive the reload.
 // - "Vent manuel" panel (WIND-04): TWD/TWS read off the B&G display, °M (default, Pitfall 6) or °T,
 //   POST /api/wind/manual {twd, tws_kn, ref}; "Effacer" = DELETE. The wind source and the manual
-//   age come from the nav bus events. 422 errors are shown inline, in French.
-// - a form generated from GET /api/settings/schema (French labels in "label"), saving one field per
-//   change with PUT {base_version, patch}; a 409 (edited on another tablet) reloads.
-// DOM built with textContent only.
+//   age come from the nav bus events. 422 errors are shown inline.
+// - a form generated from GET /api/settings/schema, saving one field per change with
+//   PUT {base_version, patch}; a 409 (edited on another tablet) reloads. Field labels come from
+//   i18n.js ("settings.<field>"), the schema's French "label" being the fallback.
+// DOM built with textContent only. Texts in the tablet's language (i18n.js).
+import { LANGS, getLang, setLang, t } from "./i18n.js";
+
+const TAB_KEY = "jabuka.tab"; // app.js shows this tab first after the reload
 
 function el(tag, attrs = {}, text) {
   const e = document.createElement(tag);
@@ -29,35 +37,34 @@ function fieldSpec(prop) {
   return { kind: "text", nullable };
 }
 
-const SOURCE_TEXT = {
-  LIVE: "Vent instruments (LIVE)",
-  LIVE_BG: "Vent B&G (LIVE B&G)",
-  MANUEL: "Vent manuel utilisé (MANUEL)",
-  NONE: "PAS DE VENT",
-};
+function sourceText(source) {
+  if (source === "NONE") return t("badge.noWind");
+  if (["LIVE", "LIVE_BG", "MANUEL", "GRIB"].includes(source)) return t(`src.${source}`);
+  return String(source);
+}
 
 function fmtAge(s) {
   if (typeof s !== "number" || !Number.isFinite(s)) return "";
   const m = Math.floor(s / 60);
-  return m < 1 ? "à l'instant" : `il y a ${m} min`;
+  return m < 1 ? t("manual.justNow") : t("manual.ago", { m });
 }
 
-// Pure: the manual wind form values -> request body, or an error string (French).
+// Pure: the manual wind form values -> request body, or an error string.
 export function manualBody(twdText, twsText, ref) {
   const twd = Number(String(twdText).replace(",", "."));
   const tws = Number(String(twsText).replace(",", "."));
   if (String(twdText).trim() === "" || !Number.isFinite(twd) || twd < 0 || twd >= 360) {
-    return { error: "TWD : entre 0 et 359,9°" };
+    return { error: t("manual.errTwd") };
   }
   if (String(twsText).trim() === "" || !Number.isFinite(tws) || tws < 0 || tws > 80) {
-    return { error: "TWS : entre 0 et 80 nds" };
+    return { error: t("manual.errTws") };
   }
   return { body: { twd, tws_kn: tws, ref: ref === "T" ? "T" : "M" } };
 }
 
 function manualPanel(ctx) {
-  const box = el("section", { class: "manual-wind", id: "manual-wind", "aria-label": "Vent manuel" });
-  const title = el("h3", {}, "Vent manuel");
+  const box = el("section", { class: "manual-wind", id: "manual-wind", "aria-label": t("manual.title") });
+  const title = el("h3", {}, t("manual.title"));
   const source = el("div", { class: "manual-wind-source", id: "manual-wind-source" }, "—");
   const form = el("form", { class: "manual-wind-form", id: "manual-wind-form", novalidate: "" });
   const twd = el("input", {
@@ -66,13 +73,13 @@ function manualPanel(ctx) {
   });
   const tws = el("input", {
     type: "number", name: "tws_kn", min: "0", max: "80", step: "any", inputmode: "decimal",
-    "aria-label": "TWS (nds)",
+    "aria-label": t("manual.twsLabel"),
   });
-  const ref = el("select", { name: "ref", "aria-label": "Référence TWD" });
+  const ref = el("select", { name: "ref", "aria-label": t("manual.refAria") });
   ref.append(el("option", { value: "M" }, "°M"), el("option", { value: "T" }, "°T"));
   ref.value = "M";
-  const apply = el("button", { type: "submit", class: "manual-apply" }, "Appliquer");
-  const clear = el("button", { type: "button", class: "manual-clear" }, "Effacer");
+  const apply = el("button", { type: "submit", class: "manual-apply" }, t("manual.apply"));
+  const clear = el("button", { type: "button", class: "manual-clear" }, t("manual.clear"));
   const error = el("div", { class: "manual-wind-error", id: "manual-wind-error", "aria-live": "polite" });
   const stored = el("div", { class: "manual-wind-stored", id: "manual-wind-stored" });
   const field = (label, input) => {
@@ -80,16 +87,16 @@ function manualPanel(ctx) {
     l.append(el("span", {}, label), input);
     return l;
   };
-  form.append(field("TWD (°)", twd), field("TWS (nds)", tws), field("Réf.", ref), apply, clear);
+  form.append(field("TWD (°)", twd), field(t("manual.twsLabel"), tws), field(t("manual.ref"), ref), apply, clear);
   box.append(title, source, form, stored, error);
 
   function showStored(m) {
     if (!m) {
-      stored.textContent = "Aucun vent manuel enregistré";
+      stored.textContent = t("manual.none");
       return;
     }
     stored.textContent =
-      `Enregistré : ${m.twd_entered}°${m.ref_entered} / ${m.tws_kn} nds` +
+      t("manual.stored", { twd: m.twd_entered, ref: m.ref_entered, tws: m.tws_kn }) +
       (m.ref_entered === "M" ? ` (${m.twd_t_deg}°T)` : "");
     if (document.activeElement !== twd && document.activeElement !== tws) {
       twd.value = m.twd_entered;
@@ -101,11 +108,11 @@ function manualPanel(ctx) {
   function showNav(nav) {
     const w = nav?.wind;
     if (!w) return;
-    let text = SOURCE_TEXT[w.source] ?? String(w.source);
+    let text = sourceText(w.source);
     if (w.source === "MANUEL") {
       const age = fmtAge(w.manual_age_s);
-      text += age ? ` — saisi ${age}` : " — âge inconnu"; // no trusted UTC (WR-03)
-      if (w.stale) text += " — PÉRIMÉ";
+      text += age ? t("manual.entered", { age }) : t("manual.ageUnknown"); // no trusted UTC (WR-03)
+      if (w.stale) text += t("manual.stale");
     }
     source.textContent = text;
     source.dataset.source = w.source;
@@ -115,7 +122,7 @@ function manualPanel(ctx) {
     try {
       showStored((await ctx.api.get("/api/wind/manual")).manual);
     } catch (e) {
-      stored.textContent = `Vent manuel indisponible (${e.status ?? e})`;
+      stored.textContent = t("manual.unavailable", { s: e.status ?? e });
     }
   }
 
@@ -132,7 +139,7 @@ function manualPanel(ctx) {
       showNav(nav);
       refresh();
     } catch (e) {
-      error.textContent = e.status === 422 ? "Valeurs refusées (TWD 0-359,9°, TWS 0-80 nds)" : `Échec (${e.status ?? e})`;
+      error.textContent = e.status === 422 ? t("manual.refused") : t("common.failed", { s: e.status ?? e });
     }
   });
   clear.addEventListener("click", async () => {
@@ -142,7 +149,7 @@ function manualPanel(ctx) {
       showNav(nav);
       refresh();
     } catch (e) {
-      error.textContent = `Échec (${e.status ?? e})`;
+      error.textContent = t("common.failed", { s: e.status ?? e });
     }
   });
 
@@ -152,6 +159,38 @@ function manualPanel(ctx) {
   return box;
 }
 
+// FR / EN / SL buttons: this device's language; a switch reloads the page on this tab.
+function langPanel() {
+  const box = el("section", { class: "lang-select", id: "lang-select", "aria-label": t("lang.title") });
+  const row = el("div", { class: "lang-row" });
+  for (const lang of LANGS) {
+    const b = el("button", { type: "button", class: "lang-btn", "data-lang": lang }, lang.toUpperCase());
+    const on = lang === getLang();
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.addEventListener("click", () => {
+      if (lang === getLang() || document.body.classList.contains("locked")) return;
+      setLang(lang);
+      try {
+        sessionStorage.setItem(TAB_KEY, "reglages");
+      } catch {
+        /* no session storage: back on the Barre tab */
+      }
+      location.reload();
+    });
+    row.append(b);
+  }
+  box.append(el("h3", {}, t("lang.title")), row);
+  return box;
+}
+
+// Label of an enum option ("computed" -> "calculé"); the raw value when there is none.
+function optionLabel(value) {
+  const key = `opt.${value}`;
+  const text = t(key);
+  return text === key ? String(value) : text;
+}
+
 export function mount(ctx) {
   const root = ctx.section;
   if (!root) return;
@@ -159,14 +198,14 @@ export function mount(ctx) {
   let current = null; // {version, settings}
   const form = el("form", { class: "reglages-form", id: "settings-form" });
   const status = el("div", { class: "reglages-status", "aria-live": "polite" });
-  const title = el("h2", {}, "Réglages");
+  const title = el("h2", {}, t("tab.reglages"));
   let manual = null;
   try {
     manual = manualPanel(ctx);
   } catch (e) {
     console.error("manual wind panel", e);
   }
-  root.replaceChildren(title, ...(manual ? [manual] : []), status, form);
+  root.replaceChildren(title, langPanel(), ...(manual ? [manual] : []), status, form);
   form.addEventListener("submit", (ev) => ev.preventDefault());
 
   function inputFor(key, prop) {
@@ -175,7 +214,7 @@ export function mount(ctx) {
     let input;
     if (spec.kind === "enum") {
       input = el("select", { name: key });
-      for (const opt of spec.options) input.append(el("option", { value: opt }, String(opt)));
+      for (const opt of spec.options) input.append(el("option", { value: opt }, optionLabel(opt)));
       input.value = value ?? spec.options[0];
     } else if (spec.kind === "bool") {
       input = el("input", { type: "checkbox", name: key });
@@ -198,7 +237,8 @@ export function mount(ctx) {
     if (!schema || !current) return;
     const rows = Object.entries(schema.properties ?? {}).map(([key, prop]) => {
       const row = el("label", { class: "reglages-row" });
-      row.append(el("span", { class: "reglages-label" }, prop.label ?? prop.title ?? key));
+      const label = t(`settings.${key}`);
+      row.append(el("span", { class: "reglages-label" }, label === `settings.${key}` ? (prop.label ?? prop.title ?? key) : label));
       row.append(inputFor(key, prop));
       return row;
     });
@@ -211,7 +251,7 @@ export function mount(ctx) {
     else if (spec.kind === "number") {
       value = input.value === "" && spec.nullable ? null : Number(input.value);
       if (value !== null && !Number.isFinite(value)) {
-        status.textContent = "Valeur invalide";
+        status.textContent = t("reglages.invalid");
         return;
       }
     } else value = input.value;
@@ -220,18 +260,18 @@ export function mount(ctx) {
         base_version: current.version,
         patch: { [key]: value },
       });
-      status.textContent = "Enregistré";
+      status.textContent = t("reglages.saved");
       render();
     } catch (e) {
       if (e.status === 409 && e.body) {
         current = e.body;
         render();
-        status.textContent = "Modifié sur une autre tablette : rechargé, recommencez";
+        status.textContent = t("reglages.conflict");
       } else if (e.status === 422) {
-        status.textContent = "Valeur hors limites";
+        status.textContent = t("reglages.outOfRange");
         render();
       } else {
-        status.textContent = `Échec (${e.status ?? e})`;
+        status.textContent = t("common.failed", { s: e.status ?? e });
       }
     }
   }
@@ -249,6 +289,6 @@ export function mount(ctx) {
       render();
     })
     .catch((e) => {
-      status.textContent = `Schéma indisponible (${e.status ?? e})`;
+      status.textContent = t("reglages.noSchema", { s: e.status ?? e });
     });
 }

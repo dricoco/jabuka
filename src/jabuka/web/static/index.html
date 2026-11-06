@@ -16,14 +16,14 @@
 </head>
 <body class="theme-day">
   <!-- full-screen map behind everything (map.js) -->
-  <div id="map" aria-label="Carte"></div>
+  <div id="map" aria-label="Carte" data-i18n-aria="aria.map"></div>
 
   <header id="topbar">
-    <nav class="tabs" aria-label="Onglets">
-      <button type="button" data-tab="barre" class="active">Barre</button>
-      <button type="button" data-tab="carte">Carte</button>
-      <button type="button" data-tab="reglages">Réglages</button>
-      <button type="button" data-tab="diag">Diag</button>
+    <nav class="tabs" aria-label="Onglets" data-i18n-aria="aria.tabs">
+      <button type="button" data-tab="barre" class="active" data-i18n="tab.barre">Barre</button>
+      <button type="button" data-tab="carte" data-i18n="tab.carte">Carte</button>
+      <button type="button" data-tab="reglages" data-i18n="tab.reglages">Réglages</button>
+      <button type="button" data-tab="diag" data-i18n="tab.diag">Diag</button>
     </nav>
     <div id="badges" aria-live="polite"></div>
   </header>
@@ -31,34 +31,34 @@
   <div id="banner" role="status" hidden></div>
 
   <main>
-    <section id="tab-barre" class="tab active" aria-label="Barre">
+    <section id="tab-barre" class="tab active" aria-label="Barre" data-i18n-aria="tab.barre">
       <div id="helm-top" class="band">
         <div class="primary-box">
           <div id="primary-label" class="label">—</div>
           <div class="primary-line"><span id="primary">—</span><span id="primary-unit" class="unit"></span></div>
         </div>
         <div class="secondary">
-          <div class="cell"><span class="label">Écart</span><span id="helm-deviation" class="num">—</span></div>
-          <div class="cell"><span class="label">Vitesse / cible</span><span id="helm-speed" class="num">—</span></div>
-          <div class="cell"><span class="label">Polaire</span><span id="helm-pct" class="num">— %</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.deviation">Écart</span><span id="helm-deviation" class="num">—</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.speedTarget">Vitesse / cible</span><span id="helm-speed" class="num">—</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.polar">Polaire</span><span id="helm-pct" class="num">— %</span></div>
         </div>
       </div>
       <div id="helm-bottom" class="band">
         <div id="helm-countdown" class="countdown"></div>
         <div class="secondary">
-          <div class="cell"><span class="label">Marque</span><span id="helm-mark" class="num">—</span></div>
-          <div class="cell"><span class="label">Distance</span><span id="helm-dtw" class="num">—</span></div>
-          <div class="cell"><span class="label">Temps</span><span id="helm-ttw" class="num">—</span></div>
-          <div class="cell"><span class="label">Relèvement</span><span id="helm-btw" class="num">—</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.mark">Marque</span><span id="helm-mark" class="num">—</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.distance">Distance</span><span id="helm-dtw" class="num">—</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.time">Temps</span><span id="helm-ttw" class="num">—</span></div>
+          <div class="cell"><span class="label" data-i18n="helm.bearing">Relèvement</span><span id="helm-btw" class="num">—</span></div>
         </div>
         <div id="helm-other" class="other"></div>
       </div>
     </section>
 
-    <section id="tab-carte" class="tab panel-side" aria-label="Carte" hidden></section>
-    <section id="tab-reglages" class="tab panel-full" aria-label="Réglages" hidden></section>
-    <section id="tab-diag" class="tab panel-full" aria-label="Diagnostics" hidden>
-      <iframe id="diag-frame" title="Diagnostics"></iframe>
+    <section id="tab-carte" class="tab panel-side" aria-label="Carte" data-i18n-aria="tab.carte" hidden></section>
+    <section id="tab-reglages" class="tab panel-full" aria-label="Réglages" data-i18n-aria="tab.reglages" hidden></section>
+    <section id="tab-diag" class="tab panel-full" aria-label="Diagnostics" data-i18n-aria="aria.diag" hidden>
+      <iframe id="diag-frame" title="Diagnostics" data-i18n-title="aria.diag"></iframe>
     </section>
   </main>
 

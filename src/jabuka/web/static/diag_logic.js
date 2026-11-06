@@ -1,5 +1,6 @@
 // Pure (DOM-free) logic for the diagnostics page, unit-tested from pytest through node
-// (tests/test_diag_logic.py).
+// (tests/test_diag_logic.py). Texts in the tablet's language (i18n.js "diag.*" keys).
+import { t } from "./i18n.js";
 
 const MB = 1e6;
 
@@ -13,19 +14,19 @@ export function alertsFor(msg) {
   const core = msg?.core ?? {};
   const disk = core.disk;
   if (disk && disk.state && disk.state !== "ok") {
-    const what = {
-      low: "disk space below the reserve",
-      pruning: "deleting old logs to free disk space",
-      error: `retention failed: ${disk.last_error ?? "?"}`,
-    }[disk.state] ?? `disk ${disk.state}`;
-    out.push(`Core: ${what} (${mb(disk.free_bytes)} free)`);
+    let what;
+    if (disk.state === "low") what = t("diag.diskLow");
+    else if (disk.state === "pruning") what = t("diag.diskPruning");
+    else if (disk.state === "error") what = t("diag.diskError", { e: disk.last_error ?? "?" });
+    else what = t("diag.diskOther", { s: disk.state });
+    out.push(t("diag.coreDisk", { what, free: mb(disk.free_bytes) }));
   }
   if (disk && disk.raw_floor_breaches > 0) {
-    out.push(`Core: raw history inside the 36 h floor was deleted (${disk.raw_floor_breaches} files)`);
+    out.push(t("diag.rawFloor", { n: disk.raw_floor_breaches }));
   }
   for (const [src, h] of Object.entries(msg?.health ?? {})) {
     if (h && h.disk_state && h.disk_state !== "ok") {
-      out.push(`${src}: disk ${h.disk_state} (${mb(h.disk_free_bytes)} free)`);
+      out.push(t("diag.srcDisk", { src, state: h.disk_state, free: mb(h.disk_free_bytes) }));
     }
   }
   return out;
@@ -52,23 +53,13 @@ export function linkState(sinceLastMs) {
 // after a counter increases (or is first seen above zero), so a persistent failure keeps the banner
 // red and a transient one fades while its count stays visible in the tables.
 export const ERROR_ALERT_MS = 60000;
-const CORE_ERRORS = {
-  derived_errors: "derived log write failed",
-  bus_log_errors: "bus log write failed",
-  events_errors: "event log write failed",
-  flush_errors: "log flush failed",
-  handler_errors: "message handler failed",
-  nav_errors: "nav computation failed",
-};
-const SOURCE_ERRORS = {
-  raw_errors: "raw log write failed",
-  send_errors: "UDP send to the core failed",
-};
+const CORE_ERRORS = ["derived_errors", "bus_log_errors", "events_errors", "flush_errors", "handler_errors", "nav_errors"];
+const SOURCE_ERRORS = ["raw_errors", "send_errors"];
 
 // memory: an object kept by the caller between messages; nowMs: a monotonic clock in ms.
 export function errorAlerts(msg, memory, nowMs) {
   const out = [];
-  const check = (key, value, label) => {
+  const check = (key, value, line) => {
     if (typeof value !== "number") return;
     const prev = memory[key];
     if (prev === undefined || value < prev.value) {
@@ -77,13 +68,15 @@ export function errorAlerts(msg, memory, nowMs) {
     } else if (value > prev.value) {
       memory[key] = { value, at: nowMs };
     }
-    if (nowMs - memory[key].at <= ERROR_ALERT_MS) out.push(`${label} (${value} since start)`);
+    if (nowMs - memory[key].at <= ERROR_ALERT_MS) out.push(line(value));
   };
   const core = msg?.core ?? {};
-  for (const [key, text] of Object.entries(CORE_ERRORS)) check(`core.${key}`, core[key], `Core: ${text}`);
+  for (const key of CORE_ERRORS) {
+    check(`core.${key}`, core[key], (n) => t("diag.errCore", { text: t(`diag.err.${key}`), n }));
+  }
   for (const [src, h] of Object.entries(msg?.health ?? {})) {
-    for (const [key, text] of Object.entries(SOURCE_ERRORS)) {
-      check(`${src}.${key}`, h?.[key], `${src}: ${text}`);
+    for (const key of SOURCE_ERRORS) {
+      check(`${src}.${key}`, h?.[key], (n) => t("diag.errSrc", { src, text: t(`diag.err.${key}`), n }));
     }
   }
   return out;

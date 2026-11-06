@@ -12,6 +12,7 @@
 // The route message comes from the WS (bus "route", also sent on connect); whenever
 // nav.route.version differs from the drawn one, GET /api/route heals a missed message.
 // Every string goes through textContent (T-03-06-01).
+import { t, trServer } from "./i18n.js";
 import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
 import {
   STR,
@@ -125,8 +126,9 @@ export function mount(ctx) {
       const fresh = await ctx.api.post("/api/route/stay", { active: !v.active });
       if (fresh && typeof fresh === "object" && fresh.route) nav = fresh;
     } catch (e) {
-      const why = e?.body?.error ?? e?.body?.detail ?? e?.message ?? "erreur";
-      flash = { text: `${STR.stayRefused}${typeof why === "string" ? why : "erreur"}`, until: performance.now() + FLASH_MS };
+      const why = e?.body?.error ?? e?.body?.detail ?? e?.message;
+      const r = typeof why === "string" && why ? trServer(why) : t("common.error");
+      flash = { text: t("route.stayRefused", { r }), until: performance.now() + FLASH_MS };
     } finally {
       pending = false;
       render();

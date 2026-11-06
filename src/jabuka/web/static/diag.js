@@ -3,6 +3,11 @@
 // for the link watchdog: when no message arrives for RX_STALE_MS the whole page turns stale.
 
 import { alertsFor, errorAlerts, linkState } from "./diag_logic.js";
+import { applyI18n, t } from "./i18n.js";
+
+// the page's static labels in the tablet's language (same localStorage as the helm app)
+applyI18n(document);
+document.title = t("diag.title");
 
 const $ = (id) => document.getElementById(id);
 
@@ -98,7 +103,7 @@ function kvTable(table, obj, firstKey) {
 function renderClock(clock) {
   const gate = $("gate");
   const ok = clock.routing_time_gate === "ok";
-  gate.textContent = `routing: ${clock.routing_time_gate}`;
+  gate.textContent = t("diag.gate", { g: clock.routing_time_gate });
   gate.className = `gate ${ok ? "gate-ok" : "gate-blocked"}`;
   kvTable($("clock-table"), clock, "routing_time_gate");
 }
@@ -113,7 +118,7 @@ function renderHealth(health) {
     title.textContent = `${src} `;
     const alive = document.createElement("span");
     alive.className = `alive-${Boolean(h.alive)}`;
-    alive.textContent = h.alive ? "alive" : "silent";
+    alive.textContent = t(h.alive ? "diag.alive" : "diag.silent");
     title.append(alive);
     const table = document.createElement("table");
     table.className = "kv";
@@ -170,19 +175,23 @@ async function sendEvent() {
     });
     if (res.status === 201) {
       const body = await res.json();
-      ack.textContent = `Marker #${body.n} logged at ${hhmmss(body.utc)}${body.utc ? "Z" : " (local clock)"}`;
+      ack.textContent = t("diag.markerLogged", {
+        n: body.n,
+        time: hhmmss(body.utc),
+        z: body.utc ? "Z" : t("diag.localClock"),
+      });
       input.value = "";
     } else if (res.status === 429) {
-      ack.textContent = "Not logged: too fast (max 1 per second)";
+      ack.textContent = t("diag.tooFast");
     } else if (res.status === 422) {
-      ack.textContent = "Not logged: label too long (max 200 characters)";
+      ack.textContent = t("diag.tooLong");
     } else if (res.status === 503) {
-      ack.textContent = "NOT LOGGED: the event log cannot be written (disk full?)";
+      ack.textContent = t("diag.diskFull");
     } else {
-      ack.textContent = `Not logged: HTTP ${res.status}`;
+      ack.textContent = t("diag.httpFail", { s: res.status });
     }
   } catch (e) {
-    ack.textContent = `Not logged: ${e}`;
+    ack.textContent = t("diag.fail", { e });
   } finally {
     btn.disabled = false;
   }
@@ -203,7 +212,7 @@ function markAllStale() {
   for (const tr of document.querySelectorAll("#values-body tr")) tr.className = "stale";
   for (const el of document.querySelectorAll("#health [class^='alive-']")) {
     el.className = "alive-false";
-    el.textContent = "no data";
+    el.textContent = t("diag.noData");
   }
 }
 
@@ -219,7 +228,7 @@ function watchdog() {
   const state = linkState(since);
   if (state === "live") return;
   const secs = Number.isFinite(since) ? Math.round(since / 1000) : "?";
-  setConn(false, `no data for ${secs}s`);
+  setConn(false, t("diag.noDataFor", { s: secs }));
   markAllStale();
   if (state === "reconnect") ws.close();
 }
@@ -233,13 +242,13 @@ function connect() {
   sock.onopen = () => {
     backoff = 1000;
     lastMsg = performance.now(); // the server sends a snapshot right away
-    setConn(true, "connected");
+    setConn(true, t("diag.connected"));
   };
   sock.onmessage = (ev) => {
     lastMsg = performance.now();
     try {
       render(JSON.parse(ev.data));
-      setConn(true, "live");
+      setConn(true, t("diag.live"));
     } catch (e) {
       console.error("bad message", e);
     }
@@ -248,7 +257,7 @@ function connect() {
     if (ws !== sock) return; // an older socket closing late
     ws = null;
     markAllStale();
-    setConn(false, `reconnecting in ${backoff / 1000}s`);
+    setConn(false, t("diag.reconnecting", { s: backoff / 1000 }));
     setTimeout(connect, backoff);
     backoff = Math.min(backoff * 2, 5000);
   };

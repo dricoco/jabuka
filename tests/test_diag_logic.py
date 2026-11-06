@@ -18,8 +18,12 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 
 
 def js(expr: str) -> object:
-    """Evaluate expr (with every export of diag_logic.js in scope) and return it as JSON."""
+    """Evaluate expr (with every export of diag_logic.js in scope) and return it as JSON. The
+    page's texts are checked in English (quick 001: the tablet's default language is French)."""
+    i18n = LOGIC.parent / "i18n.js"
     code = (
+        f"import {{ setLang }} from {json.dumps(i18n.as_uri())};\n"
+        'setLang("en", { persist: false });\n'
         f"import * as L from {json.dumps(LOGIC.as_uri())};\n"
         f"const f = new Function(...Object.keys(L), {json.dumps('return (' + expr + ');')});\n"
         "process.stdout.write(JSON.stringify(f(...Object.values(L))));\n"

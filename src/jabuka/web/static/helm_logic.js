@@ -6,11 +6,11 @@
 // Plan 03-06: when the core has a valid route (nav.route.state "ok"), the primary number, the
 // deviation and the countdown come from the route block (route_logic.js formats it); without one
 // the Phase 2 layline values come back by themselves.
-import { STR, countdownView, routeOk, tackWord } from "./route_logic.js";
+import { SERVER, fmtDec, t, trServer } from "./i18n.js";
+import { countdownView, routeOk, tackWord } from "./route_logic.js";
 
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const pad2 = (n) => String(n).padStart(2, "0");
-const frNum = (x, digits) => x.toFixed(digits).replace(".", ",");
 
 // Heading for display: "045°M" / "045°T"; "—" when unknown.
 export function fmtHeading(degT, display) {
@@ -37,11 +37,11 @@ export function fmtDuration(seconds) {
   return `${Math.floor(mins / 60)} h ${pad2(mins % 60)}`;
 }
 
-// Distance: "0,35 nm", "4,2 nm", "38 nm".
+// Distance: "0,35 nm", "4,2 nm", "38 nm" (decimal point in English).
 export function fmtDistance(nm) {
   if (!isNum(nm)) return "—";
-  if (nm < 1) return `${frNum(nm, 2)} nm`;
-  if (nm < 10) return `${frNum(nm, 1)} nm`;
+  if (nm < 1) return `${fmtDec(nm, 2)} nm`;
+  if (nm < 10) return `${fmtDec(nm, 1)} nm`;
   return `${Math.round(nm)} nm`;
 }
 
@@ -52,14 +52,12 @@ export function fmtCountdown(layline, leg, route) {
   if (routeOk(route)) return countdownView({ route, layline, leg }).text;
   if (!layline || leg === "reach") return "";
   switch (layline.state) {
-    case "normal": {
-      const verb = leg === "run" ? "Empannage" : "Virement";
-      return `${verb} dans ${fmtDuration(layline.countdown_s)}`;
-    }
+    case "normal":
+      return t(leg === "run" ? "helm.gybeIn" : "helm.tackIn", { t: fmtDuration(layline.countdown_s) });
     case "overstood":
-      return `DÉPASSÉE +${fmtDuration(layline.overstood_s)}`;
+      return t("helm.overstood", { t: fmtDuration(layline.overstood_s) });
     case "fetching":
-      return "ÇA PASSE";
+      return t("helm.fetching");
     default:
       return "";
   }
@@ -67,8 +65,8 @@ export function fmtCountdown(layline, leg, route) {
 
 // Wind source badge: {text, cls} with cls good | warn | bad.
 export function sourceBadge(wind) {
-  if (!wind || wind.source === "NONE") return { text: "PAS DE VENT", cls: "bad" };
-  if (wind.stale) return { text: "PÉRIMÉ", cls: "bad" };
+  if (!wind || wind.source === "NONE") return { text: t("badge.noWind"), cls: "bad" };
+  if (wind.stale) return { text: t("badge.stale"), cls: "bad" };
   switch (wind.source) {
     case "LIVE":
       return { text: "LIVE", cls: "good" };
@@ -80,7 +78,9 @@ export function sourceBadge(wind) {
     case "MANUEL":
       return {
         // no trusted UTC (GPS not synced, now or at entry): the age is unknown, never guessed
-        text: isNum(wind.manual_age_s) ? `MANUEL ${Math.round(wind.manual_age_s / 60)} min` : "MANUEL âge ?",
+        text: isNum(wind.manual_age_s)
+          ? t("badge.manual", { n: Math.round(wind.manual_age_s / 60) })
+          : t("badge.manualUnknown"),
         cls: "warn",
       };
     default:
@@ -90,25 +90,26 @@ export function sourceBadge(wind) {
 
 // The server's alert when the whole nav computation raised (nav_service.update): every number is
 // then null, which must never read as "no wind" (CR-01).
-export const NAV_FAILED = "Erreur de calcul nav";
-const NO_WIND = "PAS DE VENT";
+export const NAV_FAILED = SERVER.NAV_FAILED;
+const NO_WIND = SERVER.NO_WIND;
 
 export const navFailed = (nav) => Array.isArray(nav?.alerts) && nav.alerts.map(String).includes(NAV_FAILED);
 
 // Wind badge of the top bar: a failed nav computation is shown as such, not as "PAS DE VENT".
 export function windBadge(nav) {
-  if (navFailed(nav)) return { text: "ERREUR CALCUL", cls: "bad" };
+  if (navFailed(nav)) return { text: t("badge.calcError"), cls: "bad" };
   return sourceBadge(nav?.wind);
 }
 
-// Alert badges (CR-01): every nav alert, de-duplicated, in server order. "PAS DE VENT" is left
-// out because the wind badge already says it.
+// Alert badges (CR-01): every nav alert, de-duplicated, in server order, in the tablet's language
+// (trServer). "PAS DE VENT" is left out because the wind badge already says it.
 export function navAlerts(nav) {
   if (!Array.isArray(nav?.alerts)) return [];
   const out = [];
   for (const a of nav.alerts) {
-    const text = String(a);
-    if (text && text !== NO_WIND && !out.includes(text)) out.push(text);
+    const raw = String(a);
+    const text = trServer(raw);
+    if (raw && raw !== NO_WIND && !out.includes(text)) out.push(text);
   }
   return out;
 }
@@ -132,7 +133,7 @@ export function deviationView(nav) {
   const route = nav?.route;
   if (routeOk(route) && route.primary) {
     // on the other tack than the route's: no signed |TWA| difference, say it (03-REVIEW HI-01)
-    if (route.wrong_tack) return { text: "—", hint: STR.wrongTack, cls: "bad" };
+    if (route.wrong_tack) return { text: "—", hint: t("route.wrongTack"), cls: "bad" };
     // same semantics from the core: |TWA| - |target| (LOFER/ABATTRE), heading - target (side)
     const primary = route.primary === "hdg" ? "cts" : "twa_up";
     return deviationView({ helm: { primary, deviation: route.deviation } });
@@ -144,10 +145,10 @@ export function deviationView(nav) {
   const text = `${r > 0 ? "+" : ""}${r}°`;
   let hint = "";
   if (helm.primary === "cts") {
-    if (r > 0) hint = "◄ BÂBORD";
-    else if (r < 0) hint = "TRIBORD ►";
-  } else if (r > 0) hint = "LOFER";
-  else if (r < 0) hint = "ABATTRE";
+    if (r > 0) hint = t("helm.hintPort");
+    else if (r < 0) hint = t("helm.hintStbd");
+  } else if (r > 0) hint = t("helm.hintUp");
+  else if (r < 0) hint = t("helm.hintDown");
   return { text, hint, cls: deviationClass(dev) };
 }
 
@@ -156,9 +157,9 @@ export function helmFlags(nav) {
   const out = [];
   const wind = nav?.wind;
   const lay = nav?.layline;
-  if (wind && wind.heading_trusted === false) out.push({ key: "cap", text: "CAP NON FIABLE", cls: "bad" });
-  if (lay?.current) out.push({ key: "courant", text: "COURANT", cls: "warn" });
-  if (lay?.src === "sailed") out.push({ key: "angles", text: "ANGLES RÉELS", cls: "warn" });
+  if (wind && wind.heading_trusted === false) out.push({ key: "cap", text: t("flag.cap"), cls: "bad" });
+  if (lay?.current) out.push({ key: "courant", text: t("flag.current"), cls: "warn" });
+  if (lay?.src === "sailed") out.push({ key: "angles", text: t("flag.sailed"), cls: "warn" });
   return out;
 }
 
@@ -167,20 +168,20 @@ export function helmFlags(nav) {
 export function primaryView(nav) {
   const helm = nav?.helm;
   const plain = (label, value) => ({ label, value, main: value, unit: "" });
-  if (navFailed(nav)) return plain("ERREUR CALCUL", "—");
+  if (navFailed(nav)) return plain(t("badge.calcError"), "—");
   const route = routePrimary(nav);
   if (route) return route;
   if (!nav || !helm || !helm.primary) {
     const noWind = !nav?.wind || nav.wind.source === "NONE";
-    return plain(noWind ? "PAS DE VENT" : "—", "—");
+    return plain(noWind ? t("badge.noWind") : "—", "—");
   }
   if (helm.primary === "twa_up" || helm.primary === "twa_down") {
-    const label = helm.primary === "twa_up" ? "TWA CIBLE ↑" : "TWA CIBLE ↓";
+    const label = t(helm.primary === "twa_up" ? "helm.twaUp" : "helm.twaDown");
     return plain(label, isNum(helm.target) ? `${Math.round(helm.target)}°` : "—");
   }
   const h = fmtHeading(helm.cts_t, nav.display);
-  if (h === "—") return plain("CAP À SUIVRE", "—");
-  return { label: "CAP À SUIVRE", value: h, main: h.slice(0, -1), unit: h.slice(-1) };
+  if (h === "—") return plain(t("helm.cts"), "—");
+  return { label: t("helm.cts"), value: h, main: h.slice(0, -1), unit: h.slice(-1) };
 }
 
 // Distance to the layline next to the layline countdown (NAV-02): "Layline à 1,5 nm"; "" when the
@@ -189,7 +190,7 @@ export function laylineDistText(nav, source = countdownView(nav).source) {
   const lay = nav?.layline;
   if (source !== "layline" || !lay || lay.state !== "normal" || nav?.leg === "reach") return "";
   if (!isNum(lay.dist_nm)) return "";
-  return `${STR.laylineDist}${fmtDistance(lay.dist_nm)}`;
+  return t("helm.laylineDist", { d: fmtDistance(lay.dist_nm) });
 }
 
 // Primary number from a valid route: "TWA ROUTE ↑" 42° tribord, or "CAP ROUTE" 114°M on a reach;
@@ -202,12 +203,12 @@ function routePrimary(nav) {
     const a = Math.abs(r.target);
     const main = `${Math.round(a)}°`;
     const word = tackWord(r.target_tack);
-    const label = a >= 90 ? STR.twaRouteDown : STR.twaRouteUp;
+    const label = t(a >= 90 ? "route.twaRouteDown" : "route.twaRouteUp");
     return { label, value: word ? `${main} ${word}` : main, main, unit: word };
   }
   const h = fmtHeading(r.target, nav.display);
   if (h === "—") return null;
-  return { label: STR.capRoute, value: h, main: h.slice(0, -1), unit: h.slice(-1) };
+  return { label: t("route.capRoute"), value: h, main: h.slice(0, -1), unit: h.slice(-1) };
 }
 
 // Every text of the helm bands from one nav message (missing blocks give "—" or "").
@@ -216,8 +217,8 @@ export function helmView(nav) {
   const boat = nav?.boat ?? {};
   const mark = nav?.mark;
   const lay = nav?.layline;
-  const bsp = isNum(boat.bsp_kn) ? frNum(boat.bsp_kn, 1) : "—";
-  const tgt = isNum(polar.target_bsp_kn) ? frNum(polar.target_bsp_kn, 1) : "—";
+  const bsp = isNum(boat.bsp_kn) ? fmtDec(boat.bsp_kn, 1) : "—";
+  const tgt = isNum(polar.target_bsp_kn) ? fmtDec(polar.target_bsp_kn, 1) : "—";
   const dev = deviationView(nav);
   const other = lay ? fmtHeading(lay.other_tack_hdg_t, nav?.display) : "—";
   const markName = mark?.name ? String(mark.name) : "—";
@@ -229,7 +230,7 @@ export function helmView(nav) {
     dev,
     deviation: dev.text,
     deviationClass: dev.cls,
-    speed: `${bsp} / ${tgt} nds`,
+    speed: t("helm.speed", { bsp, tgt }),
     pct: isNum(polar.pct) ? `${Math.round(polar.pct)} %` : "— %",
     mark: markName,
     dtw,
@@ -240,7 +241,7 @@ export function helmView(nav) {
     countdownCls: cd.cls,
     countdownSource: cd.source,
     laylineDist: laylineDistText(nav, cd.source),
-    otherTack: other === "—" ? "" : `Autre bord ${other}`,
+    otherTack: other === "—" ? "" : t("helm.otherTack", { h: other }),
     badge: windBadge(nav),
     flags: helmFlags(nav),
     alerts: navAlerts(nav),

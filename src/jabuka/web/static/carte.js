@@ -11,14 +11,12 @@
 // - #banner (every tab): "Marque suivante : <nom>" with a 48 px "Annuler" while the nav message's
 //   t_mono is before undo_until_s; "ARRIVÉE — <nom>" without Annuler.
 // DOM built with textContent only: mark names are data typed on another tablet (T-02-04-02).
+// Texts in the tablet's language (i18n.js); the core's banner text goes through trServer.
+import { fmtDec, t, trServer } from "./i18n.js";
 import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
 
-const SIDE = { port: "bâbord", stbd: "tribord", none: "" };
-const SIDES = [
-  ["port", "Bâbord"],
-  ["stbd", "Tribord"],
-  ["none", "Aucun"],
-];
+const sideWord = (side) => (side === "port" || side === "stbd" ? t(`tack.${side}`) : "");
+const sides = () => ["port", "stbd", "none"].map((v) => [v, t(`side.${v}`)]);
 const RADIUS_STEP = 0.05;
 const RADIUS_MAX = 3;
 const DRAG_START_PX = 6;
@@ -137,7 +135,7 @@ export function courseGeo(course, moved = null) {
   return { marks: fc(marks), zones: fc(zones), line };
 }
 
-// Banner view from a nav message: {text, undo} or null.
+// Banner view from a nav message: {text, undo} or null (text in the tablet's language).
 export function bannerView(nav) {
   const b = nav?.course?.banner;
   if (!b || !b.text) return null;
@@ -147,7 +145,7 @@ export function bannerView(nav) {
     typeof b.undo_until_s === "number" &&
     typeof nav.t_mono === "number" &&
     nav.t_mono < b.undo_until_s;
-  return { text: String(b.text).replace(/\s*—\s*Annuler\s*$/, ""), undo, token: b.token ?? null };
+  return { text: trServer(String(b.text).replace(/\s*—\s*Annuler\s*$/, "")), undo, token: b.token ?? null };
 }
 
 function layers(theme) {
@@ -210,19 +208,19 @@ export function mount(ctx) {
   // -- side panel ------------------------------------------------------------------------------
   const panel = el("div", { class: "carte-panel" });
   const tpl = el("div", { class: "carte-row" });
-  const btnA = button("Parcours A", { "data-template": "A" });
-  const btnB = button("Parcours B", { "data-template": "B" });
+  const btnA = button(t("carte.template", { x: "A" }), { "data-template": "A" });
+  const btnB = button(t("carte.template", { x: "B" }), { "data-template": "B" });
   tpl.append(btnA, btnB);
   const navRow = el("div", { class: "carte-row" });
-  const btnPrev = button("Préc.", { id: "course-prev" });
-  const btnNext = button("Suiv.", { id: "course-next" });
+  const btnPrev = button(t("carte.prev"), { id: "course-prev" });
+  const btnNext = button(t("carte.next"), { id: "course-next" });
   navRow.append(btnPrev, btnNext);
   const warn = el("div", { class: "carte-warn", id: "sides-warning" });
-  const warnText = el("span", {}, "Côtés à confirmer (IC)");
-  const btnSides = button("Côtés confirmés", { id: "sides-confirm" });
+  const warnText = el("span", {}, t("carte.sidesWarn"));
+  const btnSides = button(t("carte.sidesOk"), { id: "sides-confirm" });
   warn.append(warnText, btnSides);
   const status = el("div", { class: "carte-status", id: "carte-status", "aria-live": "polite" });
-  const hint = el("div", { class: "carte-hint" }, "Toucher la carte pour ajouter une marque");
+  const hint = el("div", { class: "carte-hint" }, t("carte.hint"));
   const list = el("ol", { class: "carte-list", id: "course-list", start: "0" });
   panel.append(tpl, navRow, warn, status, hint, list);
   const sheet = el("div", { class: "carte-sheet", id: "carte-sheet", role: "dialog" });
@@ -244,11 +242,12 @@ export function mount(ctx) {
       if (i > last) cls.push("cut");
       li.className = cls.join(" ");
       const name = el("span", { class: "name" }, mark ? mark.name : leg.mark_id);
-      const side = SIDE[leg.side] ?? "";
-      const meta = el("span", { class: "meta" }, side ? `${side} · ${leg.radius_nm} nm` : `${leg.radius_nm} nm`);
+      const side = sideWord(leg.side);
+      const radius = `${fmtDec(leg.radius_nm, 2)} nm`;
+      const meta = el("span", { class: "meta" }, side ? `${side} · ${radius}` : radius);
       li.append(name, meta);
-      if (i === 0) li.append(el("span", { class: "tag" }, "DÉPART"));
-      if (i === last) li.append(el("span", { class: "tag finish" }, "ARRIVÉE"));
+      if (i === 0) li.append(el("span", { class: "tag" }, t("carte.start")));
+      if (i === last) li.append(el("span", { class: "tag finish" }, t("carte.finish")));
       li.addEventListener("click", () => openMarkSheet(leg.mark_id, i));
       return li;
     });
@@ -292,13 +291,13 @@ export function mount(ctx) {
     } catch (e) {
       if (e.status === 409 && e.body && e.body.seq) {
         course = e.body;
-        status.textContent = "Parcours modifié ailleurs — rechargé";
+        status.textContent = t("carte.conflict");
         closeSheet();
         render();
       } else if (e.status === 422) {
-        status.textContent = "Valeur refusée";
+        status.textContent = t("carte.refused");
       } else {
-        status.textContent = `Échec (${e.status ?? e})`;
+        status.textContent = t("common.failed", { s: e.status ?? e });
       }
       return false;
     } finally {
@@ -310,7 +309,7 @@ export function mount(ctx) {
 
   // WR-05: a template change rebuilds the course (custom marks and leg edits dropped), so it
   // takes two taps like "Supprimer"; the template already in use is a no-op.
-  const tplLabel = (b) => `Parcours ${b.dataset.template}`;
+  const tplLabel = (b) => t("carte.template", { x: b.dataset.template });
   let tplTimer = null;
   const tplReset = () => {
     clearTimeout(tplTimer);
@@ -324,14 +323,14 @@ export function mount(ctx) {
       if (!course) return;
       if (course.template === b.dataset.template) {
         tplReset();
-        status.textContent = `${tplLabel(b)} déjà actif`;
+        status.textContent = t("carte.alreadyActive", { tpl: tplLabel(b) });
         return;
       }
       if (b.dataset.confirm !== "1") {
         tplReset();
         b.dataset.confirm = "1";
-        b.textContent = `Confirmer ${tplLabel(b)}`;
-        status.textContent = "Le parcours sera réinitialisé";
+        b.textContent = t("carte.confirmTpl", { tpl: tplLabel(b) });
+        status.textContent = t("carte.willReset");
         tplTimer = setTimeout(tplReset, 5000);
         return;
       }
@@ -355,7 +354,7 @@ export function mount(ctx) {
 
   function showSheet(title, ...children) {
     const head = el("div", { class: "sheet-head" });
-    head.append(el("h2", { class: "sheet-title" }, title), button("Fermer", { class: "big sheet-close" }, closeSheet));
+    head.append(el("h2", { class: "sheet-title" }, title), button(t("common.close"), { class: "big sheet-close" }, closeSheet));
     sheet.replaceChildren(head, ...children);
     sheet.hidden = false;
   }
@@ -372,7 +371,7 @@ export function mount(ctx) {
 
   function stepper(value, onChange, name) {
     const row = el("div", { class: "carte-row stepper", "data-name": name });
-    const out = el("span", { class: "step-value" }, `${value.toFixed(2)} nm`);
+    const out = el("span", { class: "step-value" }, `${fmtDec(value, 2)} nm`);
     const set = (v) => onChange(roundR(Math.min(RADIUS_MAX, Math.max(0, v))));
     row.append(
       button("−", { "data-step": "-" }, () => set(value - RADIUS_STEP)),
@@ -393,10 +392,10 @@ export function mount(ctx) {
     setPending(lat, lon);
     const row = el("div", { class: "carte-row" });
     row.append(
-      button("Garder", { id: "land-keep" }, () => openAddSheet(lat, lon)),
-      button("Annuler", { id: "land-cancel" }, closeSheet),
+      button(t("carte.keep"), { id: "land-keep" }, () => openAddSheet(lat, lon)),
+      button(t("common.cancel"), { id: "land-cancel" }, closeSheet),
     );
-    showSheet("Marque à terre ?", el("p", { class: "sheet-text" }, "Ce point est sur une île ou la côte."), row);
+    showSheet(t("carte.landTitle"), el("p", { class: "sheet-text" }, t("carte.landText")), row);
   }
 
   function openAddSheet(lat, lon) {
@@ -408,23 +407,23 @@ export function mount(ctx) {
     const body = el("div", { class: "sheet-body" });
     const draw = () => {
       body.replaceChildren(
-        field("Nom", name),
+        field(t("carte.name"), name),
         el("div", { class: "sheet-text" }, `${lat.toFixed(4)}° N  ${lon.toFixed(4)}° E`),
-        field("Côté", segmented(SIDES, st.side, (v) => ((st.side = v), draw()), "side")),
-        field("Rayon", stepper(st.radius, (v) => ((st.radius = v), draw()), "radius")),
+        field(t("carte.side"), segmented(sides(), st.side, (v) => ((st.side = v), draw()), "side")),
+        field(t("carte.radius"), stepper(st.radius, (v) => ((st.radius = v), draw()), "radius")),
         field(
-          "Position",
+          t("carte.position"),
           segmented(
             [
-              ["active", "Après la marque active"],
-              ["end", "À la fin"],
+              ["active", t("carte.afterActive")],
+              ["end", t("carte.atEnd")],
             ],
             st.pos,
             (v) => ((st.pos = v), draw()),
             "pos",
           ),
         ),
-        button("Ajouter", { id: "mark-add", class: "big primary" }, async () => {
+        button(t("carte.add"), { id: "mark-add", class: "big primary" }, async () => {
           // "à la fin" = before the finish (the finish stays the finish)
           const insertAt = st.pos === "end" ? lastIdx(course) : null;
           const ok = await act(() =>
@@ -443,7 +442,7 @@ export function mount(ctx) {
       );
     };
     draw();
-    showSheet("Nouvelle marque", body);
+    showSheet(t("carte.newMark"), body);
   }
 
   function openMarkSheet(markId, idx, refresh = false) {
@@ -459,28 +458,28 @@ export function mount(ctx) {
     const leg = idx >= 0 ? course.seq[idx] : null;
     const last = course.seq.length - 1;
     const name = el("input", { id: "mark-name", type: "text", maxlength: "40", value: mark.name, autocomplete: "off" });
-    const rename = button("Renommer", { id: "mark-rename" }, () =>
+    const rename = button(t("carte.rename"), { id: "mark-rename" }, () =>
       act(() => ctx.api.patch(`/api/marks/${encodeURIComponent(markId)}`, { name: name.value, base_version: version() })),
     );
     const nameRow = el("div", { class: "carte-row" });
     nameRow.append(name, rename);
     const body = el("div", { class: "sheet-body" });
-    body.append(field("Nom", nameRow));
+    body.append(field(t("carte.name"), nameRow));
     if (leg && idx >= 1) {
       const patchLeg = (patch) =>
         act(() => ctx.api.patch(`/api/course/legs/${idx}`, { ...patch, base_version: version() }));
       body.append(
-        field("Côté", segmented(SIDES, leg.side, (v) => patchLeg({ side: v }), "side")),
-        field("Rayon", stepper(leg.radius_nm, (v) => patchLeg({ radius_nm: v }), "radius")),
+        field(t("carte.side"), segmented(sides(), leg.side, (v) => patchLeg({ side: v }), "side")),
+        field(t("carte.radius"), stepper(leg.radius_nm, (v) => patchLeg({ radius_nm: v }), "radius")),
       );
       const order = el("div", { class: "carte-row" });
-      const up = button("Monter", { id: "leg-up" }, () =>
+      const up = button(t("carte.up"), { id: "leg-up" }, () =>
         act(
           () => ctx.api.post("/api/course/reorder", { from_idx: idx, to_idx: idx - 1, base_version: version() }),
           () => (sheetFor = { kind: "mark", markId, idx: idx - 1 }),
         ),
       );
-      const down = button("Descendre", { id: "leg-down" }, () =>
+      const down = button(t("carte.down"), { id: "leg-down" }, () =>
         act(
           () => ctx.api.post("/api/course/reorder", { from_idx: idx, to_idx: idx + 1, base_version: version() }),
           () => (sheetFor = { kind: "mark", markId, idx: idx + 1 }),
@@ -490,19 +489,19 @@ export function mount(ctx) {
       down.disabled = idx >= last;
       order.append(up, down);
       const isFinish = course.finish_idx === idx;
-      const finish = button(isFinish ? "Parcours complet" : "Finir ici", { id: "leg-finish" }, () =>
+      const finish = button(t(isFinish ? "carte.fullCourse" : "carte.finishHere"), { id: "leg-finish" }, () =>
         act(() => ctx.api.post("/api/course/finish", { idx: isFinish ? null : idx, base_version: version() })),
       );
-      const activate = button("Rendre active", { id: "leg-activate" }, () =>
+      const activate = button(t("carte.makeActive"), { id: "leg-activate" }, () =>
         act(() => ctx.api.post("/api/course/activate", { idx, base_version: version() })),
       );
       activate.disabled = idx > lastIdx(course);
-      const del = button("Supprimer", { id: "leg-delete", class: "big danger" });
+      const del = button(t("carte.delete"), { id: "leg-delete", class: "big danger" });
       del.disabled = course.seq.length <= 2;
       del.addEventListener("click", () => {
         if (del.dataset.confirm !== "1") {
           del.dataset.confirm = "1";
-          del.textContent = "Confirmer la suppression";
+          del.textContent = t("carte.confirmDelete");
           return;
         }
         act(
@@ -514,7 +513,7 @@ export function mount(ctx) {
       more.append(finish, activate);
       body.append(order, more, del);
     }
-    showSheet(idx >= 1 ? `${mark.name} (n° ${idx})` : mark.name, body);
+    showSheet(idx >= 1 ? t("carte.markTitle", { name: mark.name, idx }) : mark.name, body);
   }
 
   // -- map -------------------------------------------------------------------------------------
@@ -599,9 +598,9 @@ export function mount(ctx) {
   ensureMap(document.getElementById("map"))
     .then(wireMap)
     .catch(() => {
-      hint.textContent = "Carte indisponible : édition par la liste";
+      hint.textContent = t("carte.noMap");
       mapReady().then((m) => {
-        hint.textContent = "Toucher la carte pour ajouter une marque";
+        hint.textContent = t("carte.hint");
         wireMap(m); // a later retry of app.js succeeded (IN-02)
       });
     });
@@ -609,7 +608,7 @@ export function mount(ctx) {
   // -- banner (all tabs) -----------------------------------------------------------------------
   const bannerEl = document.getElementById("banner");
   const bannerText = el("span", { id: "banner-text" });
-  const bannerUndo = button("Annuler", { id: "banner-undo", class: "big banner-undo" });
+  const bannerUndo = button(t("banner.undo"), { id: "banner-undo", class: "big banner-undo" });
   let bannerToken = null;
   bannerUndo.addEventListener("click", async () => {
     if (!bannerToken) return;
@@ -618,7 +617,7 @@ export function mount(ctx) {
       course = await ctx.api.post("/api/course/undo", { token: bannerToken });
       render();
     } catch (e) {
-      bannerText.textContent = e.status === 410 ? "Annuler expiré" : `Échec (${e.status ?? e})`;
+      bannerText.textContent = e.status === 410 ? t("banner.expired") : t("common.failed", { s: e.status ?? e });
     } finally {
       bannerUndo.disabled = false;
     }

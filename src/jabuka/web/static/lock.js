@@ -7,6 +7,7 @@
 // unlocks after a continuous 2 s press of the primary pointer (lock_logic.js; a second finger or
 // a non-primary pointer never unlocks), with a progress ring. While locked the map's own
 // interactions are disabled too. The state persists per tablet in localStorage "jabuka.locked".
+import { t } from "./i18n.js";
 import { createLongPress } from "./lock_logic.js";
 
 const KEY = "jabuka.locked";
@@ -119,7 +120,7 @@ export function mount(ctx) {
   lockBtn.type = "button";
   lockBtn.id = "lock-btn";
   lockBtn.className = "ctrl lock-btn";
-  lockBtn.setAttribute("aria-label", "Verrouiller l'écran");
+  lockBtn.setAttribute("aria-label", t("lock.lockAria"));
   lockBtn.append(padlock(true, false));
   box.append(lockBtn);
 
@@ -128,11 +129,11 @@ export function mount(ctx) {
   unlockBtn.id = "unlock-btn";
   unlockBtn.className = "unlock-btn";
   unlockBtn.setAttribute("role", "button");
-  unlockBtn.setAttribute("aria-label", "Appui 2 s pour déverrouiller");
+  unlockBtn.setAttribute("aria-label", t("lock.unlockAria"));
   unlockBtn.append(padlock(false, true));
   const hint = document.createElement("div");
   hint.className = "lock-hint";
-  hint.textContent = "VERROUILLÉ · appui 2 s";
+  hint.textContent = t("lock.hint");
   overlay.replaceChildren(unlockBtn, hint);
   const ring = unlockBtn.querySelector(".lock-ring");
 
