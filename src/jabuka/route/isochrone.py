@@ -148,7 +148,9 @@ class _Ctx:
     env: RouterEnv
     polar: PolarGrid
     steps: int = 0
-    force_until: float = -math.inf
+    force_until: float = -math.inf  # stay on force_tack before this time ("On reste")
+    force_tack: int = 0
+    force_released_at: float | None = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -172,12 +174,11 @@ def wave_factor(hs, twa_abs, settings: RouterSettings) -> np.ndarray:
     return np.maximum(settings.wave_floor, 1.0 - k * np.asarray(hs, dtype=np.float64))
 
 
-def _sample(ctx: _Ctx, t: float, x, y) -> _Wx:
+def sample_weather(env: RouterEnv, t: float, x, y, bias, s: RouterSettings) -> _Wx:
     """Wind (bias applied) minus current = the wind over the water fed to the polar; the
     current itself (added to the displacement); Hs from the wave file, else from TWS."""
-    s = ctx.req.settings
-    f = ctx.env.fields
-    u, v = f.wind.uv_kn(t, x, y, ctx.req.bias)
+    f = env.fields
+    u, v = f.wind.uv_kn(t, x, y, bias)
     cu = cv = None
     if f.current is not None and s.use_current:
         cu, cv = f.current.uv_kn(t, x, y)
@@ -192,6 +193,37 @@ def _sample(ctx: _Ctx, t: float, x, y) -> _Wx:
     return _Wx(twd, tws, cu, cv, hs)
 
 
+def boat_speed(polar: PolarGrid, tws, twa_abs, hs, s: RouterSettings):
+    """Polar x efficiency x wave factor (kn)."""
+    b = polar.speed(tws, twa_abs)
+    if hs is not None:
+        b = b * wave_factor(hs, twa_abs, s)
+    return b
+
+
+def course_to_steer(polar: PolarGrid, wx: _Wx, brg, s: RouterSettings):
+    """Heading to make good ``brg`` (rad) through the current: (TWA deg, BSP kn, speed made
+    good along brg kn; 0 when the cross current exceeds the boat speed)."""
+    twd, tws, cu, cv, hs = wx
+    twa = np.degrees(_wrap_pi(twd - brg))
+    bsp = boat_speed(polar, tws, np.abs(twa), hs, s)
+    if cu is None:
+        return twa, bsp, bsp
+    c_along = cu * np.sin(brg) + cv * np.cos(brg)
+    c_cross = cu * np.cos(brg) - cv * np.sin(brg)
+    h = brg
+    for _ in range(3):  # cancel the cross-track current, BSP depends on the heading
+        h = brg + np.arcsin(np.clip(-c_cross / np.maximum(bsp, 1e-6), -1.0, 1.0))
+        twa = np.degrees(_wrap_pi(twd - h))
+        bsp = boat_speed(polar, tws, np.abs(twa), hs, s)
+    along = np.where(np.abs(c_cross) < bsp, bsp * np.cos(h - brg) + c_along, 0.0)
+    return twa, bsp, along
+
+
+def _sample(ctx: _Ctx, t: float, x, y) -> _Wx:
+    return sample_weather(ctx.env, t, x, y, ctx.req.bias, ctx.req.settings)
+
+
 def _wind(ctx: _Ctx, t: float, x, y):
     """(TWD rad, TWS kn) over the water per point."""
     wx = _sample(ctx, t, x, y)
@@ -199,11 +231,7 @@ def _wind(ctx: _Ctx, t: float, x, y):
 
 
 def _speed(ctx: _Ctx, tws, twa_abs, hs=None):
-    """Polar x efficiency x wave factor (kn)."""
-    b = ctx.polar.speed(tws, twa_abs)
-    if hs is not None:
-        b = b * wave_factor(hs, twa_abs, ctx.req.settings)
-    return b
+    return boat_speed(ctx.polar, tws, twa_abs, hs, ctx.req.settings)
 
 
 # ---------------------------------------------------------------------------- one leg
@@ -237,18 +265,7 @@ def _shots(ctx: _Ctx, t, dt, px, py, ptack, target, wx: _Wx, force_tack: int) ->
     dx, dy = tx - px, ty - py
     dist = np.hypot(dx, dy)
     brg = np.mod(np.arctan2(dx, dy), 2.0 * math.pi)
-    twa_b = np.degrees(_wrap_pi(twd - brg))
-    bsp_b = _speed(ctx, tws, np.abs(twa_b), hs)
-    along = bsp_b
-    if cu is not None:  # course to steer: cancel the cross-track current (iterated with BSP)
-        c_along = cu * np.sin(brg) + cv * np.cos(brg)
-        c_cross = cu * np.cos(brg) - cv * np.sin(brg)
-        h = brg
-        for _ in range(3):
-            h = brg + np.arcsin(np.clip(-c_cross / np.maximum(bsp_b, 1e-6), -1.0, 1.0))
-            twa_b = np.degrees(_wrap_pi(twd - h))
-            bsp_b = _speed(ctx, tws, np.abs(twa_b), hs)
-        along = np.where(np.abs(c_cross) < bsp_b, bsp_b * np.cos(h - brg) + c_along, 0.0)
+    twa_b, bsp_b, along = course_to_steer(ctx.polar, wx, brg, s)
     tack_b = tack_of(twa_b)
     with np.errstate(divide="ignore", invalid="ignore"):
         need = np.where(along > 1e-6, dist / np.maximum(along, 1e-6) * 3600.0, np.inf)
@@ -380,8 +397,11 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
             fine = bool(mask.near_land(fx[lead], fy[lead], s.near_land_nm).any())
         if fine:
             dt = min(dt, s.fine_dt_s)
+        forcing = ctx.force_tack != 0 and t < ctx.force_until
+        if forcing:  # end the held stretch exactly at force_until
+            dt = min(dt, max(ctx.force_until - t, 60.0))
         # ---- exact arrival: keep the best shot until the front time passes it
-        sh = _shots(ctx, t, dt, fx, fy, ftack, (tx, ty), wx, 0)
+        sh = _shots(ctx, t, dt, fx, fy, ftack, (tx, ty), wx, ctx.force_tack if forcing else 0)
         best_t = best[0] if best is not None else math.inf
         row = _best_shot(ctx, sh, fx, fy, (tx, ty), best_t)
         if row is not None:
@@ -394,6 +414,8 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
             [np.broadcast_to(base, (n, base.size)), up[:, None], down[:, None]], axis=1
         )
         twa = np.concatenate([twa_abs, -twa_abs], axis=1)
+        if forcing:  # stay on the current tack: only its half of the candidates
+            twa = twa_abs * ctx.force_tack
         tack = np.where(twa > 0, 1, -1).astype(np.int8)
         bsp = _speed(ctx, tws[:, None], np.abs(twa), wx.hs[:, None] if wx.hs is not None else None)
         hdg = twd[:, None] - np.radians(twa)
@@ -408,6 +430,15 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         cx, cy, par = cx.ravel(), cy.ravel(), par.ravel()
         twa_f, tack_f, bsp_f = twa.ravel(), tack.ravel(), bsp.ravel()
         sel = _prune(ctx, fx, fy, cx, cy, par, (ox, oy), (tx, ty), geo, sector_rad)
+        if sel.size == 0 and forcing:
+            # every lazy_k candidate blocked: is ANY same-tack expansion clear?
+            sel = _prune(ctx, fx, fy, cx, cy, par, (ox, oy), (tx, ty), geo, sector_rad, cx.size)
+            if sel.size == 0:  # the held tack runs into land: release from this step on
+                ctx.force_released_at = t
+                ctx.force_until = -math.inf
+                ctx.notes.append("virement imposé (terre)")
+                ctx.steps -= 1
+                continue
         if sel.size == 0:
             if best is not None:
                 return _arrival(start, hist, best, (tx, ty))
@@ -433,10 +464,10 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
     raise RouteFailure(f"trop d'étapes (> {s.max_steps}) sans atteindre la marque")
 
 
-def _prune(ctx, fx, fy, cx, cy, par, origin, target, geo: GeoField, sector_rad: float):
+def _prune(ctx, fx, fy, cx, cy, par, origin, target, geo: GeoField, sector_rad: float, lazy_k=None):
     """Indices of the kept candidates: per bearing sector from the origin, the best-ranked of
     the first lazy_k whose segment parent -> child is clear."""
-    s = ctx.req.settings
+    lazy = ctx.req.settings.lazy_k if lazy_k is None else int(lazy_k)
     ox, oy = origin
     tx, ty = target
     brg = np.mod(np.arctan2(cx - ox, cy - oy), 2.0 * math.pi)
@@ -451,7 +482,7 @@ def _prune(ctx, fx, fy, cx, cy, par, origin, target, geo: GeoField, sector_rad: 
     starts = np.nonzero(first)[0]
     gid = np.cumsum(first) - 1
     rank = np.arange(ss.size) - starts[gid]
-    cand = order[rank < s.lazy_k]
+    cand = order[rank < lazy]
     pi = par[cand]
     ok = ctx.env.mask.segments_clear(fx[pi], fy[pi], cx[cand], cy[cand])
     good = cand[ok]
@@ -690,6 +721,11 @@ def route(req: RouteRequest, env: RouterEnv) -> RouteResult:
 def _route(ctx: _Ctx, t_start: float) -> RouteResult:
     req, env = ctx.req, ctx.env
     frame = env.frame
+    if req.force_tack_until is not None and req.tack0 != 0:
+        if not math.isfinite(req.force_tack_until):
+            raise RouteFailure("requête invalide : force_tack_until")
+        ctx.force_until = float(req.force_tack_until)
+        ctx.force_tack = int(req.tack0)
     prefix, cur, start_in_margin = _start(ctx)
     wps = _waypoints(ctx)
     pts: list[_Pt] = list(prefix)
@@ -757,7 +793,7 @@ def _route(ctx: _Ctx, t_start: float) -> RouteResult:
         valid=True,
         horizon_hold=env.fields.wind.horizon_hold(eta),
         start_in_margin=start_in_margin,
-        force_released_at=None,
+        force_released_at=ctx.force_released_at,
         level=req.settings.level,
         compute_ms=(time.perf_counter() - t_start) * 1000.0,
         steps=ctx.steps,

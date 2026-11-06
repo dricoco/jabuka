@@ -13,7 +13,6 @@ else:  # Phase 2 worktrees without numpy skip instead of failing
     np = pytest.importorskip("numpy")
 
 from jabuka.route.evaluate import evaluate_path, first_side_change  # noqa: E402
-
 from jabuka.route.isochrone import route  # noqa: E402
 from jabuka.route.types import PathPoint, RouterSettings  # noqa: E402
 

@@ -14,7 +14,6 @@ else:  # Phase 2 worktrees without numpy skip instead of failing
     np = pytest.importorskip("numpy")
 
 from jabuka.route.cycle import cycle_with_env  # noqa: E402
-
 from jabuka.route.isochrone import route  # noqa: E402
 from jabuka.route.types import CycleRequest, RouterSettings  # noqa: E402
 
@@ -97,13 +96,14 @@ def test_no_side_change_no_forced_route(env_factory, uniform_wind, make_request,
 def test_forced_route_released_when_the_held_tack_meets_land(
     env_factory, uniform_wind, make_request, course, course_geofields
 ) -> None:
-    """Vodice start on port in the bora: the held tack runs into the shore within minutes, the
-    constraint is released at the first fully blocked step, the route stays valid and the cost
-    is about 0 (Pattern 7, Pitfall 8)."""
+    """Vodice start in the bora on starboard: every starboard heading (W to NNE) runs into the
+    Srima / Vodice shore within the first step, so the constraint is released at once, the
+    route stays valid and the cost is about 0 (Pattern 7, Pitfall 8). On port the bora heads
+    the boat E to SW, into the open Šibenik channel: no release there."""
     env = env_factory(uniform_wind(45.0, 18.0), geofields=course_geofields)
     start, marks = course("A")
     req = make_request(
-        43.7395, 15.8135, marks, prev_mark=start, tack0=-1, settings=RouterSettings(use_waves=False)
+        43.75, 15.77, marks, prev_mark=start, tack0=1, settings=RouterSettings(use_waves=False)
     )
     forced = route(dataclasses.replace(req, force_tack_until=req.t0 + 3600.0, leg_only=True), env)
     assert forced.ok and forced.valid, forced.reason
@@ -113,3 +113,9 @@ def test_forced_route_released_when_the_held_tack_meets_land(
     opt = route(dataclasses.replace(req, leg_only=True), env)
     assert opt.ok
     assert forced.legs[0].eta - opt.legs[0].eta <= 120.0
+    # through the cycle (hold until the advised gybe + 5 min = one 5-min step, which still
+    # fits in the bay): a forced route and a small cost of not gybing
+    res = cycle_with_env(env, CycleRequest(req))
+    assert res.optimal.tacks[0].t == req.t0
+    assert res.forced is not None and res.forced.ok
+    assert res.cost_s is not None and 0.0 <= res.cost_s <= 600.0

@@ -14,9 +14,8 @@ if os.environ.get("JABUKA_REQUIRE_ROUTE") == "1":
 else:  # Phase 2 worktrees without numpy skip instead of failing
     np = pytest.importorskip("numpy")
 
-from jabuka.route.bench import assemble_fixture_pack  # noqa: E402
-
 from jabuka.route import cycle  # noqa: E402
+from jabuka.route.bench import assemble_fixture_pack  # noqa: E402
 from jabuka.route.pool import RouterPool  # noqa: E402
 from jabuka.route.types import CycleRequest, CycleResult, RouterSettings  # noqa: E402
 
@@ -41,7 +40,7 @@ def test_build_env_loads_the_pack(pack_dir) -> None:
     env = cycle.build_env(pack_dir)
     assert env.mask.shape == (5334, 4199)
     assert env.fields.waves is not None and env.fields.current is None
-    with pytest.raises(ValueError, match="landmask.npz"):
+    with pytest.raises(ValueError, match="vent"):
         cycle.build_env(pack_dir.parent)
 
 
