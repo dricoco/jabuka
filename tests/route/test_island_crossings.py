@@ -91,3 +91,29 @@ def test_vectorised_segments_and_polyline(lm: LandMask) -> None:
 def test_outside_the_grid_is_blocked(lm: LandMask) -> None:
     assert not _pt(lm, (42.5, 15.5))
     assert not _seg(lm, (43.0, 15.1), (43.0, 14.8))
+
+
+# ------------------------------------------------------------------ Plić Sestre (hazard)
+BEACON = (43.684627, 15.811626)  # OSM node 498394251, built-in hand hazard
+M_PER_DEG_LAT = 1852.0 * 60
+
+
+def _east(p: tuple[float, float], metres: float) -> tuple[float, float]:
+    return p[0], p[1] + metres / (M_PER_DEG_LAT * np.cos(np.radians(p[0])))
+
+
+def _north(p: tuple[float, float], metres: float) -> tuple[float, float]:
+    return p[0] + metres / M_PER_DEG_LAT, p[1]
+
+
+def test_plic_sestre_kept_at_a_distance(lm: LandMask) -> None:
+    assert not _pt(lm, BEACON) and not _pt(lm, _east(BEACON, 200))
+    assert _pt(lm, BEACON, raw=True)  # a shoal, not land
+    assert _pt(lm, _east(BEACON, 0.3 * 1852))  # Course A rounding radius (0.3 nm) is clear
+
+
+def test_segment_near_plic_sestre(lm: LandMask) -> None:
+    # north-south segments 1 nm long, passing 100 m and 0.3 nm east of the beacon
+    for metres, ok in ((100, False), (0.3 * 1852, True)):
+        c = _east(BEACON, metres)
+        assert _seg(lm, _north(c, -926), _north(c, 926)) is ok, metres

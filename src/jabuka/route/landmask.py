@@ -33,6 +33,7 @@ _FLOAT_KEYS = (
 _STR_KEYS = ("source", "osm_base", "created")
 REQUIRED_KEYS = ("mask", "raw", "shape", *_FLOAT_KEYS, *_STR_KEYS)
 MAX_CELLS = 200_000_000  # 25 m over the race box is 22 Mcells
+BLOCK = 8  # coarse "near" grid: 8 x 8 fine cells (200 m at 25 m)
 _CHUNK = 2_000_000  # grid-line crossings handled per numpy batch
 
 
@@ -102,6 +103,44 @@ def segments_touch(grid, x0, y0, cell, ax, ay, bx, by) -> np.ndarray:
     return hit
 
 
+def _sample_hit(grid, x0, y0, cell, ax, ay, bx, by, spacing) -> np.ndarray:
+    """Sample every segment at <= spacing (both endpoints included): True where a sample falls
+    in a True or out-of-grid cell."""
+    length = np.hypot(bx - ax, by - ay)
+    k = np.maximum(np.ceil(length / spacing).astype(np.int64), 1)
+    counts = k + 1
+    hit = np.zeros(len(ax), dtype=bool)
+    for sl in _chunks(counts):
+        seg, j = _ragged(counts[sl])
+        g = seg + sl.start
+        fr = j / k[g]
+        xs = ax[g] + fr * (bx[g] - ax[g])
+        ys = ay[g] + fr * (by[g] - ay[g])
+        c = np.floor((xs - x0) / cell).astype(np.int64)
+        r = np.floor((ys - y0) / cell).astype(np.int64)
+        hit[sl] = np.bincount(seg, weights=_lookup(grid, r, c), minlength=len(counts[sl])) > 0
+    return hit
+
+
+def _block_any(grid: np.ndarray, b: int) -> np.ndarray:
+    """Coarse blocks of b x b cells: True when any cell is True (padding counts as True)."""
+    ny, nx = grid.shape
+    gy, gx = -(-ny // b), -(-nx // b)
+    pad = np.ones((gy * b, gx * b), dtype=bool)
+    pad[:ny, :nx] = grid
+    return pad.reshape(gy, b, gx, b).any(axis=(1, 3))
+
+
+def _dilate(a: np.ndarray, r: int) -> np.ndarray:
+    """Square (Chebyshev) dilation by r cells; outside the array counts as True."""
+    if r <= 0:
+        return a.copy()
+    p = np.pad(a, r, constant_values=True)
+    w = 2 * r + 1
+    rows = np.lib.stride_tricks.sliding_window_view(p, w, axis=0).any(axis=-1)
+    return np.lib.stride_tricks.sliding_window_view(rows, w, axis=1).any(axis=-1)
+
+
 def _f64(*arrays):
     out = [np.atleast_1d(np.asarray(a, dtype=np.float64)) for a in arrays]
     shape = np.broadcast_shapes(*(a.shape for a in out))
@@ -144,6 +183,12 @@ class LandMask:
         self.source = source
         self.osm_base = osm_base
         self.created = created
+        # Coarse "near" grid: blocks of BLOCK x BLOCK cells, near when any blocked cell lies in
+        # the block or its 8 neighbours (outside the grid counts as blocked).
+        self.bcell_nm = BLOCK * self.cell_nm
+        self._blocks = _block_any(self.mask, BLOCK)
+        self._near = _dilate(self._blocks, 1)
+        self._zones: dict[float, np.ndarray] = {}
 
     # ---------------------------------------------------------------- loading
     @classmethod
@@ -229,10 +274,72 @@ class LandMask:
         r, c = self.rc(x, y)
         return ~_lookup(self.raw, r, c)
 
-    def segments_clear(self, ax, ay, bx, by) -> np.ndarray:
-        """bool[] per segment: True when no cell it passes through is blocked."""
+    def fine_pass_needed(self, ax, ay, bx, by) -> np.ndarray:
+        """Coarse pass: sample each segment at the block spacing on the near grid. A segment whose
+        samples all fall in non-near blocks is clear: any point of it lies within half a block
+        of a sample, so any blocked cell it touches would sit in that sample's 3 x 3 blocks."""
         ax, ay, bx, by = _f64(ax, ay, bx, by)
-        return ~segments_touch(self.mask, self.x0_nm, self.y0_nm, self.cell_nm, ax, ay, bx, by)
+        b = self.bcell_nm
+        return _sample_hit(self._near, self.x0_nm, self.y0_nm, b, ax, ay, bx, by, b)
+
+    def segments_clear(self, ax, ay, bx, by) -> np.ndarray:
+        """bool[] per segment: True when no cell it passes through is blocked.
+
+        Coarse near-grid pass first; only segments near something blocked get the exact pass,
+        so the answer is identical to the exact pass alone."""
+        ax, ay, bx, by = _f64(ax, ay, bx, by)
+        ok = np.ones(len(ax), dtype=bool)
+        idx = np.nonzero(self.fine_pass_needed(ax, ay, bx, by))[0]
+        if len(idx):
+            ok[idx] = ~segments_touch(
+                self.mask, self.x0_nm, self.y0_nm, self.cell_nm, ax[idx], ay[idx], bx[idx], by[idx]
+            )
+        return ok
+
+    def near_land(self, x, y, within_nm: float) -> np.ndarray:
+        """bool[]: something blocked may lie within `within_nm` (block resolution, conservative:
+        can also flag up to one block further). Outside the grid = True. Used by the router's
+        fine-time-step rule; zone rasters are cached per distance."""
+        key = round(float(within_nm), 6)
+        zone = self._zones.get(key)
+        if zone is None:
+            zone = _dilate(self._blocks, int(math.ceil(max(key, 0.0) / self.bcell_nm)))
+            self._zones[key] = zone
+        x, y = _f64(x, y)
+        c = np.floor((x - self.x0_nm) / self.bcell_nm).astype(np.int64)
+        r = np.floor((y - self.y0_nm) / self.bcell_nm).astype(np.int64)
+        return _lookup(zone, r, c)
+
+    def snap_clear(self, x: float, y: float, max_nm: float = 1.0):
+        """Boat or target inside the dilated mask (marina, close to shore): the nearest clear cell
+        centre within max_nm whose exit segment does not cross raw land.
+
+        Returns (x, y, False) when the point is already clear, (x', y', True) when moved, None
+        when nothing qualifies (deep inland, or no clear water within max_nm)."""
+        x, y = float(x), float(y)
+        if bool(self.points_clear(x, y)[0]):
+            return x, y, False
+        ny, nx = self.shape
+        r0, c0 = (int(v[0]) for v in self.rc(x, y))
+        rad = int(math.ceil(max_nm / self.cell_nm)) + 1
+        rlo, rhi = max(r0 - rad, 0), min(r0 + rad + 1, ny)
+        clo, chi = max(c0 - rad, 0), min(c0 + rad + 1, nx)
+        if rlo >= rhi or clo >= chi:
+            return None
+        rr, cc = np.nonzero(~self.mask[rlo:rhi, clo:chi])
+        cx = self.x0_nm + (cc + clo + 0.5) * self.cell_nm
+        cy = self.y0_nm + (rr + rlo + 0.5) * self.cell_nm
+        d = np.hypot(cx - x, cy - y)
+        keep = d <= max_nm
+        cx, cy, d = cx[keep], cy[keep], d[keep]
+        order = np.argsort(d, kind="stable")
+        for i in range(0, len(order), 256):  # nearest first, in batches
+            sel = order[i : i + 256]
+            ok = self.raw_segments_clear(x, y, cx[sel], cy[sel])
+            if ok.any():
+                j = sel[int(np.argmax(ok))]
+                return float(cx[j]), float(cy[j]), True
+        return None
 
     def raw_segments_clear(self, ax, ay, bx, by) -> np.ndarray:
         """Same as segments_clear on the undilated land raster (exit from inside the margin)."""

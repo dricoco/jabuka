@@ -37,11 +37,36 @@ USER_AGENT = "jabuka-prep/0.1 (offline race navigation)"
 TIMEOUT_S = 180
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 DEFAULT_CACHE = Path("var/cache/prep")
-SOURCE = "OSM coastline via Overpass"
+SOURCE = "OSM coastline + seamark hazards via Overpass"
 
 # Query box slightly larger than RACE_BBOX (south, west, north, east) so clipping is clean.
 QUERY_BBOX = "42.7,14.9,44.1,16.4"
 COASTLINE_QUERY = f'[out:json][timeout:180];way["natural"="coastline"]({QUERY_BBOX});out geom;'
+HAZARD_QUERY = (
+    "[out:json][timeout:180];("
+    'node["seamark:type"~"^(rock|beacon_isolated_danger|buoy_isolated_danger|wreck|obstruction)$"]'
+    f"({QUERY_BBOX});"
+    f'way["seamark:type"="obstruction"]({QUERY_BBOX});'
+    f'nwr["natural"~"^(reef|shoal)$"]({QUERY_BBOX});'
+    ");out geom;"
+)
+
+# Hazard geometry (metres): points become discs, ways a buffer around their line; then the hazard
+# margin is added. Submerged rocks (depth unknown in OSM) are discs without margin.
+DISC_M = 50.0
+WAY_BUFFER_M = 25.0
+# Rock water levels that show or break the surface: full hazard margin.
+AWASH_LEVELS = frozenset({"awash", "covers", "dry", "always_dry", "partly_submerged_at_high_water"})
+MARGIN_SEAMARKS = frozenset(
+    {"beacon_isolated_danger", "buoy_isolated_danger", "wreck", "obstruction"}
+)
+# Built-in hand hazards, always added even when OSM omits them (03-RESEARCH "Hazards found in
+# OSM"): the Plić Sestre shoal in Zlarinski kanal, a course mark rounded at 0.3 nm.
+HAND_HAZARDS = (
+    ("Plić Sestre, balise (OSM node 498394251)", 43.684627, 15.811626),
+    ("Plić Sestre, roche (OSM node 8883790953)", 43.684411, 15.811043),
+)
+MAX_USER_HAZARDS_BYTES = 5 * 1024 * 1024
 # Land is clipped to RACE_BBOX + this margin (deg) so shore margins at the grid edge are right.
 WORK_PAD_DEG = 0.05
 
@@ -266,6 +291,179 @@ def rasterize(geom, x0: float, y0: float, cell: float, nx: int, ny: int) -> np.n
     return (np.cumsum(tog, axis=1, dtype=np.uint8)[:, :nx] & 1).astype(bool)
 
 
+# ------------------------------------------------------------------------------ hazards
+def _geom_extent(geom):
+    """Point -> 50 m disc; line -> 25 m buffer; polygon(s) as they are."""
+    if geom.geom_type in ("Point", "MultiPoint"):
+        return geom.buffer(DISC_M, quad_segs=8)
+    if geom.geom_type in ("LineString", "MultiLineString"):
+        return geom.buffer(WAY_BUFFER_M, quad_segs=8)
+    return geom
+
+
+def _way_geom(geometry: list[dict], frame: Frame, area: bool):
+    """Closed way tagged as an area -> polygon, else its line (None when degenerate)."""
+    ls = _line_m(geometry, frame)
+    if ls is None:
+        return None
+    if area and ls.is_closed and len(ls.coords) >= 4:
+        poly = shapely.Polygon(ls.coords)
+        return poly if poly.is_valid and poly.area > 0 else shapely.make_valid(poly)
+    return ls
+
+
+def _relation_geom(e: dict, frame: Frame):
+    lines = [
+        ls
+        for m in e.get("members", [])
+        if isinstance(m, dict) and m.get("geometry")
+        for ls in [_line_m(m["geometry"], frame)]
+        if ls is not None
+    ]
+    if not lines:
+        return None
+    polys = list(polygonize(unary_union(lines)))
+    # holes (inner rings) come out as faces too: filled, which is conservative
+    return unary_union(polys) if polys else shapely.MultiLineString(lines)
+
+
+def classify_hazards(elements: list[dict], frame: Frame) -> tuple[list, list, dict[str, int]]:
+    """Overpass hazard elements -> (geometries that get the hazard margin, submerged-rock points,
+    counts per class). Metres in the local frame."""
+    marked, submerged = [], []
+    counts: dict[str, int] = {}
+
+    def add(key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    for e in elements:
+        tags = e.get("tags") or {}
+        st, nat = tags.get("seamark:type"), tags.get("natural")
+        kind = e.get("type")
+        area = nat in ("reef", "shoal") or st == "obstruction"
+        if kind == "node":
+            geom = shapely.Point(*frame.to_m(e["lat"], e["lon"]))
+        elif kind == "way":
+            geom = _way_geom(e.get("geometry") or [], frame, area)
+        else:
+            geom = _relation_geom(e, frame)
+        if geom is None or geom.is_empty:
+            add("ignored")
+            continue
+        if st == "rock" and kind == "node":
+            if tags.get("seamark:rock:water_level") in AWASH_LEVELS:
+                marked.append(_geom_extent(geom))
+                add("rock_awash")
+            else:  # submerged, or no water level: depth unknown
+                submerged.append(geom)
+                add("rock_submerged")
+        elif st in MARGIN_SEAMARKS:
+            # obstruction/wreck areas: their outline plus 25 m, like the lines
+            g = geom if geom.geom_type in ("Point", "MultiPoint") else geom.buffer(WAY_BUFFER_M)
+            marked.append(_geom_extent(g))
+            add(st)
+        elif nat in ("reef", "shoal"):
+            marked.append(_geom_extent(geom))
+            add(f"natural_{nat}")
+        else:
+            add("ignored")
+    return marked, submerged, counts
+
+
+def _bad_hazards(msg: str) -> LandPrepError:
+    return LandPrepError(f"fichier de dangers invalide : {msg}")
+
+
+def _positions(coords: Any, depth: int) -> Any:
+    """Validate GeoJSON coordinates nested `depth` levels deep ([lon, lat] finite, in range)."""
+    if depth == 0:
+        if (
+            not isinstance(coords, list)
+            or len(coords) < 2
+            or not all(isinstance(v, int | float) and not isinstance(v, bool) for v in coords[:2])
+            or not all(math.isfinite(v) for v in coords[:2])
+            or not (-180 <= coords[0] <= 180 and -90 <= coords[1] <= 90)
+        ):
+            raise _bad_hazards(f"coordonnée {coords!r} (attendu [lon, lat] finis)")
+        return (float(coords[0]), float(coords[1]))
+    if not isinstance(coords, list) or not coords:
+        raise _bad_hazards("liste de coordonnées vide ou absente")
+    return [_positions(c, depth - 1) for c in coords]
+
+
+def _geojson_geom(g: Any, frame: Frame) -> list:
+    if not isinstance(g, dict):
+        raise _bad_hazards("géométrie absente")
+    t = g.get("type")
+
+    def xy(p):
+        return frame.to_m(p[1], p[0])
+
+    def ring(r):
+        if len(r) < 4 or r[0] != r[-1]:
+            raise _bad_hazards("anneau de polygone non fermé ou trop court")
+        return [xy(p) for p in r]
+
+    def polygon(rings):
+        poly = shapely.Polygon(ring(rings[0]), [ring(r) for r in rings[1:]])
+        return poly if poly.is_valid else shapely.make_valid(poly)
+
+    c = g.get("coordinates")
+    if t == "Point":
+        return [shapely.Point(xy(_positions(c, 0))).buffer(DISC_M, quad_segs=8)]
+    if t == "MultiPoint":
+        return [shapely.Point(xy(p)).buffer(DISC_M, quad_segs=8) for p in _positions(c, 1)]
+    if t == "LineString":
+        pts = _positions(c, 1)
+        if len(pts) < 2:
+            raise _bad_hazards("ligne de moins de 2 points")
+        return [shapely.LineString([xy(p) for p in pts]).buffer(WAY_BUFFER_M, quad_segs=8)]
+    if t == "MultiLineString":
+        return [
+            x
+            for line in c or []
+            for x in _geojson_geom({"type": "LineString", "coordinates": line}, frame)
+        ]
+    if t == "Polygon":
+        return [polygon(_positions(c, 2))]
+    if t == "MultiPolygon":
+        return [polygon(rings) for rings in _positions(c, 3)]
+    if t == "GeometryCollection" and isinstance(g.get("geometries"), list):
+        return [x for sub in g["geometries"] for x in _geojson_geom(sub, frame)]
+    raise _bad_hazards(f"type de géométrie non pris en charge : {t!r}")
+
+
+def load_user_hazards(path: str | Path, frame: Frame = DEFAULT_FRAME) -> list:
+    """--hazards FILE.geojson: Points (50 m discs), LineStrings (25 m buffer), Polygons, all given
+    the hazard margin by the caller. LandPrepError (French) on anything invalid."""
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise _bad_hazards(f"{path} illisible ({exc})") from None
+    if size > MAX_USER_HAZARDS_BYTES:
+        raise LandPrepError(f"fichier de dangers trop gros ({size} octets, max 5 Mo) : {path}")
+    try:
+        d = json.loads(path.read_bytes())
+    except (ValueError, OSError) as exc:
+        raise _bad_hazards(f"{path} n'est pas du JSON ({exc})") from None
+    if not isinstance(d, dict):
+        raise _bad_hazards("objet GeoJSON attendu")
+    if d.get("type") == "FeatureCollection":
+        feats = d.get("features")
+        if not isinstance(feats, list):
+            raise _bad_hazards("'features' doit être une liste")
+        geoms = [f.get("geometry") if isinstance(f, dict) else None for f in feats]
+    elif d.get("type") == "Feature":
+        geoms = [d.get("geometry")]
+    else:
+        geoms = [d]
+    out = [x for g in geoms for x in _geojson_geom(g, frame)]
+    if not out:
+        raise _bad_hazards("aucune géométrie")
+    return out
+
+
 # ------------------------------------------------------------------------------ build
 def grid_for(
     bbox: tuple[float, float, float, float], cell_m: float, frame: Frame
@@ -344,12 +542,18 @@ def build_mask(
     refresh: bool = False,
     frame: Frame = DEFAULT_FRAME,
     bbox: tuple[float, float, float, float] = RACE_BBOX,
+    submerged_rocks: bool = True,
+    hazards_file: str | Path | None = None,
 ) -> dict:
-    """Fetch (or reuse) OSM data, build land + margins, write landmask.npz + landmask.json."""
+    """Fetch (or reuse) OSM data, build land + margins + hazards, write landmask.npz + .json.
+
+    mask = land + shore margin, OR hazards (+ hazard margin), OR submerged-rock discs;
+    raw = land only."""
     t0 = time.perf_counter()
     out_dir = Path(out_dir)
     cache_dir = Path(cache_dir)
     coast = fetch_overpass(COASTLINE_QUERY, cache_dir, offline=offline, refresh=refresh)
+    haz = fetch_overpass(HAZARD_QUERY, cache_dir, offline=offline, refresh=refresh)
     pad = WORK_PAD_DEG
     work = (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad)
     land, info = coastline_to_land(coast["elements"], frame, work)
@@ -357,10 +561,26 @@ def build_mask(
         f"  trait de côte : {info['ways']} chemins, {info['faces']} faces, "
         f"{info['land_faces']} faces terre, {info['unclassified']} non classées"
     )
+    marked, submerged, counts = classify_hazards(haz["elements"], frame)
+    for _name, lat, lon in HAND_HAZARDS:
+        marked.append(shapely.Point(*frame.to_m(lat, lon)).buffer(DISC_M))
+    counts["hand"] = len(HAND_HAZARDS)
+    if hazards_file is not None:
+        user = load_user_hazards(hazards_file, frame)
+        marked.extend(user)
+        counts["user"] = len(user)
+    print("  dangers : " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    if not submerged_rocks:
+        print("  roches immergées ignorées (--no-submerged-rocks)")
     x0, y0, nx, ny = grid_for(bbox, cell_m, frame)
     raw = rasterize(land, x0, y0, cell_m, nx, ny)
     obst = land.buffer(shore_margin_m, quad_segs=8) if shore_margin_m > 0 else land
     mask = rasterize(obst, x0, y0, cell_m, nx, ny) | raw
+    hz = unary_union(marked).buffer(hazard_margin_m, quad_segs=8)
+    mask |= rasterize(hz, x0, y0, cell_m, nx, ny)
+    if submerged_rocks and submerged:
+        discs = shapely.MultiPoint(submerged).buffer(DISC_M, quad_segs=8)
+        mask |= rasterize(discs, x0, y0, cell_m, nx, ny)
     side = write_mask(
         out_dir,
         mask,
@@ -373,7 +593,13 @@ def build_mask(
         hazard_margin_m=hazard_margin_m,
         source=SOURCE,
         base=osm_base(coast),
-        extra={"land_faces": info["land_faces"]},
+        extra={
+            "land_faces": info["land_faces"],
+            "hazards": dict(sorted(counts.items())),
+            "submerged_rocks": submerged_rocks,
+            "osm_base_hazards": osm_base(haz),
+            "user_hazards": Path(hazards_file).name if hazards_file is not None else None,
+        },
     )
     print(
         f"  grille {ny} x {nx} = {nx * ny / 1e6:.1f} Mcellules de {cell_m:g} m, "
@@ -428,6 +654,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--cell-m", type=float, default=25.0)
     b.add_argument("--shore-margin-m", type=float, default=100.0)
     b.add_argument("--hazard-margin-m", type=float, default=200.0)
+    b.add_argument(
+        "--submerged-rocks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="roches immergées OSM (profondeur inconnue) en disques de 50 m (défaut : oui)",
+    )
+    b.add_argument("--hazards", type=Path, help="dangers en plus (GeoJSON, lon/lat WGS84)")
     b.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     b.add_argument("--offline", action="store_true", help="n'utiliser que le cache OSM")
     b.add_argument("--refresh", action="store_true", help="ignorer le cache et re-télécharger")
@@ -447,6 +680,8 @@ def main(argv: list[str] | None = None) -> int:
             cache_dir=args.cache,
             offline=args.offline,
             refresh=args.refresh,
+            submerged_rocks=args.submerged_rocks,
+            hazards_file=args.hazards,
         )
     except LandPrepError as exc:
         print(f"ÉCHEC : {exc}", file=sys.stderr)
