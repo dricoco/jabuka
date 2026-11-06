@@ -1,0 +1,13 @@
+.venv/
+.venv313/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+var/
+probe-*/
+dist/
+build/
+*.egg-info/
+deploy/wheelhouse/
+deploy/secrets.env

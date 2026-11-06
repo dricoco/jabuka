@@ -1,0 +1,73 @@
+:root {
+  --bg: #000;
+  --fg: #f2f2f2;
+  --muted: #9a9a9a;
+  --line: #333;
+  --ok: #2ecc40;
+  --warn: #ffdc00;
+  --bad: #ff4136;
+  --panel: #111;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+}
+
+header { display: flex; align-items: center; gap: 1rem; }
+h1 { font-size: 1.3rem; margin: 0.2rem 0; }
+h2 { font-size: 1.05rem; margin: 0.3rem 0; color: var(--muted); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--line); padding: 0.2rem 0.4rem; text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; }
+td.num, .kv td:last-child {
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+td.num { text-align: right; }
+
+tr.fresh td.age { color: var(--ok); }
+tr.aging td.age { color: var(--warn); }
+tr.stale { color: var(--muted); }
+tr.stale td.age { color: var(--bad); font-weight: 700; }
+
+.gate {
+  display: inline-block;
+  font-size: 1.6rem;
+  font-weight: 800;
+  padding: 0.3rem 0.9rem;
+  border-radius: 6px;
+  margin-bottom: 0.4rem;
+}
+.gate-blocked { background: var(--bad); color: #000; }
+.gate-ok { background: var(--ok); color: #000; }
+
+.conn { padding: 0.1rem 0.5rem; border-radius: 4px; font-weight: 700; }
+.conn-up { background: var(--ok); color: #000; }
+.conn-down { background: var(--bad); color: #000; }
+
+.health-src { margin: 0.3rem 0 0.6rem; }
+.health-src h3 { margin: 0.2rem 0; font-size: 1rem; }
+.alive-true { color: var(--ok); }
+.alive-false { color: var(--bad); }
+
+.event-panel { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.event-panel input { background: #222; color: var(--fg); border: 1px solid var(--line); padding: 0.5rem; font-size: 1rem; min-width: 14rem; }
+.event-panel button { background: var(--warn); color: #000; border: 0; padding: 0.6rem 1.2rem; font-size: 1.1rem; font-weight: 800; border-radius: 6px; }
+#event-ack { font-family: ui-monospace, monospace; }
