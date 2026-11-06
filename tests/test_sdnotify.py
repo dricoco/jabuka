@@ -90,10 +90,12 @@ def test_watchdog_interval(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sdnotify.watchdog_interval() is None
 
 
-def _check_lifecycle(proc: subprocess.Popen, s: socket.socket) -> None:
+def _check_lifecycle(proc: subprocess.Popen, s: socket.socket, on_ready=None) -> None:
     try:
         got = _collect(s, lambda g: "READY=1" in g, timeout=15)
         t_ready = time.monotonic()
+        if on_ready is not None:
+            on_ready()
         got += _collect(
             s, lambda g: sum(m == "WATCHDOG=1" for m in g) >= 2, timeout=3.0
         )  # WATCHDOG_USEC=2 s -> ping every 1 s
@@ -136,8 +138,8 @@ def test_ingest_entrypoint_notify_and_sigterm(
             ],
             env=_env(path),
         )
-        feeder.write(bytes.fromhex("ff010a01f54192f9dd420a01ec082cea"))
-        _check_lifecycle(proc, s)
+        frame = bytes.fromhex("ff010a01f54192f9dd420a01ec082cea")
+        _check_lifecycle(proc, s, on_ready=lambda: feeder.write(frame))
     raw = list((tmp_data_dir / "logs" / "raw").glob("fastnet-*.log"))
     assert raw, "raw log flushed and closed on SIGTERM"
     assert raw[0].read_text().endswith("\n")

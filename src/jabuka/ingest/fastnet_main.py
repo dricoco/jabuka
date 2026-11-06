@@ -10,13 +10,14 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import socket
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from jabuka.common import messages
+from jabuka.common import messages, sdnotify
 from jabuka.ingest.fastnet_decode import decode_to_values
 from jabuka.ingest.fastnet_framing import CountingFramer
 from jabuka.ingest.rawlog import RotatingAppendLog
@@ -46,6 +47,7 @@ class FastnetIngest:
         self._wall = wall
         self.framer = CountingFramer()
         self.decode_errors = 0
+        self.raw_errors = 0
         self.send_errors = 0
         self.messages_sent = 0
         self.unknown_ch: set[str] = set()
@@ -61,9 +63,25 @@ class FastnetIngest:
         }
 
     def on_chunk(self, b: bytes) -> None:
-        self.rawlog.write_chunk(b)  # RAW FIRST: bytes are on disk before anything interprets them
-        for frame in self.framer.feed(b):
-            res = decode_to_values(frame, awa_sign=self.awa_sign)
+        """Never raises: bad bytes or decoder bugs are counted, the read loop keeps going."""
+        try:
+            self.rawlog.write_chunk(b)  # RAW FIRST: on disk before anything interprets the bytes
+        except (OSError, ValueError) as e:  # disk full / closed log: keep live data flowing
+            self.raw_errors += 1
+            log.error("raw log write failed: %s", e)
+        try:
+            frames = self.framer.feed(b)
+        except Exception:
+            self.decode_errors += 1
+            log.exception("framer failed")
+            return
+        for frame in frames:
+            try:
+                res = decode_to_values(frame, awa_sign=self.awa_sign)
+            except Exception as e:
+                self.decode_errors += 1
+                log.debug("decode failed for %s: %s", frame.hex(), e)
+                continue
             if res.error is not None:
                 self.decode_errors += 1
                 continue
@@ -170,19 +188,35 @@ async def _run(args: argparse.Namespace) -> int:
             await asyncio.sleep(1.0)
             rawlog.maybe_flush()
 
+    def on_signal(signum: int) -> None:
+        sdnotify.notify("STOPPING=1")
+        log.info("signal %d: stopping", signum)
+        if not done.done():
+            done.set_result(0)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, on_signal, signum)
+
     loop.add_reader(fd, on_readable)
     log.info("reading %s (fd %d) receive-only", args.device, fd)
-    flush_task = asyncio.create_task(flusher())
+    tasks = [asyncio.create_task(flusher(), name="rawlog-flush")]
+    interval = sdnotify.watchdog_interval()
+    if interval is not None:
+        tasks.append(asyncio.create_task(sdnotify.watchdog_loop(interval), name="watchdog"))
+    sdnotify.notify("READY=1")  # device open + UDP socket exist
     try:
         rc = await done
     finally:
-        flush_task.cancel()
+        for t in tasks:
+            t.cancel()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(signum)
         try:
             loop.remove_reader(fd)
         except Exception:
             pass
         ser.close()
-        rawlog.close()
+        rawlog.close()  # final flush + fsync
         sock.close()
     return rc
 

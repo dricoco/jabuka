@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import math
+import signal
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import uvicorn
 
-from jabuka.common import messages
+from jabuka.common import messages, sdnotify
 from jabuka.common.clock import Clock, SimClock, make_clock
 from jabuka.core.bus import start_udp_listener
 from jabuka.core.derived_log import DerivedLogger
@@ -193,6 +196,12 @@ class CoreContext:
         # first target computed now, not when the task first runs, so no second is skipped
         first = math.floor(self.clock.monotonic()) + 1
         self._tasks.append(asyncio.create_task(self._tick_loop(first), name="jabuka-tick"))
+        interval = sdnotify.watchdog_interval()
+        if interval is not None:
+            self._tasks.append(
+                asyncio.create_task(sdnotify.watchdog_loop(interval), name="jabuka-watchdog")
+            )
+        sdnotify.notify("READY=1")  # UDP listener bound, tick running
 
     async def shutdown(self) -> None:
         for t in self._tasks:
@@ -230,6 +239,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
+class CoreServer(uvicorn.Server):
+    """uvicorn.Server with our own SIGTERM/SIGINT handling.
+
+    Stock uvicorn re-raises a captured SIGTERM with the default handler after its graceful
+    shutdown, so the process would die with -15 instead of exiting 0. Here the signal sends
+    STOPPING=1 and sets should_exit; the lifespan shutdown then closes (fsyncs) every log.
+    """
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        try:
+            loop = asyncio.get_running_loop()
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(signum, self._on_signal, signum)
+        except (RuntimeError, ValueError, NotImplementedError):  # not the main thread
+            loop = None
+        try:
+            yield
+        finally:
+            if loop is not None:
+                for signum in (signal.SIGTERM, signal.SIGINT):
+                    loop.remove_signal_handler(signum)
+
+    signalled = False
+
+    def _on_signal(self, signum: int) -> None:
+        self.signalled = True
+        sdnotify.notify("STOPPING=1")
+        if self.should_exit and signum == signal.SIGINT:
+            self.force_exit = True
+        self.should_exit = True
+
+
 async def serve(args: argparse.Namespace) -> int:
     ctx = CoreContext.create(
         make_clock(args.clock), args.data_dir, udp_host=args.udp_host, udp_port=args.udp_port
@@ -244,9 +286,12 @@ async def serve(args: argparse.Namespace) -> int:
         ws="websockets",
         lifespan="on",
     )
-    server = uvicorn.Server(config)
-    await server.serve()
-    return 0
+    server = CoreServer(config)
+    try:
+        await server.serve()
+    finally:
+        ctx.close_logs()  # idempotent; covers a failed startup too
+    return 0 if server.started or server.signalled else 1
 
 
 def main(argv: list[str] | None = None) -> int:
