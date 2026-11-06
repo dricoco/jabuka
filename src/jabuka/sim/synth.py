@@ -21,7 +21,10 @@ its current tack (heading = TWD - s * target, starting on starboard); it tacks (
 when the layline is overstood or the countdown reaches 0; when fetching or on a reach it steers the
 bearing to the mark; it never turns back to a mark it has just passed (holds its heading while the
 core decides the rounding). Boat speed comes from the X35 polar x the core's efficiency. Without
---follow nothing changes.
+--follow nothing changes. With --follow-route too (the local demo, quick 001) the helmsman sails
+the core's valid route instead: the route's target TWA (or heading on a reach) on the route's tack,
+tacking when the route's countdown reaches 0 or when the route wants the other tack; without a
+valid route it falls back to the layline helmsman above.
 
 Dev tool only (never in a systemd unit); it may read the wall clock.
 """
@@ -108,6 +111,7 @@ class SynthConfig:
     wait_gpsd_s: float = 0.0  # wait for a gpsd client to WATCH before starting
     wait_reader_s: float = 0.0  # pty mode: wait for a reader to open the pty before starting
     follow: str | None = None  # core base URL: closed-loop steering from its /api/nav
+    follow_route: bool = False  # --follow sails the core's route when it has a valid one
 
 
 # -- boat model --------------------------------------------------------------------------------
@@ -199,8 +203,9 @@ class FollowHelm:
 
     TACK_S = 10  # manoeuvre: sim seconds at half speed
     HOLD_NM = 0.5  # a mark this close and behind the bow was just passed: hold the heading
+    ROUTE_SETTLE_S = 60  # after a tack, a lagging "other tack" route message is not obeyed
 
-    def __init__(self, base_url: str, start_twa_deg: float) -> None:
+    def __init__(self, base_url: str, start_twa_deg: float, follow_route: bool = False) -> None:
         parts = urllib.parse.urlsplit(base_url)
         if parts.scheme not in ("http", "https") or not parts.netloc:
             raise ValueError(f"--follow expects http://HOST:PORT, got {base_url!r}")
@@ -211,6 +216,9 @@ class FollowHelm:
         self.tacks = 0
         self.fetch_errors = 0
         self.last: dict | None = None
+        self.follow_route = follow_route
+        self.since_tack = 10**9  # sim seconds since the last tack
+        self.route_tacked: tuple | None = None  # route tack point already obeyed
 
     def fetch(self) -> dict | None:
         """GET /api/nav (1 s timeout); None on any failure (the last command is kept)."""
@@ -233,6 +241,7 @@ class FollowHelm:
         if twd is None:
             twd = math.degrees(state.twd)
         factor = 1.0
+        self.since_tack += 1
         if self.tack_left > 0:
             self.tack_left -= 1
             factor = 0.5
@@ -245,6 +254,10 @@ class FollowHelm:
         if btw is not None and dtw is not None and dtw < self.HOLD_NM:
             if abs(_angle_diff(btw, hdg_now)) > 90.0:
                 return hdg_now, factor  # just passed: let the core call the rounding
+        if self.follow_route:
+            cmd = self._route_command(nav.get("route") or {}, twd, factor)
+            if cmd is not None:
+                return cmd
         if primary not in ("twa_up", "twa_down") or target is None:
             if primary == "cts" and btw is not None:
                 return self._steer(_num(helm.get("cts_t")) or btw, twd), factor
@@ -262,6 +275,36 @@ class FollowHelm:
             self.tack_left = self.TACK_S
             factor = 0.5
         return (twd - self.sign * target) % 360.0, factor
+
+    def _tack(self) -> None:
+        self.sign = -self.sign
+        self.tacks += 1
+        self.tack_left = self.TACK_S
+        self.since_tack = 0
+
+    def _route_command(self, route: dict, twd: float, factor: float) -> tuple[float, float] | None:
+        """(heading, factor) sailing the core's valid route, or None (no valid route)."""
+        if route.get("state") != "ok":
+            return None
+        target = _num(route.get("target"))
+        if target is None:
+            return None
+        if route.get("primary") == "hdg":
+            return self._steer(target, twd), factor
+        if route.get("primary") != "twa":
+            return None
+        want = {"stbd": 1, "port": -1}.get(str(route.get("target_tack")))
+        countdown = _num(route.get("countdown_s"))
+        point = (route.get("version"), route.get("tack_lat"), route.get("tack_lon"))
+        if self.tack_left == 0:
+            if countdown is not None and countdown <= 0 and point != self.route_tacked:
+                self.route_tacked = point  # the advised tack, once per tack point
+                self._tack()
+                factor = 0.5
+            elif want is not None and want != self.sign and self.since_tack > self.ROUTE_SETTLE_S:
+                self._tack()  # the route is on the other tack (new route, or a missed tack)
+                factor = 0.5
+        return (twd - self.sign * abs(target)) % 360.0, factor
 
     def _steer(self, heading: float, twd: float) -> float:
         """Steer a heading; the tack follows the side the wind is on."""
@@ -372,7 +415,7 @@ async def run_synth(
     speed = cfg.speed if cfg.speed > 0 else 1.0
     rng = random.Random(cfg.seed)
     start_utc = float(cfg.start_utc) if cfg.start_utc is not None else float(int(time.time()))
-    helm = FollowHelm(cfg.follow, cfg.twa) if cfg.follow else None
+    helm = FollowHelm(cfg.follow, cfg.twa, cfg.follow_route) if cfg.follow else None
     boat = SynthBoat(cfg)
     if helm is not None:
         boat.polar = default_polar()
@@ -578,6 +621,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="closed loop: steer to the core's GET URL/api/nav each simulated second "
         "(e.g. http://127.0.0.1:8080); X35 polar boat speed",
     )
+    p.add_argument(
+        "--follow-route",
+        action="store_true",
+        help="with --follow: sail the core's valid route (its tack and target TWA) instead of "
+        "the laylines",
+    )
     return p
 
 
@@ -604,6 +653,7 @@ def config_from_args(args: argparse.Namespace) -> SynthConfig:
         wait_gpsd_s=args.wait_gpsd,
         wait_reader_s=args.wait_reader,
         follow=args.follow,
+        follow_route=args.follow_route,
     )
 
 
