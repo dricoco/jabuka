@@ -132,7 +132,14 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans**: TBD
+**Plans:** 3 plans (wave 1: 01 ‖ 02; wave 2: 03)
+
+Plans:
+
+- [ ] 04-01-PLAN.md — Soak harness: `jabuka-soak` (real ingest on a pty, core under SimClock ~60×, router worker, fake gpsd, closed-loop synthetic boat), supervisor shim mirroring the units' restart/watchdog policy, the full CONTEXT fault catalogue plus a GPS-clock leg, tablet WS client with recovery budgets and route land re-validation, memory/fd/thread/CPU/log/disk checks, a CI soak in the normal gate, `scripts/soak.sh`, docs/SOAK.md, and the fixes the soak finds
+- [ ] 04-02-PLAN.md — French commissioning runbook for 12–13 Nov (docs/COMMISSIONING.md + Slovenian skipper card), `scripts/commissioning-rehearsal.sh` dry run against a replayed capture and the synthetic boat (PASS/FAIL/HUMAN per step), docs bound to the code by tests, docs/FREEZE.md + `scripts/freeze-check.sh`, docs/SPARE-SD.md (clone, verification, swap at sea, optional overlay FS)
+- [ ] 04-03-PLAN.md — Pi `--systemd` mode (system scope via /run drop-ins, proven end to end on laptop user-scope systemd), Pi temperature/throttling metrics, the full 36 h-equivalent laptop run with its fixes, Pi soak procedure and results in docs/SOAK.md
+
 **Notes**: The read-only overlay FS is optional: test it once by 2026-11-09, otherwise skip it and rely on atomic writes + the spare SD card. Re-verifies REL-01 (Phase 1) and CRSE-05 (Phase 2) under power-pull faults.
 
 ## Progress
@@ -145,7 +152,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 0/TBD | Not started | - |
+| 4. Race Readiness — Hardening & Commissioning | 0/3 | Planned | - |
 
 ---
 *Roadmap created: 2026-11-06*
