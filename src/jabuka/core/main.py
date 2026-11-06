@@ -23,6 +23,7 @@ from jabuka.core.bus import start_udp_listener
 from jabuka.core.derived_log import DerivedLogger
 from jabuka.core.state import StateStore
 from jabuka.core.web import Hub, create_app
+from jabuka.ingest.gpsd_client import run_gpsd_client, sky_to_values, tpv_epoch, tpv_to_values
 from jabuka.ingest.rawlog import RotatingAppendLog
 
 log = logging.getLogger("jabuka.core")
@@ -40,6 +41,8 @@ class CoreContext:
     bus_log: RotatingAppendLog | None = None
     derived: DerivedLogger | None = None
     events_log: RotatingAppendLog | None = None
+    gps_log: RotatingAppendLog | None = None
+    gpsd: tuple[str, int] | None = None
     udp_host: str = "127.0.0.1"
     udp_port: int = messages.DEFAULT_UDP_PORT
     stats: dict[str, int] = field(
@@ -60,6 +63,7 @@ class CoreContext:
         *,
         udp_host: str = "127.0.0.1",
         udp_port: int = messages.DEFAULT_UDP_PORT,
+        gpsd: tuple[str, int] | None = None,
     ) -> CoreContext:
         data_dir = Path(data_dir)
         logs = data_dir / "logs"
@@ -79,6 +83,16 @@ class CoreContext:
             wall=clock.wall,
             guard_prefixes=(),
         )
+        gps_log = None
+        if gpsd is not None:
+            # raw gpsd JSON lines, written before parsing (raw-first)
+            gps_log = RotatingAppendLog(
+                logs / "gps",
+                "gps",
+                mono=clock.monotonic,
+                wall=clock.wall,
+                guard_prefixes=("gps",),
+            )
         return cls(
             clock=clock,
             state=StateStore(clock),
@@ -87,12 +101,16 @@ class CoreContext:
             bus_log=bus_log,
             derived=DerivedLogger(logs / "derived", clock),
             events_log=events_log,
+            gps_log=gps_log,
+            gpsd=gpsd,
             udp_host=udp_host,
             udp_port=udp_port,
         )
 
     def logs(self) -> list[Any]:
-        return [x for x in (self.bus_log, self.derived, self.events_log) if x is not None]
+        return [
+            x for x in (self.bus_log, self.derived, self.events_log, self.gps_log) if x is not None
+        ]
 
     # -- message handling --------------------------------------------------------------------
     def on_message(self, msg: dict) -> None:
@@ -110,6 +128,37 @@ class CoreContext:
         health = msg.get("health")
         if isinstance(health, dict):
             self.state.update_health(src, health, t_rx)
+
+    # -- gps ---------------------------------------------------------------------------------
+    def _discipline_clock(self, tpv: dict) -> None:
+        """Feed a TPV to the clock BEFORE stamping t_rx: GpsClock disciplines itself from it,
+        SimClock follows the fix time."""
+        clock = self.clock
+        on_tpv = getattr(clock, "on_tpv", None)
+        if callable(on_tpv):
+            on_tpv(tpv, clock.monotonic())
+        elif isinstance(clock, SimClock):
+            mode = tpv.get("mode")
+            if isinstance(mode, int) and not isinstance(mode, bool) and mode >= 2:
+                epoch = tpv_epoch(tpv)
+                if epoch is not None:
+                    clock.observe_utc(epoch)
+
+    def on_gps_object(self, obj: dict, _t_client: float = 0.0) -> None:
+        """TPV/SKY from the gpsd client -> state (src "gpsd")."""
+        cls = obj.get("class")
+        if cls == "TPV":
+            self._discipline_clock(obj)
+            values = tpv_to_values(obj)
+        elif cls == "SKY":
+            values = sky_to_values(obj)
+        else:
+            return
+        if values:
+            self.state.update_values("gpsd", values, self.clock.monotonic())
+
+    def on_gps_health(self, health: dict) -> None:
+        self.state.update_health("gps", health, self.clock.monotonic())
 
     # -- events ------------------------------------------------------------------------------
     def record_event(self, label: str) -> dict | None:
@@ -196,6 +245,21 @@ class CoreContext:
         # first target computed now, not when the task first runs, so no second is skipped
         first = math.floor(self.clock.monotonic()) + 1
         self._tasks.append(asyncio.create_task(self._tick_loop(first), name="jabuka-tick"))
+        if self.gpsd is not None:
+            host, port = self.gpsd
+            self._tasks.append(
+                asyncio.create_task(
+                    run_gpsd_client(
+                        host,
+                        port,
+                        self.on_gps_object,
+                        self.gps_log,
+                        health=self.on_gps_health,
+                        mono=self.clock.monotonic,
+                    ),
+                    name="jabuka-gpsd",
+                )
+            )
         interval = sdnotify.watchdog_interval()
         if interval is not None:
             self._tasks.append(
@@ -225,6 +289,16 @@ class CoreContext:
                 log.exception("log close failed")
 
 
+def parse_gpsd(text: str) -> tuple[str, int] | None:
+    """--gpsd HOST:PORT | none"""
+    if text.strip().lower() == "none":
+        return None
+    host, _, port = text.rpartition(":")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise argparse.ArgumentTypeError(f"expected HOST:PORT or none, got {text!r}")
+    return host, int(port)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="jabuka-core", description="Jabuka core: state, logs, diagnostics web app."
@@ -234,7 +308,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--udp-host", default="127.0.0.1")
     p.add_argument("--udp-port", type=int, default=messages.DEFAULT_UDP_PORT)
     p.add_argument("--data-dir", type=Path, default=Path("./var"))
-    p.add_argument("--clock", choices=("system", "sim"), default="system")
+    p.add_argument(
+        "--clock",
+        choices=("system", "sim", "gps"),
+        default="system",
+        help="time source: system (unvalidated), sim (replay/sim t_sim), gps (Pi: gpsd fixes)",
+    )
+    p.add_argument(
+        "--gpsd",
+        type=parse_gpsd,
+        default=None,
+        metavar="HOST:PORT|none",
+        help="gpsd to read GPS from (Pi: 127.0.0.1:2947; default none)",
+    )
     p.add_argument("--log-level", default="WARNING")
     return p
 
@@ -272,10 +358,19 @@ class CoreServer(uvicorn.Server):
         self.should_exit = True
 
 
-async def serve(args: argparse.Namespace) -> int:
-    ctx = CoreContext.create(
-        make_clock(args.clock), args.data_dir, udp_host=args.udp_host, udp_port=args.udp_port
+def build_context(args: argparse.Namespace) -> CoreContext:
+    """CoreContext from parsed jabuka-core flags (also used by tests)."""
+    return CoreContext.create(
+        make_clock(args.clock),
+        args.data_dir,
+        udp_host=args.udp_host,
+        udp_port=args.udp_port,
+        gpsd=args.gpsd,
     )
+
+
+async def serve(args: argparse.Namespace) -> int:
+    ctx = build_context(args)
     app = create_app(ctx)
     config = uvicorn.Config(
         app,
