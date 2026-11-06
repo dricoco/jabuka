@@ -159,6 +159,13 @@ class LegResult(NamedTuple):
     lon: float
 
 
+# RouteResult.fail_kind (03-REVIEW LO-04): why a routing failed, for the core's alerts
+FAIL_LAND = "land"  # the computed route failed the land validation (ROUTE INVALIDE alert)
+FAIL_INPUT = "input"  # bad request: marks, settings, start or target in the land (GPS glitch)
+FAIL_ENGINE = "engine"  # the router found no route (front blocked, too many steps, init)
+FAIL_PACK = "pack"  # the worker loaded another race pack than the core
+
+
 @dataclass(frozen=True)
 class RouteResult:
     ok: bool
@@ -177,6 +184,7 @@ class RouteResult:
     compute_ms: float = 0.0
     steps: int = 0
     notes: tuple[str, ...] = ()
+    fail_kind: str | None = None  # FAIL_* when ok is False
 
 
 @dataclass(frozen=True)

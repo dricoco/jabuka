@@ -173,7 +173,11 @@ def test_invalid_worker_route_is_discarded_with_an_alert(routing_core, fake_pool
         import dataclasses
 
         bad = RouteResult(
-            ok=False, reason="route invalide (terre)", request_id=b.request_id, t0=b.t0
+            ok=False,
+            reason="route invalide (terre)",
+            request_id=b.request_id,
+            t0=b.t0,
+            fail_kind="land",
         )
         return dataclasses.replace(res, optimal=bad)
 
@@ -249,6 +253,39 @@ def test_request_carries_the_follower_route_time(routing_core, fake_pool, rh) ->
     creq = fake_pool.requests[-1]
     assert creq.old_path is not None and creq.old_t_here is not None
     assert creq.old_path[0].t <= creq.old_t_here <= creq.old_path[-1].t
+
+
+@pytest.mark.parametrize(
+    ("reason", "kind", "alert"),
+    [
+        ("réglages invalides : pas", "input", False),
+        ("départ dans la terre : aucune eau libre à 1 nm", "input", False),
+        ("marque invalide : X", "input", False),
+        ("aucune expansion valide (front bloqué par la terre)", "engine", False),
+        ("route invalide (terre)", "land", True),
+    ],
+)
+def test_route_invalide_alert_follows_the_worker_kind(
+    routing_core, fake_pool, rh, reason, kind, alert
+) -> None:
+    """03-REVIEW LO-04: "ROUTE INVALIDE" came from French substrings ("invalide", "terre"),
+    so a GPS glitch or a settings error raised the 5 min land alert."""
+    import dataclasses
+
+    from jabuka.route.types import RouteResult
+
+    core, pos = _start(routing_core, fake_pool, rh)
+
+    def failing(creq):
+        b = creq.base
+        bad = RouteResult(ok=False, reason=reason, request_id=b.request_id, t0=b.t0, fail_kind=kind)
+        return dataclasses.replace(fake_pool.default(creq), optimal=bad)
+
+    fake_pool.script = failing
+    core.call(core.router.request, "manuel", True)
+    nav = _run(core, pos, 1)
+    assert any(a.startswith("ROUTE INVALIDE") for a in nav["alerts"]) is alert
+    assert core.router.health()["last_fail"] == reason
 
 
 # -- detected tack / low-speed COG (03-REVIEW MD-02) ----------------------------------------------
@@ -370,7 +407,11 @@ def test_worker_pack_mismatch_raises_the_alert(routing_core, fake_pool, rh) -> N
 
         b = creq.base
         bad = RouteResult(
-            ok=False, reason=f"{cycle.PACK_CHANGED} : x", request_id=b.request_id, t0=b.t0
+            ok=False,
+            reason=f"{cycle.PACK_CHANGED} : x",
+            request_id=b.request_id,
+            t0=b.t0,
+            fail_kind="pack",
         )
         return dataclasses.replace(fake_pool.default(creq), optimal=bad)
 

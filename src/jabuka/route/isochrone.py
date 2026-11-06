@@ -36,6 +36,9 @@ from jabuka.route.landmask import GeoField, LandMask, compute_geofield
 from jabuka.route.polar_grid import PolarGrid, normalize_curves
 from jabuka.route.rounding import expand
 from jabuka.route.types import (
+    FAIL_ENGINE,
+    FAIL_INPUT,
+    FAIL_LAND,
     CourseMark,
     LegResult,
     PathPoint,
@@ -142,7 +145,13 @@ class RouterEnv:
 
 
 class RouteFailure(Exception):
-    """A routing problem with a French reason (becomes RouteResult(ok=False))."""
+    """A routing problem with a French reason (becomes RouteResult(ok=False)) and a machine
+    kind (types.FAIL_*: land / input / engine), so the core never classifies failures by
+    French substrings (03-REVIEW LO-04)."""
+
+    def __init__(self, reason: str, kind: str = FAIL_INPUT) -> None:
+        super().__init__(reason)
+        self.kind = kind
 
 
 class _Seg(NamedTuple):
@@ -463,7 +472,7 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         if sel.size == 0:
             if best is not None:
                 return _arrival(start, hist, best, (tx, ty))
-            raise RouteFailure("aucune expansion valide (front bloqué par la terre)")
+            raise RouteFailure("aucune expansion valide (front bloqué par la terre)", FAIL_ENGINE)
         pi = par[sel]
         t = t + dt
         hist.append(
@@ -482,7 +491,7 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         fx, fy, ftack = cx[sel], cy[sel], tack_f[sel]
     if best is not None:
         return _arrival(start, hist, best, (tx, ty))
-    raise RouteFailure(f"trop d'étapes (> {s.max_steps}) sans atteindre la marque")
+    raise RouteFailure(f"trop d'étapes (> {s.max_steps}) sans atteindre la marque", FAIL_ENGINE)
 
 
 def _prune(ctx, fx, fy, cx, cy, par, origin, target, geo: GeoField, sector_rad: float, lazy_k=None):
@@ -730,6 +739,7 @@ def route(req: RouteRequest, env: RouterEnv) -> RouteResult:
         return RouteResult(
             ok=False,
             reason=str(exc),
+            fail_kind=exc.kind,
             request_id=req.request_id,
             t0=req.t0,
             level=req.settings.level,
@@ -786,7 +796,7 @@ def _route(ctx: _Ctx, t_start: float) -> RouteResult:
     if start_in_margin:
         valid = valid and bool(env.mask.raw_segments_clear(xs[0], ys[0], xs[1], ys[1])[0])
     if not valid:
-        raise RouteFailure("route invalide (terre)")
+        raise RouteFailure("route invalide (terre)", FAIL_LAND)
     lat, lon = frame.to_ll(xs, ys)
     path = tuple(
         PathPoint(

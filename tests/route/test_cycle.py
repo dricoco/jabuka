@@ -115,6 +115,20 @@ def test_pack_without_mask_fails_cleanly(tmp_path, creq) -> None:
     assert stats["crashes"] == 0 and stats["restarts"] == 0
 
 
+def test_failures_carry_a_machine_kind(pack_dir, creq) -> None:
+    """03-REVIEW LO-04: the core classifies failures by RouteResult.fail_kind."""
+    from jabuka.route.isochrone import route
+    from jabuka.route.types import FAIL_INPUT
+
+    env = cycle.build_env(pack_dir)
+    bad = route(dataclasses.replace(creq.base, tack0=5), env)
+    assert not bad.ok and bad.fail_kind == FAIL_INPUT and "requête invalide" in bad.reason
+    on_land = route(dataclasses.replace(creq.base, lat=43.75, lon=15.86), env)  # inland
+    assert not on_land.ok and on_land.fail_kind == FAIL_INPUT, on_land.reason
+    ok = route(creq.base, env)
+    assert ok.ok and ok.fail_kind is None
+
+
 def test_altered_land_mask_is_refused(tmp_path) -> None:
     """03-REVIEW MD-05: landmask.npz is checked against its landmask.json sha256."""
     import json

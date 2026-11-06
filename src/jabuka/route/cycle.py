@@ -28,7 +28,7 @@ from jabuka.route.fields import fields_from_pack
 from jabuka.route.isochrone import RouterEnv, route
 from jabuka.route.landmask import LandMask, load_geofields
 from jabuka.route.racepack import RacePack, load_pack, verify_landmask
-from jabuka.route.types import CycleRequest, CycleResult, RouteResult
+from jabuka.route.types import FAIL_ENGINE, FAIL_PACK, CycleRequest, CycleResult, RouteResult
 
 _ENV: RouterEnv | None = None
 _INIT_ERROR: str | None = None
@@ -98,9 +98,14 @@ def init_worker(pack_dir: str) -> None:
         _INIT_ERROR = f"routeur non initialisé : {exc}"
 
 
-def _failed(req, reason: str) -> RouteResult:
+def _failed(req, reason: str, kind: str = FAIL_ENGINE) -> RouteResult:
     return RouteResult(
-        ok=False, reason=reason, request_id=req.request_id, t0=req.t0, level=req.settings.level
+        ok=False,
+        reason=reason,
+        request_id=req.request_id,
+        t0=req.t0,
+        level=req.settings.level,
+        fail_kind=kind,
     )
 
 
@@ -176,7 +181,7 @@ def run_cycle(creq: CycleRequest) -> CycleResult:
     if creq.pack_fp is not None and _PACK_FP is not None and tuple(creq.pack_fp) != _PACK_FP:
         # the core routes the helm on another pack than this (restarted) worker loaded
         return CycleResult(
-            _failed(creq.base, f"{PACK_CHANGED} : redémarrer jabuka-core"),
+            _failed(creq.base, f"{PACK_CHANGED} : redémarrer jabuka-core", FAIL_PACK),
             None,
             None,
             None,

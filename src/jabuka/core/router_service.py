@@ -61,6 +61,8 @@ from jabuka.route.racepack import (
     window_from_local,
 )
 from jabuka.route.types import (
+    FAIL_LAND,
+    FAIL_PACK,
     LEVELS,
     CourseMark,
     CycleRequest,
@@ -115,7 +117,6 @@ ALERT_POOL = "ROUTEUR RELANCÉ : "
 ALERT_PACK_CHANGED = "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core"
 PACK_CHECK_S = 60.0  # the pack's sidecars are re-read this often (MD-05)
 POOL_ALERT_S = 300.0  # the router-restart alert stays this long
-MASK_WORDS = ("terre", "invalide", "masque")
 
 
 def iso_utc(t: float | None) -> str | None:
@@ -936,9 +937,9 @@ class RouterService:
         opt = res.optimal
         if not opt.ok:
             reason = opt.reason or "échec du routage"
-            if reason.startswith(cycle.PACK_CHANGED):
+            if opt.fail_kind == FAIL_PACK:
                 self._pack_changed = True
-            if any(w in reason.lower() for w in MASK_WORDS):
+            if opt.fail_kind == FAIL_LAND:  # LO-04: the worker's kind, never French words
                 self._invalid(reason, req)
             else:
                 self._counts["failed"] += 1
