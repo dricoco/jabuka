@@ -14,7 +14,8 @@ the mark, Pitfall 17), x east / y north in nm, velocities in kn (nm/h):
   a > 0 and b > 0: normal; a <= 0: overstood (overstood_s = -a); b <= 0: fetching on this tack
   (helm.cts_t = heading whose ground track points at A).
 - countdown: along the boat's actual track, the ray P + s*u(COG) meeting the other-tack layline
-  through A, time s / SOG (SOG > 1 kn); else the polar a.
+  through A, time s / SOG (SOG > 1 kn, COG within 20 deg of this tack's ground vector); else the
+  polar a (slow, or mid-manoeuvre: no spike while the GPS COG swings round after a tack).
 
 Reach legs have no laylines: the primary number is the course to steer (to A, current-corrected).
 Inputs in radians/knots; the result dicts are already in display units (degrees TRUE, kn, nm, s).
@@ -39,6 +40,9 @@ LEG_HYSTERESIS_DEG = 5.0
 MIN_LINE_NM = 2.0
 SOG_MIN_KN = 0.5
 TRACK_SOG_MIN_KN = 1.0  # below this the COG is noise: countdown from the polar decomposition
+# COG further than this from the current tack's ground track = manoeuvring (mid-tack, or the GPS
+# COG still lagging on the old tack): countdown from the polar decomposition, not the track
+TRACK_TACK_TOL_DEG = 20.0
 
 
 @dataclass
@@ -192,6 +196,14 @@ def _track_to_layline(
     return s_nm if s_nm > 0.0 and back >= 0.0 else None
 
 
+def _track_on_tack(cog: float, g_cur: tuple[float, float]) -> bool:
+    """True when the COG is within TRACK_TACK_TOL_DEG of the current tack's ground vector. During
+    a tack the TWA (raw heading) flips before the GPS COG has swung round: a ray along a mid-turn
+    COG meets the other layline far away and the countdown would spike for a few seconds."""
+    off = abs(math.degrees(wrap_pi(cog - geo.bearing_of(*g_cur))))
+    return off <= TRACK_TACK_TOL_DEG
+
+
 def solve(
     boat: BoatState,
     wind: WindSolution,
@@ -299,8 +311,14 @@ def solve(
     if state == "normal":
         time_h = a + b
         countdown_h, dist_nm = a, a * math.hypot(*g_cur)
-        # the boat's actual track (CONTEXT: countdown = time to the layline at the current SOG)
-        if boat.cog is not None and boat.sog_kn is not None and boat.sog_kn > TRACK_SOG_MIN_KN:
+        # the boat's actual track (CONTEXT: countdown = time to the layline at the current SOG),
+        # only while that track is a track on this tack (not mid-manoeuvre)
+        if (
+            boat.cog is not None
+            and boat.sog_kn is not None
+            and boat.sog_kn > TRACK_SOG_MIN_KN
+            and _track_on_tack(boat.cog, g_cur)
+        ):
             s_nm = _track_to_layline(d, boat.cog, g_other)
             if s_nm is not None:
                 countdown_h, dist_nm = s_nm / boat.sog_kn, s_nm

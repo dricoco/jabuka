@@ -52,10 +52,11 @@ def test_manual_wind_form_and_settings(page, feeder) -> None:
     pg.wait_for_function(
         "() => document.getElementById('manual-wind-stored').textContent.includes('200°M')"
     )
-    # the source badge in the top bar says so too
+    # the source badge in the top bar says so too, with the entry's age (02-05 sourceBadge:
+    # "MANUEL 0 min"; plain "MANUEL" only when the core reports no age)
     pg.wait_for_function(
-        "() => [...document.querySelectorAll('#badges .badge')].some(b => b.textContent === "
-        "'MANUEL')"
+        "() => [...document.querySelectorAll('#badges .badge[data-badge=wind]')].some(b => "
+        "/^MANUEL( \\d+ min)?$/.test(b.textContent))"
     )
 
     # settings form: one field saved, version bumped
