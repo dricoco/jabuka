@@ -405,6 +405,73 @@ def idw_regrid(
     return out.reshape(vals.shape[0], lat.size, lon.size)
 
 
+UV_RELATIVE_FLAG = 0x08  # resolutionAndComponentFlags: u/v relative to the grid (GRIB1 + GRIB2)
+ORTHO_TOL_DEG = 5.0  # grid axes farther than this from perpendicular: orientation not trusted
+
+
+def uv_relative_to_grid(g: Any) -> bool | None:
+    """True when the message's u/v (or direction) are relative to the grid axes, False when
+    earth-relative (east/north), None when the file does not say."""
+    v = _key(g, "uvRelativeToGrid")
+    if v is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return bool(int(v))
+    flags = _key(g, "resolutionAndComponentFlags")
+    if flags is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return bool(int(flags) & UV_RELATIVE_FLAG)
+    return None
+
+
+def _axis_bearing(lat_r: np.ndarray, lon_r: np.ndarray, axis: int) -> np.ndarray:
+    """Bearing (rad, clockwise from true north) of increasing index along ``axis``."""
+    dlat = np.gradient(lat_r, axis=axis)
+    dlon = np.gradient(lon_r, axis=axis)
+    return np.arctan2(dlon * np.cos(lat_r), dlat)
+
+
+def grid_x_bearing(lats2d: Any, lons2d: Any) -> np.ndarray:
+    """Bearing (rad, clockwise from TRUE north) of the grid's x axis at every grid point, from the
+    grid's own coordinates (03-REVIEW HI-03). The x axis is the column direction that points
+    east-ish; the y axis must be the x axis turned 90 deg counter-clockwise (every conformal
+    grid: rotated lat/lon, Lambert, polar stereographic, Mercator). ValueError (French) when the
+    orientation cannot be computed reliably."""
+    la = np.asarray(lats2d, dtype=np.float64)
+    lo = np.asarray(lons2d, dtype=np.float64)
+    if la.ndim != 2 or la.shape != lo.shape or min(la.shape) < 2:
+        raise ValueError("vent relatif à la grille : grille non 2-D, orientation impossible")
+    lat_r = np.radians(la)
+    lon_r = np.unwrap(np.radians(lo), axis=1)
+    lon_r = np.unwrap(lon_r, axis=0)
+    alpha = _axis_bearing(lat_r, lon_r, axis=1)
+    beta = _axis_bearing(lat_r, lon_r, axis=0)
+    if not (np.all(np.isfinite(alpha)) and np.all(np.isfinite(beta))):
+        raise ValueError("vent relatif à la grille : coordonnées invalides, orientation impossible")
+    east = float(np.mean(np.sin(alpha)))
+    if abs(east) < 0.5:
+        raise ValueError("vent relatif à la grille : axe x de la grille non orienté est-ouest")
+    if east < 0.0:  # columns stored westwards (iScansNegatively)
+        alpha = alpha + np.pi
+    if float(np.mean(np.cos(beta))) < 0.0:  # rows stored southwards (jScansPositively = 0)
+        beta = beta + np.pi
+    ortho = np.degrees(np.angle(np.exp(1j * (beta - (alpha - np.pi / 2.0)))))
+    if float(np.max(np.abs(ortho))) > ORTHO_TOL_DEG:
+        raise ValueError(
+            "vent relatif à la grille : axes de la grille non perpendiculaires "
+            f"({float(np.max(np.abs(ortho))):.0f}°), orientation non fiable"
+        )
+    return alpha
+
+
+def rotate_grid_uv(u: Any, v: Any, alpha: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Grid-relative (u along x, v along y) -> earth-relative (east, north), with ``alpha`` the
+    bearing of the grid's x axis (y = x turned 90 deg counter-clockwise)."""
+    s, c = np.sin(alpha), np.cos(alpha)
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    return u * s - v * c, u * c + v * s
+
+
 def _target_axes(crop: Crop, lats: np.ndarray, lons: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     lat_lo, lat_hi = max(crop.lat1, float(lats.min())), min(crop.lat2, float(lats.max()))
     lon_lo, lon_hi = max(crop.lon1, float(lons.min())), min(crop.lon2, float(lons.max()))
@@ -417,7 +484,13 @@ def _target_axes(crop: Crop, lats: np.ndarray, lons: np.ndarray) -> tuple[np.nda
 
 def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
     """Any GRIB1/GRIB2 file with 10 m wind (u/v or speed/direction; regular, rotated or projected
-    grid) -> wind Cube (u, v). ValueError (French) when unusable."""
+    grid) -> wind Cube (u, v). ValueError (French) when unusable.
+
+    Wind components (or directions) flagged relative to the grid (``uvRelativeToGrid``, usual on
+    rotated and Lambert grids: WRF, ALADIN, COSMO) are rotated to east/north before the regrid,
+    with the local grid orientation taken from the grid's coordinates (03-REVIEW HI-03). A
+    projected grid whose orientation cannot be computed, or that does not say whether its wind is
+    grid-relative, is refused."""
     pygrib = _pygrib()
     crop = crop or default_crop()
     path = Path(path)
@@ -425,7 +498,8 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
         raise ValueError(f"fichier introuvable : {path}")
     check_size(path)
     found: list[str] = []
-    # t -> kind -> ("reg", arr2d, lat, lon) | ("pts", vals1d, lats1d, lons1d)
+    # t -> kind -> ("reg", arr2d, lat, lon, None) | ("pts", vals1d, lats1d, lons1d, alpha1d|None)
+    # (alpha: bearing of the grid x axis when the wind is grid-relative, see grid_x_bearing)
     recs: dict[int, dict[str, tuple[Any, ...]]] = {}
     run: int | None = None
     sel = 0.3  # deg kept around the crop for projected grids (IDW neighbours at the edges)
@@ -447,12 +521,26 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
                     arr, la, lo = crop_regular(g, crop) or (None, None, None)
                     if arr is None:
                         raise ValueError(f"grille {gtype} illisible")
-                    recs.setdefault(t, {})[kind] = ("reg", arr, la, lo)
+                    # on a lat/lon grid, grid-relative components are east/north already
+                    recs.setdefault(t, {})[kind] = ("reg", arr, la, lo, None)
                     continue
                 try:
                     lats, lons = g.latlons()
                 except Exception as exc:  # noqa: BLE001
                     raise ValueError(f"type de grille non pris en charge : {gtype}") from exc
+                alpha = None
+                if kind != "ws":  # a speed has no direction to rotate
+                    rel = uv_relative_to_grid(g)
+                    if rel is None:
+                        raise ValueError(
+                            f"grille {gtype} : le fichier ne dit pas si le vent est relatif à la "
+                            "grille ou au nord vrai (uvRelativeToGrid) : fichier refusé"
+                        )
+                    if rel:
+                        try:
+                            alpha = grid_x_bearing(lats, lons).ravel()
+                        except ValueError as exc:
+                            raise ValueError(f"grille {gtype} : {exc} : fichier refusé") from exc
                 lats = np.asarray(lats, dtype=np.float64).ravel()
                 lons = _wrap_lon(np.asarray(lons, dtype=np.float64).ravel())
                 vals = np.ma.filled(np.ma.asarray(g.values, dtype=np.float64), np.nan).ravel()
@@ -464,7 +552,14 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
                 )
                 if not keep.any():
                     raise ValueError("la grille du fichier ne recouvre pas la zone de course")
-                recs.setdefault(t, {})[kind] = ("pts", vals[keep], lats[keep], lons[keep])
+                rec = (
+                    "pts",
+                    vals[keep],
+                    lats[keep],
+                    lons[keep],
+                    None if alpha is None else alpha[keep],
+                )
+                recs.setdefault(t, {})[kind] = rec
         finally:
             grbs.close()
     print(f"GRIB {path.name} : champs trouvés : {', '.join(dict.fromkeys(found)) or 'aucun'}")
@@ -483,7 +578,14 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
             raise ValueError("composantes du vent sur des grilles différentes")
         a, b = ru[1], rv[1]
         if from_sd:
-            a, b = uv_from_speed_dir(a, b)
+            a, b = uv_from_speed_dir(a, b)  # grid-relative when the direction is
+            alpha = rv[4]
+        else:
+            if (ru[4] is None) != (rv[4] is None):
+                raise ValueError("composantes du vent : l'une relative à la grille, l'autre non")
+            alpha = ru[4]
+        if alpha is not None:
+            a, b = rotate_grid_uv(a, b, alpha)
         if ru[0] == "reg":
             st.add(t, "u", a, ru[2], ru[3])
             st.add(t, "v", b, ru[2], ru[3])
