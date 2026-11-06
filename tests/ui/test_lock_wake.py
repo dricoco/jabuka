@@ -121,6 +121,34 @@ def test_lock_swallows_everything_and_unlocks_on_a_long_press(page, feeder) -> N
     assert page.bad_responses == [], page.bad_responses
 
 
+def test_stored_lock_covers_the_screen_before_the_modules_load(page, feeder) -> None:
+    """IN-08: after a reload with the lock stored, the overlay is up before lock.js (here never
+    loaded) and the modules: a tap on a tab does nothing. Locking also blurs a focused input."""
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    pg.evaluate("() => localStorage.setItem('jabuka.locked', '1')")
+    pg.route("**/lock.js", lambda route, request: route.abort())
+    pg.reload()
+    pg.wait_for_function("() => document.readyState === 'complete'")
+    assert pg.evaluate("() => !document.getElementById('lock-overlay').hidden")
+    assert pg.evaluate("() => document.body.classList.contains('locked')")
+    pg.mouse.click(*_centre(pg, "button[data-tab=reglages]"))
+    assert pg.locator("#tab-reglages").is_hidden()
+    pg.unroute("**/lock.js")
+
+    # a focused input loses the focus when the helm locks
+    pg.evaluate("() => localStorage.setItem('jabuka.locked', '0')")
+    pg.reload()
+    pg.wait_for_selector("#lock-btn")
+    pg.click("button[data-tab=reglages]")
+    pg.wait_for_selector("#manual-wind-form input[name=twd]")
+    pg.focus("#manual-wind-form input[name=twd]")
+    assert pg.evaluate("() => document.activeElement.name") == "twd"
+    pg.click("#lock-btn")
+    assert _locked(pg)
+    assert pg.evaluate("() => document.activeElement === document.body")
+
+
 def _wake_badge(pg) -> tuple[str, str]:
     return pg.evaluate(
         "() => { const b = document.querySelector('#badges [data-badge=wake]');"

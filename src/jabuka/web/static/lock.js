@@ -140,6 +140,8 @@ export function mount(ctx) {
 
   function apply(next) {
     locked = next;
+    // a focused input would still take keys from a Bluetooth keyboard or the IME (IN-08)
+    if (locked) document.activeElement?.blur?.();
     overlay.hidden = !locked;
     document.body.classList.toggle("locked", locked);
     store(locked);
