@@ -107,7 +107,7 @@ def test_bias_switch_off_and_on(routing_core, fake_pool, rh) -> None:
     _gps_only(core, pos, 1)
     assert fake_pool.requests[-1].base.bias is None
     put({"bias_enabled": True})
-    nav = _gps_only(core, pos, 2)
+    nav = _gps_only(core, pos, 60)  # the helm damping (10 s) follows the restored bias
     assert nav["route"]["bias"]["valid"] is True
     assert nav["wind"]["twd_t"] == pytest.approx(55.0, abs=0.5)
 

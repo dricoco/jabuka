@@ -30,6 +30,7 @@ from typing import Any
 
 from jabuka.common.atomicio import atomic_write_json, load_json_with_bak
 from jabuka.common.clock import Clock
+from jabuka.common.units import kn_to_ms
 from jabuka.core.state import StateStore
 from jabuka.nav.polar import polar_to_json
 from jabuka.route import cycle
@@ -47,6 +48,7 @@ from jabuka.route.advice import (
     cost_text,
     should_replace,
 )
+from jabuka.route.bias import BiasEstimator, BiasParams, BiasSample
 from jabuka.route.fields import Fields, fields_from_pack
 from jabuka.route.frame import DEFAULT_FRAME
 from jabuka.route.polar_grid import normalize_curves
@@ -81,6 +83,9 @@ REASON_NOT_LOADED = "pack de course non chargé"
 REASON_STAY_NO_TACK = "amure inconnue : On reste impossible"
 
 ROUTE_FILE = "route.json"
+BIAS_FILE = "bias.json"
+BIAS_SAVE_S = 60.0  # bias.json at most this often (and on every manual entry, at shutdown)
+_UNSET = object()  # sentinel: nothing observed yet
 ROUTE_FILE_VERSION = 1
 INVALID_ALERT_S = 300.0  # "ROUTE INVALIDE" stays in the alerts this long
 ALERT_INVALID = "ROUTE INVALIDE : "
@@ -200,7 +205,7 @@ class RouterService:
         self.cost_s: float | None = None
         self._cycle_n = 0
         self._force_carry = False
-        self._manual_key: Any = None
+        self._manual_key: Any = _UNSET
         self.manual_version = 0
         self.request_log: deque[tuple[float, tuple[str, ...]]] = deque(maxlen=200)
         self.last_request: CycleRequest | None = None
@@ -212,6 +217,12 @@ class RouterService:
         self._coverage_key: Any = None
         self.coverage_runs = 0
         self.route_file = self.data_dir / ROUTE_FILE
+        # GRIB bias (WIND-06)
+        self.bias_file = self.data_dir / BIAS_FILE
+        self.bias = BiasEstimator()
+        self._bias_prev_t: float | None = None
+        self._bias_saved_mono: float | None = None
+        self._bias_dirty = False
 
     # -- lifecycle ---------------------------------------------------------------------------
     def load_pack(self) -> None:
@@ -255,12 +266,14 @@ class RouterService:
             self.pack_ok, self.pack_reason = False, "pack illisible"
         self.run_coverage()
         self.restore()
+        self.restore_bias()
         if self.pack_ok and self.pool is None:
             self.pool = self._make_pool()
             self.pool.start()
         self.record_health()
 
     async def shutdown(self) -> None:
+        self.save_bias()
         pool, self.pool = self.pool, None
         if pool is not None:
             try:
@@ -354,6 +367,7 @@ class RouterService:
             block["off_route"] = bool(off)
             self._fill_advice(block, now, msg, f)
         self._fill_common(block, now)
+        block["bias"] = self.bias_block(now)
         self._alerts(msg)
         self._write_back(block)
         self.record_health()
@@ -369,9 +383,14 @@ class RouterService:
         entry = getattr(self.nav.manual, "entry", None)
         key = entry.t_set_wall if entry is not None else None
         if key != self._manual_key:
-            if self._manual_key is not None or key is not None:
+            if self._manual_key is _UNSET:
+                pass  # first tick: an entry restored from disk is not a new observation
+            elif self._manual_key is not None or key is not None:
                 self.manual_version += 1
+                if entry is not None:
+                    self._observe_manual(now, msg, entry)
             self._manual_key = key
+        self._observe_bias(now, msg)
         cov_key = (self.nav.course.version, self.pack_version, self._window_key())
         if cov_key != self._coverage_key:
             self.run_coverage()
@@ -447,7 +466,8 @@ class RouterService:
         )
 
     def _bias_eff(self, now: float) -> tuple[float, float] | None:
-        return None
+        p = self._bias_params(now)
+        return p.effective(now) if p is not None else None
 
     def _maybe_request(self, now: float, msg: dict, off_route: bool = False) -> None:
         rs = self._router_settings()
@@ -510,8 +530,154 @@ class RouterService:
         old = self.route.path if self.route is not None else None
         return CycleRequest(base=base, want_forced=want_forced, stay_active=stay, old_path=old)
 
-    def _bias_params(self, now: float) -> Any:
-        return None
+    def _bias_params(self, now: float | None) -> BiasParams | None:
+        """Bias applied to the GRIB now (None when switched off or nothing learned)."""
+        if now is None or not self.nav.settings.bias_enabled:
+            return None
+        return self.bias.params(now)
+
+    # -- GRIB wind and bias (WIND-05/06) -----------------------------------------------------
+    def _grib_raw(self, now: float, lat: float, lon: float, bias: BiasParams | None):
+        """(TWD rad, TWS kn) of the pack wind at (lat, lon, now), None when not covered."""
+        f, pack = self.fields, self.pack
+        if f is None or pack is None or pack.wind is None:
+            return None
+        g = pack.wind
+        if not (g.lat[0] <= lat <= g.lat[-1] and g.lon[0] <= lon <= g.lon[-1]):
+            return None
+        twd, tws_kn = f.wind.at(now, lat, lon, bias)
+        if not (math.isfinite(twd) and math.isfinite(tws_kn)):
+            return None
+        return twd, tws_kn
+
+    def grib_wind_at(self, lat: float, lon: float) -> tuple[float, float] | None:
+        """GRIB-only wind provider for the nav WindPipeline: (TWD rad TRUE, TWS m/s) at the
+        boat and GPS time, bias-corrected (with decay) when the bias is on."""
+        now = self.now()
+        if now is None or not self.pack_ok:
+            return None
+        g = self._grib_raw(now, lat, lon, self._bias_params(now))
+        if g is None:
+            return None
+        return g[0], kn_to_ms(g[1])
+
+    def _current_uv(self, now: float, lat: float, lon: float) -> tuple[float, float] | None:
+        """Pack current at the boat (water motion TOWARDS, m/s), when the pack has one."""
+        f = self.fields
+        if f is None or f.current is None:
+            return None
+        try:
+            x, y = DEFAULT_FRAME.to_xy(lat, lon)
+            u, v = f.current.uv_kn(now, [x], [y])
+            return kn_to_ms(float(u[0])), kn_to_ms(float(v[0]))
+        except Exception:  # noqa: BLE001 - no current correction then
+            return None
+
+    def _observe_bias(self, now: float | None, msg: dict) -> None:
+        """One BiasEstimator sample per tick (the estimator gates it, Pattern 8)."""
+        s = self.nav.settings
+        self.bias.tau_decay_s = float(s.bias_tau_decay_h) * 3600.0
+        if now is None:
+            return
+        dt = 1.0 if self._bias_prev_t is None else max(0.0, now - self._bias_prev_t)
+        self._bias_prev_t = now
+        wind = msg.get("wind") or {}
+        boat = msg.get("boat") or {}
+        lat, lon = boat.get("lat"), boat.get("lon")
+        twd, tws = wind.get("twd_t"), wind.get("tws_kn")
+        bsp, cog = boat.get("bsp_kn"), boat.get("cog_t")
+        grib = None
+        if lat is not None and lon is not None and self.pack_ok:
+            grib = self._grib_raw(now, lat, lon, None)
+        current = self._current_uv(now, lat, lon) if lat is not None and lon is not None else None
+        stale = bool(wind.get("stale")) or lat is None or bsp is None or twd is None or tws is None
+        sample = BiasSample(
+            t=now,
+            dt=dt,
+            source=str(wind.get("source") or "NONE"),
+            stale=stale,
+            twd_meas=math.radians(twd) if twd is not None else 0.0,
+            tws_meas=kn_to_ms(tws) if tws is not None else 0.0,
+            twd_grib=grib[0] if grib is not None else None,
+            tws_grib=kn_to_ms(grib[1]) if grib is not None else None,
+            bsp=kn_to_ms(bsp) if bsp is not None else 0.0,
+            cog=math.radians(cog) if cog is not None else None,
+            in_zone=bool(wind.get("in_zone")),
+            last_tack_t=self.detector.last_tack_t,
+            enabled=bool(s.bias_enabled),
+            current_uv=current,
+        )
+        before = self.bias.status(now)["valid"]
+        self.bias.update(sample)
+        if self.bias.status(now)["valid"] != before:
+            self._bias_dirty = True
+        mono = self.clock.monotonic()
+        if self._bias_dirty or (
+            self._bias_saved_mono is None or mono - self._bias_saved_mono >= BIAS_SAVE_S
+        ):
+            if self.bias.raw() is not None or self._bias_dirty:
+                self.save_bias()
+            self._bias_saved_mono = mono
+
+    def _observe_manual(self, now: float | None, msg: dict, entry: Any) -> None:
+        """A manual TRUE wind entry is one bias observation against the GRIB at the boat."""
+        boat = msg.get("boat") or {}
+        lat, lon = boat.get("lat"), boat.get("lon")
+        if now is None or lat is None or lon is None or not self.pack_ok:
+            return
+        g = self._grib_raw(now, lat, lon, None)
+        if g is None:
+            return
+        self.bias.observe_manual(
+            now,
+            math.radians(float(entry.twd_t_deg)),
+            kn_to_ms(float(entry.tws_kn)),
+            g[0],
+            kn_to_ms(g[1]),
+        )
+        self._bias_dirty = True
+
+    def bias_block(self, now: float | None) -> dict:
+        s = self.nav.settings
+        out = {
+            "enabled": bool(s.bias_enabled),
+            "valid": False,
+            "state": None,
+            "dir_deg": None,
+            "ratio": None,
+            "text": None,
+            "reason": None,
+        }
+        if now is None:
+            return out
+        st = self.bias.status(now)
+        out["state"] = st["state"]
+        out["reason"] = st["reason"]
+        if st["valid"] and st["dir_deg"] is not None and st["ratio"] is not None:
+            d, k = float(st["dir_deg"]), float(st["ratio"])
+            out.update(valid=True, dir_deg=_r(d, 1), ratio=_r(k, 3))
+            out["text"] = f"{round(d):+d}° ×{k:.2f}"
+        return out
+
+    def save_bias(self) -> None:
+        """Atomic <data-dir>/bias.json (never raises)."""
+        try:
+            self.bias_file.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(self.bias_file, self.bias.to_json())
+            self._bias_dirty = False
+        except (OSError, TypeError, ValueError):
+            log.exception("bias.json write failed")
+
+    def restore_bias(self) -> None:
+        raw = load_json_with_bak(self.bias_file, None)
+        if raw is None:
+            return
+        try:
+            est = BiasEstimator.from_json(raw)
+        except (ValueError, TypeError):
+            log.warning("bias.json ignored (invalid)")
+            return
+        self.bias = est
 
     # -- worker ------------------------------------------------------------------------------
     def _submit(self, req: CycleRequest, forced: bool, reasons: tuple[str, ...]) -> None:
@@ -938,6 +1104,7 @@ class RouterService:
                 "dir_deg": None,
                 "ratio": None,
                 "text": None,
+                "reason": None,
             },
             "pack": self._pack_info(),
             "health": self._pool_health(),
@@ -1011,6 +1178,8 @@ class RouterService:
             [
                 {"path": "nav.route.countdown", "value": block.get("countdown_s"), "unit": "s"},
                 {"path": "nav.route.cost", "value": block.get("cost_s"), "unit": "s"},
+                {"path": "nav.bias.dir", "value": block["bias"].get("dir_deg"), "unit": "deg"},
+                {"path": "nav.bias.ratio", "value": block["bias"].get("ratio"), "unit": None},
             ],
             self.clock.monotonic(),
         )

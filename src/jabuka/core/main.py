@@ -114,6 +114,8 @@ class CoreContext:
         state = StateStore(clock)
         hub = Hub()
         nav = NavService(state, clock, data_dir, racepack_dir)
+        router = RouterService(state, clock, nav, hub, data_dir, racepack_dir)
+        nav.set_grib_provider(router.grib_wind_at)  # GPS + GRIB-only wind (WIND-05)
         return cls(
             clock=clock,
             state=state,
@@ -121,7 +123,7 @@ class CoreContext:
             data_dir=data_dir,
             nav=nav,
             racepack_dir=racepack_dir,
-            router=RouterService(state, clock, nav, hub, data_dir, racepack_dir),
+            router=router,
             bus_log=bus,
             derived=DerivedLogger(logs / "derived", clock),
             events_log=events_log,

@@ -172,7 +172,8 @@
    "state": null,
    "dir_deg": null,
    "ratio": null,
-   "text": null
+   "text": null,
+   "reason": null
   },
   "pack": {
    "ok": false,

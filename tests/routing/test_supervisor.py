@@ -41,6 +41,9 @@ def _reasons(core) -> list[tuple[str, ...]]:
 
 def test_timer_fires_at_the_cadence(routing_core, fake_pool, rh) -> None:
     core, pos = _start(routing_core, fake_pool, rh)
+    # the GRIB bias would become valid after 300 s of steady sailing and fire its own trigger
+    v = core.client.get("/api/settings").json()["version"]
+    core.client.put("/api/settings", json={"base_version": v, "patch": {"bias_enabled": False}})
     n = len(fake_pool.requests)
     fake_pool.eta_old_now = None  # identical routes: kept
     _run(core, pos, 297)
