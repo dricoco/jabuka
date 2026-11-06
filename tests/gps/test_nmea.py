@@ -127,3 +127,15 @@ def test_fake_gpsd_cli_serves_nmea(free_tcp_port: int) -> None:
     assert any(o["class"] == "DEVICES" for o in objs)
     tpvs = [o for o in objs if o["class"] == "TPV"]
     assert tpvs[0]["mode"] == 3 and "time" in tpvs[0]
+
+
+def test_iso_time_never_rounds_into_a_four_digit_fraction() -> None:
+    """IN-06: 59.9996 s used to produce ":59.1000Z", read back as 59.1 s."""
+    from datetime import datetime
+
+    from jabuka.ingest.nmea import _iso_time
+
+    out = _iso_time("131126", "185959.9996")
+    assert out == "2026-11-13T18:59:59.999Z"
+    assert datetime.fromisoformat(out).second == 59
+    assert _iso_time("131126", "185959.5") == "2026-11-13T18:59:59.500Z"

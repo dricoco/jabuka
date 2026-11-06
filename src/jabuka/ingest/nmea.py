@@ -74,7 +74,7 @@ def _iso_time(ddmmyy: str, hhmmss: str) -> str | None:
     if sec is None or not (1 <= dd <= 31 and 1 <= mm <= 12 and h < 24 and mi < 60 and sec < 61):
         return None
     whole = int(sec)
-    ms = int(round((sec - whole) * 1000))
+    ms = min(999, int(round((sec - whole) * 1000)))  # 59.9996 must not become ".1000" (59.1 s)
     return f"{year:04d}-{mm:02d}-{dd:02d}T{h:02d}:{mi:02d}:{whole:02d}.{ms:03d}Z"
 
 
