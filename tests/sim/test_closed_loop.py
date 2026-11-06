@@ -148,6 +148,7 @@ def test_closed_loop_beats_tacks_rounds_and_advances(tmp_path: Path) -> None:
                         "tack": lay.get("tack"),
                         "state": lay.get("state"),
                         "countdown": lay.get("countdown_s"),
+                        "cog": (nav.get("boat") or {}).get("cog_t"),
                         "idx": nav["course"]["active_idx"],
                     }
                 )
@@ -178,12 +179,20 @@ def test_closed_loop_beats_tacks_rounds_and_advances(tmp_path: Path) -> None:
         assert banners[0]["text"] == "Marque suivante : Jabuka — Annuler"
         assert banners[0]["undo_until_s"] > banners[0]["t"]
 
-        # the countdown decreases on each straight tack segment
+        # the countdown decreases on each straight tack segment. It runs along the actual track
+        # (02-03), so "straight" means same tack AND same COG: when the helm first steers from the
+        # synth's start TWA (45) up to the core's target (~38), the track turns ~7 deg and the
+        # countdown rightly jumps (~664 s -> ~716 s); that is a new segment, not a regression.
+        def same_leg(a: dict, b: dict) -> bool:
+            if a["tack"] != b["tack"] or a["cog"] is None or b["cog"] is None:
+                return False
+            return abs((b["cog"] - a["cog"] + 180.0) % 360.0 - 180.0) <= 1.0
+
         segments: list[list[dict]] = []
         for s in samples:
             if s["countdown"] is None or s["state"] != "normal":
                 continue
-            if segments and segments[-1][-1]["tack"] == s["tack"]:
+            if segments and same_leg(segments[-1][-1], s):
                 segments[-1].append(s)
             else:
                 segments.append([s])
