@@ -45,6 +45,7 @@ def _valid_tree(root: Path) -> Path:
     events.write_json({"type": "event", "n": 1, "label": "mark"}, fsync_now=True)
     for lg in (raw, bus, gps, derived, events):
         lg.close()
+    (root / "state").mkdir()
     atomic_write_json(root / "state" / "settings.json", {"awa_sign": 1})
     return logs
 
