@@ -11,3 +11,4 @@ build/
 *.egg-info/
 deploy/wheelhouse/
 deploy/secrets.env
+.claude/worktrees/
