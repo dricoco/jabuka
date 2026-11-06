@@ -142,14 +142,54 @@ def test_source_change_resets_filters() -> None:
     manual = ManualWind(
         twd_t_deg=250.0, tws_kn=8.0, ref_entered="T", twd_entered=250.0, t_set_wall=0.0
     )
-    sol = p.update({W.POSITION: pos_row(*FAR)}, 30.0, manual=manual, t_wall=10.0)
+    # the live wind is held LIVE_HOLD_S (5 s) after its last sample (WR-02), then MANUEL
+    sol = p.update({W.POSITION: pos_row(*FAR)}, 34.0, manual=manual, t_wall=10.0)
+    assert sol.source == "LIVE" and D(sol.twd_lay) == pytest.approx(161.0, abs=0.01)
+    sol = p.update({W.POSITION: pos_row(*FAR)}, 35.0, manual=manual, t_wall=10.0)
     assert sol.source == "MANUEL"
     assert D(sol.twd) == pytest.approx(250.0)
     assert D(sol.twd_lay) == pytest.approx(250.0)
     assert ms_to_kn(sol.tws) == pytest.approx(8.0)
     # and back to LIVE at once
-    sol = p.update(computed_inputs(twd_deg=161.0), 31.0, manual=manual, t_wall=11.0)
+    sol = p.update(computed_inputs(twd_deg=161.0), 36.0, manual=manual, t_wall=11.0)
     assert sol.source == "LIVE" and D(sol.twd_lay) == pytest.approx(161.0, abs=0.01)
+
+
+def test_live_live_bg_flapping_keeps_the_layline_filter() -> None:
+    """WR-02: BSP missing every other tick flips LIVE <-> LIVE_BG; both measure the same wind,
+    so the 60 s layline filter is not re-seeded with a raw sample at each flip."""
+    p = WindPipeline(Settings(tau_layline_s=60.0))
+    for k in range(30):
+        p.update(computed_inputs(twd_deg=160.0) | instrument_rows(44.0, 12.0, 160.0), float(k))
+    sources = set()
+    sol = None
+    for k in range(30, 40):
+        inp = computed_inputs(twd_deg=180.0) | instrument_rows(64.0, 12.0, 180.0)
+        if k % 2:
+            del inp[W.BSP]  # computed wind unavailable this tick: LIVE_BG
+        sol = p.update(inp, float(k))
+        sources.add(sol.source)
+    assert sources == {"LIVE", "LIVE_BG"}
+    # 10 s after a 20 deg shift the 60 s filter has moved ~15 %, not jumped to 180
+    assert D(sol.twd_lay) == pytest.approx(160.0 + 20.0 * (1 - math.exp(-10 / 60)), abs=1.0)
+
+
+def test_brief_live_dropout_is_held_not_reset() -> None:
+    """WR-02: every live input missing for a couple of seconds keeps the live source and its
+    filtered values (no MANUEL flip and no filter reset)."""
+    p = WindPipeline(Settings(tau_layline_s=60.0))
+    manual = ManualWind(
+        twd_t_deg=250.0, tws_kn=8.0, ref_entered="T", twd_entered=250.0, t_set_wall=0.0
+    )
+    for k in range(30):
+        p.update(computed_inputs(twd_deg=160.0), float(k), manual=manual, t_wall=0.0)
+    lay = p.last.twd_lay
+    for k in (30, 31, 32):
+        sol = p.update({W.POSITION: pos_row(*FAR)}, float(k), manual=manual, t_wall=0.0)
+        assert sol.source == "LIVE" and sol.twd_lay == lay and sol.alerts == []
+    sol = p.update(computed_inputs(twd_deg=200.0), 33.0, manual=manual, t_wall=0.0)
+    assert sol.source == "LIVE"
+    assert D(sol.twd_lay) == pytest.approx(160.0 + 40.0 * (1 - math.exp(-4 / 60)), abs=1.0)
 
 
 # -- sources --------------------------------------------------------------------------------------
