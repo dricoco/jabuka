@@ -143,6 +143,15 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
 .route-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px 18px; }
 .route-item { font-size: min(3vh, 3.6vw); font-weight: 600; color: var(--dim); }
 .route-item.warn { color: var(--warn); }
+/* "ON RESTE": big, full band width, wet-thumb sized; active = filled (day: dark with white text,
+   night: red with black text, both from the theme properties) */
+button.stay-btn {
+  display: block; width: 100%; min-height: 64px; margin: 4px 0 2px; padding: 0 12px;
+  font-size: 28px; font-weight: 900; letter-spacing: 0.04em;
+  color: var(--fg); background: transparent;
+  border: 3px solid var(--fg); border-radius: 10px;
+}
+button.stay-btn.active { color: var(--bg); background: var(--fg); }
 
 /* map orientation buttons, over the map between the bands */
 .map-ctrls {

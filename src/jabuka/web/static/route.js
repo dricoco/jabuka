@@ -4,12 +4,15 @@
 //     keep it): the route line, its tack points and the next tack point (followed from
 //     nav.route.tack_lat/lon every second). Hidden while the route is not valid.
 //   - Barre tab: #route-band under the helm countdown with the route state, the cost of not
-//     tacking, the route age, the complementary target and the GRIB bias.
+//     tacking, the route age, the complementary target and the GRIB bias, and the big
+//     "ON RESTE" button (POST /api/route/stay {active}). The button does nothing while the
+//     screen is locked: lock.js's overlay swallows the taps, and the handler also checks
+//     body.locked / the bus "lock" event (a scripted or keyboard click cannot get through).
 // The route message comes from the WS (bus "route", also sent on connect); whenever
 // nav.route.version differs from the drawn one, GET /api/route heals a missed message.
 // Every string goes through textContent (T-03-06-01).
 import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
-import { nextTackData, routeBand, routeData, routeLayers } from "./route_logic.js";
+import { STR, nextTackData, routeBand, routeData, routeLayers, stayButton } from "./route_logic.js";
 
 const $ = (id) => document.getElementById(id);
 const EMPTY = { type: "FeatureCollection", features: [] };
@@ -52,6 +55,8 @@ function buildBand(section) {
     el("span", { id: "route-bias", class: "route-item", hidden: "" }),
   );
   band.append(row);
+  // "ON RESTE": full band width, >= 64 px high (app.css)
+  band.append(el("button", { type: "button", id: "stay-button", class: "stay-btn", disabled: "" }, STR.stay));
   const anchor = $("helm-layline-dist") ?? $("helm-countdown");
   if (anchor) anchor.after(band);
   else (section ?? $("tab-barre"))?.append(band);
@@ -73,9 +78,53 @@ export function renderBand(nav) {
   return v;
 }
 
+const FLASH_MS = 6000; // a refused "On reste" is said in the status line this long
+
 export function mount(ctx) {
   buildBand(ctx.section);
   let nav = ctx.latest?.("nav") ?? null;
+  let locked = document.body.classList.contains("locked");
+  let pending = false; // a POST in flight: the button stays disabled until the answer
+  let flash = null; // {text, until}
+  const button = $("stay-button");
+
+  const renderButton = () => {
+    if (!button) return;
+    const v = stayButton(nav?.route);
+    if (button.textContent !== v.label) button.textContent = v.label;
+    button.classList.toggle("active", v.active);
+    button.setAttribute("aria-pressed", v.active ? "true" : "false");
+    button.disabled = pending || v.disabled;
+  };
+
+  const render = () => {
+    renderBand(nav);
+    if (flash && performance.now() < flash.until) setLine($("route-status"), flash.text, "bad");
+    else flash = null;
+    renderButton();
+  };
+
+  button?.addEventListener("click", async () => {
+    if (locked || document.body.classList.contains("locked") || pending) return;
+    const v = stayButton(nav?.route);
+    if (v.disabled) return;
+    pending = true;
+    renderButton();
+    try {
+      // the answer is the fresh nav message, with the new stay state
+      const fresh = await ctx.api.post("/api/route/stay", { active: !v.active });
+      if (fresh && typeof fresh === "object" && fresh.route) nav = fresh;
+    } catch (e) {
+      const why = e?.body?.error ?? e?.body?.detail ?? e?.message ?? "erreur";
+      flash = { text: `${STR.stayRefused}${typeof why === "string" ? why : "erreur"}`, until: performance.now() + FLASH_MS };
+    } finally {
+      pending = false;
+      render();
+    }
+  });
+  ctx.bus.addEventListener("lock", (ev) => {
+    locked = Boolean(ev.detail);
+  });
   let ready = false; // overlay registered on the map
   let drawn = 0; // version of the drawn route line
   let shown = null; // overlay visibility applied
@@ -135,7 +184,7 @@ export function mount(ctx) {
   ctx.bus.addEventListener("nav", (ev) => {
     nav = ev.detail;
     try {
-      renderBand(nav);
+      render();
     } catch (e) {
       console.error("route band", e);
     }
@@ -143,10 +192,8 @@ export function mount(ctx) {
   });
   ctx.bus.addEventListener("route", (ev) => draw(ev.detail));
   draw(ctx.latest?.("route"));
-  if (nav) {
-    renderBand(nav);
-    sync();
-  }
+  render();
+  if (nav) sync();
 
   // the map is optional: the band works without it, the overlay comes up whenever it loads
   (async () => {
