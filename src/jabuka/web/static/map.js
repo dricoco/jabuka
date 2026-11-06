@@ -10,6 +10,10 @@
 //   setOverlayData(sourceName, geojson)             keeps the data across style switches
 //   setOverlayVisible(id, bool)
 //   setTheme("day" | "night")                       re-styles, re-adding every overlay
+//   setMapPadding({top, right, bottom, left})       px of the map hidden under the UI (quick 002:
+//                                                   the helm column); the camera centre, easeTo
+//                                                   and getCenter use the visible part. Kept for
+//                                                   a map that loads later; no-op when unchanged
 //   absolutizeStyle(style, origin)                  MapLibre rejects relative URLs (Pitfall 2)
 //   storedTheme()                                   localStorage "jabuka.theme", default "day"
 // window.jabuka.map is set once the map has loaded (debug, tests).
@@ -20,9 +24,14 @@
 
 const THEME_KEY = "jabuka.theme";
 const CENTER = [15.7, 43.45];
+// The race area (14.9-16.4 E, 42.7-44.1 N) plus a margin: MapLibre keeps the whole canvas inside
+// maxBounds, padding included, so without it the helm column's padding (quick 002) would stop
+// "Centrer" from putting a boat near the edge of the area in the middle of the visible map at
+// CENTRE_ZOOM (up to ~0.9° of longitude beside a 640 px column, ~0.5° of latitude above a
+// portrait top area). Outside the tiles the map is plain water.
 const BOUNDS = [
-  [14.9, 42.7],
-  [16.4, 44.1],
+  [13.9, 42.0],
+  [17.4, 44.8],
 ];
 const LOAD_TIMEOUT_MS = 30000;
 const GLYPHS = "/glyphs/{fontstack}/{range}.pbf";
@@ -178,6 +187,25 @@ export function setOverlayVisible(id, visible) {
   }
 }
 
+// -- padding (quick 002) ------------------------------------------------------------------------
+let wantedPadding = { top: 0, right: 0, bottom: 0, left: 0 };
+
+const clampPx = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.round(v) : 0);
+
+function applyPadding() {
+  if (!mapInstance) return;
+  const cur = mapInstance.getPadding();
+  const p = wantedPadding;
+  if (cur.top === p.top && cur.right === p.right && cur.bottom === p.bottom && cur.left === p.left) return;
+  mapInstance.setPadding(p);
+}
+
+export function setMapPadding(padding) {
+  const p = padding ?? {};
+  wantedPadding = { top: clampPx(p.top), right: clampPx(p.right), bottom: clampPx(p.bottom), left: clampPx(p.left) };
+  applyPadding();
+}
+
 // -- map ----------------------------------------------------------------------------------------
 export function getMap() {
   return mapPromise;
@@ -229,6 +257,7 @@ export function ensureMap(container, opts = {}) {
       });
     });
     mapInstance = map;
+    applyPadding();
     for (const [id, def] of overlays) addOverlay(map, id, def);
     globalThis.jabuka = Object.assign(globalThis.jabuka ?? {}, { map, racepack });
     // a theme toggled while the map was loading (WR-04)

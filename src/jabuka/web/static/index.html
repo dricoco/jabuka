@@ -32,26 +32,29 @@
 
   <main>
     <section id="tab-barre" class="tab active" aria-label="Barre" data-i18n-aria="tab.barre">
-      <div id="helm-top" class="band">
-        <div class="primary-box">
-          <div id="primary-label" class="label">—</div>
-          <div class="primary-line"><span id="primary">—</span><span id="primary-unit" class="unit"></span></div>
+      <!-- quick 002: the helm in a column (landscape: left third, map on the right two thirds;
+           portrait: one top area, map below). Block 1 steer, block 2 route/tack (+ #route-band and
+           ON RESTE from route.js), block 3 the rest. -->
+      <div id="helm-col">
+        <div id="helm-steer" class="helm-block">
+          <div class="primary-box">
+            <div id="primary-label" class="label">—</div>
+            <div class="primary-line"><span id="primary">—</span><span id="primary-unit" class="unit"></span></div>
+          </div>
+          <div class="cell dev-cell"><span class="label" data-i18n="helm.deviation">Écart</span><span id="helm-deviation" class="num">—</span></div>
         </div>
-        <div class="secondary">
-          <div class="cell"><span class="label" data-i18n="helm.deviation">Écart</span><span id="helm-deviation" class="num">—</span></div>
-          <div class="cell"><span class="label" data-i18n="helm.speedTarget">Vitesse / cible</span><span id="helm-speed" class="num">—</span></div>
+        <div id="helm-route" class="helm-block">
+          <div id="helm-countdown" class="countdown"></div>
+        </div>
+        <div id="helm-rest" class="helm-block">
+          <div class="cell"><span class="label" data-i18n="helm.bspTarget">BSP / cible</span><span id="helm-speed" class="num">—</span></div>
           <div class="cell"><span class="label" data-i18n="helm.polar">Polaire</span><span id="helm-pct" class="num">— %</span></div>
-        </div>
-      </div>
-      <div id="helm-bottom" class="band">
-        <div id="helm-countdown" class="countdown"></div>
-        <div class="secondary">
-          <div class="cell"><span class="label" data-i18n="helm.mark">Marque</span><span id="helm-mark" class="num">—</span></div>
+          <div class="cell mark-cell wide"><span class="label" data-i18n="helm.mark">Marque</span><span id="helm-mark" class="num">—</span></div>
           <div class="cell"><span class="label" data-i18n="helm.distance">Distance</span><span id="helm-dtw" class="num">—</span></div>
           <div class="cell"><span class="label" data-i18n="helm.time">Temps</span><span id="helm-ttw" class="num">—</span></div>
           <div class="cell"><span class="label" data-i18n="helm.bearing">Relèvement</span><span id="helm-btw" class="num">—</span></div>
+          <div class="cell other-cell"><span id="helm-other" class="num other"></span></div>
         </div>
-        <div id="helm-other" class="other"></div>
       </div>
     </section>
 
