@@ -658,7 +658,9 @@ path.write_bytes(g.tostring())
 | A7 | Importing numpy in the core costs ~1 s and +10–20 MB RSS on the Pi | Pattern 10 | Slightly slower core start. Alternatively a pure-Python scalar `at()` |
 | A8 | Organiser forecast will be a regular GRIB1/2 with 10 m wind | Pattern 2 | Clear error message; fall back to ICON-EU |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Resolution (2026-11-07, plans 03-01..03-06): bias estimator lives in route/bias.py (03-04), wired into the wind pipeline in 03-05; rounding sides and start/finish come from the Phase 2 course model (confirm at SI briefing — human item); cost horizon = current leg (cost_horizon="leg"), whole course only if the Pi bench shows headroom; polar = Phase 2 placeholder ORC X-35 polar until the owner provides the real one (human item).
 
 1. **Where does the bias estimator live relative to the Phase 2 wind pipeline?** We know Phase 2 owns `nav/wind.py` (VectorEma, arbitration) and `nav/tacks.py`. It is unclear whether Phase 2 exposes a tack-event stream and a "steady" signal. Recommendation: Phase 3 adds `bias.py` beside the Phase 2 wind module and consumes the tack detector. If Phase 2 has not shipped the detector, Phase 3 implements it in `nav/tacks.py` (Pattern 11).
 2. **Rounding sides and the start/finish line** are not in the NoR (Phase 2 research). Phase 3 consumes whatever the Phase 2 course model holds. Rounding radii must clear the mask (validated on load).
