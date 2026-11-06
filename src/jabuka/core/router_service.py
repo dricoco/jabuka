@@ -352,6 +352,7 @@ class RouterService:
 
     async def shutdown(self) -> None:
         self.save_bias()
+        self._pool_wanted = False  # the watchdog must not recreate a pool after shutdown
         pool, self.pool = self.pool, None
         if pool is not None:
             try:

@@ -453,6 +453,25 @@ def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
     pools[0].hold = False
 
 
+def test_watchdog_never_recreates_a_pool_after_shutdown(routing_core, fake_pool, rh) -> None:
+    made = []
+
+    def factory():
+        made.append(rh.FakePool())
+        return made[-1]
+
+    core = routing_core(pool_factory=factory)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 157.0)
+    core.tick(1.0)
+    assert len(made) == 1
+    core.call(core.router.shutdown)
+    for _ in range(40):  # past POOL_RETRY_S
+        core.sail(*pos, 157.0)
+        core.tick(1.0)
+    assert core.router.pool is None and len(made) == 1
+
+
 def test_pool_fault_raises_a_routing_health_alert(routing_core, fake_pool, rh) -> None:
     core, pos = _start(routing_core, fake_pool, rh)
     fake_pool.stats_d.update(faults=1, last_fault="OSError(12, 'Cannot allocate memory')")
