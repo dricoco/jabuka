@@ -181,6 +181,39 @@ def test_map_renders_offline_with_overlays(page, feeder) -> None:
     assert "CARTE INDISPONIBLE" not in pg.locator("#badges").inner_text()
 
 
+def test_a_failed_map_load_is_retried(page, feeder) -> None:
+    """IN-02: a first map load that fails (here the style fetch, like a load timeout on a busy
+    Pi) is torn down and retried: the map and its overlays come up without a page reload."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    hits: list[str] = []
+
+    def flaky(route, request) -> None:
+        hits.append(request.url)
+        if len(hits) == 1:
+            route.abort()
+        else:
+            route.continue_()
+
+    pg.route("**/style-day.json", flaky)
+    pg.goto(page.base_url + "/")
+    pg.wait_for_function(
+        "() => document.getElementById('badges').textContent.includes('CARTE INDISPONIBLE')",
+        timeout=15000,
+    )
+    pg.wait_for_function("() => window.jabuka && window.jabuka.map", timeout=30000)
+    pg.wait_for_function(
+        "() => !document.getElementById('badges').textContent.includes('CARTE INDISPONIBLE')",
+        timeout=10000,
+    )
+    pg.wait_for_function(
+        f"async () => {{ const t = await ({SOURCE_JS})('laylines'); return t && t.length === 2; }}",
+        timeout=15000,
+    )
+    assert len(hits) >= 2
+    assert pg.evaluate("() => document.querySelectorAll('#map canvas').length") == 1
+
+
 def test_security_headers_do_not_break_the_app(page, feeder) -> None:
     """IN-01: the Content-Security-Policy is served and the app runs under it: map (blob:
     workers), WebSocket, the Diag iframe and the wake-lock video, with no CSP violation."""

@@ -351,7 +351,9 @@ async function setupWake() {
 }
 
 // The map is optional for the helm: without WebGL (or MapLibre) the numbers keep updating and a
-// badge says so (the Leaflet fallback stays deferred).
+// badge says so (the Leaflet fallback stays deferred). Any other failure (load timeout on a busy
+// Pi, style fetch error) is retried with a back-off (IN-02).
+let mapRetryMs = 5000;
 async function loadMap() {
   try {
     const m = await import("./map.js");
@@ -363,6 +365,10 @@ async function loadMap() {
   } catch (e) {
     console.error("map unavailable", e);
     badge("map", "CARTE INDISPONIBLE", "bad");
+    if (e?.message !== "webgl") {
+      setTimeout(loadMap, mapRetryMs);
+      mapRetryMs = Math.min(mapRetryMs * 2, 60000);
+    }
   }
 }
 

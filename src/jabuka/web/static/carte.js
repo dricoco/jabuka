@@ -11,7 +11,7 @@
 // - #banner (every tab): "Marque suivante : <nom>" with a 48 px "Annuler" while the nav message's
 //   t_mono is before undo_until_s; "ARRIVÉE — <nom>" without Annuler.
 // DOM built with textContent only: mark names are data typed on another tablet (T-02-04-02).
-import { ensureMap, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
+import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
 
 const SIDE = { port: "bâbord", stbd: "tribord", none: "" };
 const SIDES = [
@@ -600,6 +600,10 @@ export function mount(ctx) {
     .then(wireMap)
     .catch(() => {
       hint.textContent = "Carte indisponible : édition par la liste";
+      mapReady().then((m) => {
+        hint.textContent = "Toucher la carte pour ajouter une marque";
+        wireMap(m); // a later retry of app.js succeeded (IN-02)
+      });
     });
 
   // -- banner (all tabs) -----------------------------------------------------------------------

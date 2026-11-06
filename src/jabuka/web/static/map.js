@@ -4,6 +4,8 @@
 //   ensureMap(container, {theme}) -> Promise<Map>   idempotent singleton; rejects Error("webgl")
 //                                                   when WebGL/MapLibre is unavailable
 //   getMap() -> Promise<Map> | null
+//   mapReady() -> Promise<Map>                      resolves once a map has loaded, even after a
+//                                                   failed first attempt (never rejects)
 //   registerOverlay(id, {sources: {name: spec}, layers: (theme) => LayerSpec[]})
 //   setOverlayData(sourceName, geojson)             keeps the data across style switches
 //   setOverlayVisible(id, bool)
@@ -30,6 +32,10 @@ let mapInstance = null;
 let currentTheme = null;
 let racepack = { tiles: false, seamarks: false, coastline: false };
 const overlays = new Map(); // id -> {sources, layers, visible}
+let readyResolve = null;
+const ready = new Promise((resolve) => {
+  readyResolve = resolve;
+});
 
 export function storedTheme() {
   try {
@@ -177,9 +183,16 @@ export function getMap() {
   return mapPromise;
 }
 
+export function mapReady() {
+  return ready;
+}
+
+// A failed attempt (load timeout on a busy Pi, style fetch error) is torn down and forgotten
+// (IN-02): the next ensureMap() call retries instead of returning the same rejection forever.
 export function ensureMap(container, opts = {}) {
   if (mapPromise) return mapPromise;
-  mapPromise = (async () => {
+  let built = null;
+  const attempt = (async () => {
     const gl = globalThis.maplibregl;
     if (!gl || typeof gl.Map !== "function") throw new Error("webgl");
     if (typeof gl.supported === "function" && !gl.supported()) throw new Error("webgl");
@@ -206,6 +219,7 @@ export function ensureMap(container, opts = {}) {
       console.error("map construction failed", e);
       throw new Error("webgl");
     }
+    built = map;
     map.on("error", (ev) => console.warn("map:", ev?.error?.message ?? ev));
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("map load timeout")), LOAD_TIMEOUT_MS);
@@ -219,9 +233,20 @@ export function ensureMap(container, opts = {}) {
     globalThis.jabuka = Object.assign(globalThis.jabuka ?? {}, { map, racepack });
     // a theme toggled while the map was loading (WR-04)
     if (wantedTheme !== null && wantedTheme !== currentTheme) setTheme(wantedTheme).catch(() => {});
+    readyResolve(map);
     return map;
   })();
-  return mapPromise;
+  const p = attempt.catch((e) => {
+    try {
+      built?.remove(); // frees the WebGL context of the half-built map
+    } catch {
+      /* already gone */
+    }
+    if (mapPromise === p) mapPromise = null;
+    throw e;
+  });
+  mapPromise = p;
+  return p;
 }
 
 // Theme switches are serialized and only the latest request is applied (WR-04): a fast double
