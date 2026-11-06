@@ -131,7 +131,7 @@ def test_build_mask_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     near = f.to_xy(42.940 - 60 / NM_M / 60, 15.10)
     assert lm.raw_points_clear(*near)[0] and not lm.points_clear(*near)[0]
     assert lm.points_clear(*f.to_xy(42.965, 15.10))[0]
-    assert land.check(tmp_path) == 0
+    assert land.check(tmp_path) == 1  # loads fine; the mini grid cannot hold the course points
 
 
 def _arrays(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
@@ -184,9 +184,16 @@ def test_load_rejects_non_npz(tmp_path: Path) -> None:
 
 def test_check_reports_cell_and_osm_base(tmp_path, monkeypatch, capsys) -> None:
     _build_mini(tmp_path, monkeypatch)
-    assert land.main(["check", str(tmp_path / "landmask.npz")]) == 0
+    # the mini grid does not cover the course: metadata first, then the failing points
+    assert land.main(["check", str(tmp_path / "landmask.npz")]) == 1
     out = capsys.readouterr().out
     assert "cellule 25 m" in out and "2026-01-01T00:00:00Z" in out
-    # tampered file: the sidecar sha256 no longer matches
+    assert "sha256 conforme" in out and "vodice_start" in out and "hors de la grille" in out
+
+
+def test_check_rejects_a_tampered_mask(tmp_path, capsys) -> None:
+    fixture = MINI.parents[1] / "landmask_race_25m.npz"
+    (tmp_path / "landmask.npz").write_bytes(fixture.read_bytes())
     (tmp_path / "landmask.json").write_text(json.dumps({"sha256": "0" * 64}))
     assert land.main(["check", str(tmp_path)]) == 1
+    assert "sha256 du masque différent" in capsys.readouterr().out

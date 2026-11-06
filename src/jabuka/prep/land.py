@@ -30,7 +30,7 @@ from shapely.ops import linemerge, polygonize, unary_union
 
 from jabuka.common.atomicio import atomic_write_bytes, atomic_write_json
 from jabuka.route.frame import DEFAULT_FRAME, NM_M, RACE_BBOX, Frame
-from jabuka.route.landmask import LandMask
+from jabuka.route.landmask import LandMask, compute_geofield, flood_reachable
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "jabuka-prep/0.1 (offline race navigation)"
@@ -611,6 +611,55 @@ def build_mask(
 
 
 # ------------------------------------------------------------------------------ check
+EARTH_RADIUS_NM = 3440.065
+
+
+def _offset(lat: float, lon: float, dist_nm: float, bearing_deg: float) -> tuple[float, float]:
+    """Point dist_nm from (lat, lon) on a true bearing (great circle; prep must not import
+    jabuka.nav, which Phase 2 is still building)."""
+    d = dist_nm / EARTH_RADIUS_NM
+    b = math.radians(bearing_deg)
+    la1, lo1 = math.radians(lat), math.radians(lon)
+    la2 = math.asin(math.sin(la1) * math.cos(d) + math.cos(la1) * math.sin(d) * math.cos(b))
+    lo2 = lo1 + math.atan2(
+        math.sin(b) * math.sin(d) * math.cos(la1), math.cos(d) - math.sin(la1) * math.sin(la2)
+    )
+    return round(math.degrees(la2), 6), round(math.degrees(lo2), 6)
+
+
+# Sea points the course needs. Mark positions and rounding radii from 02-RESEARCH "Race Marks";
+# rounding anchors follow the Phase 2 rule: anchor = mark + radius on bearing leg_in - 90 deg
+# (starboard rounding) or leg_in + 90 deg (port rounding).
+REQUIRED_SEA_POINTS: dict[str, tuple[float, float]] = {
+    "vodice_start": (43.75, 15.78),
+    "open_sea_sw": (43.60, 15.60),
+    "plic_sestre_A": _offset(43.684627, 15.811626, 0.3, 71.0),
+    "plic_sestre_B": _offset(43.684627, 15.811626, 0.3, 251.0),
+    "jabuka_A": _offset(43.09153, 15.46054, 0.6, 113.0),
+    "jabuka_B": _offset(43.09153, 15.46054, 0.6, 293.0),
+    "blitvenica_A": _offset(43.62508, 15.57476, 0.55, 279.0),
+    "mulo_B": _offset(43.5146, 15.91857, 0.5, 128.0),
+}
+# Narrowest point of the Vodice -> open sea connection (RESEARCH "Channel bottlenecks").
+PINCH_PRVIC_TIJAT = (43.7229, 15.7828)
+PINCH_RADIUS_NM = 0.1
+
+
+def disc_clear(lm: LandMask, p: tuple[float, float], radius_nm: float) -> bool:
+    """Every fine cell whose centre lies within radius_nm of p is clear."""
+    x, y = lm.frame.to_xy(*p)
+    r, c = (int(v[0]) for v in lm.rc(x, y))
+    k = int(radius_nm / lm.cell_nm) + 1
+    ny, nx = lm.shape
+    if r - k < 0 or c - k < 0 or r + k >= ny or c + k >= nx:
+        return False
+    rr, cc = np.mgrid[r - k : r + k + 1, c - k : c + k + 1]
+    cx = lm.x0_nm + (cc + 0.5) * lm.cell_nm
+    cy = lm.y0_nm + (rr + 0.5) * lm.cell_nm
+    inside = np.hypot(cx - x, cy - y) <= radius_nm
+    return not bool(lm.mask[rr[inside], cc[inside]].any())
+
+
 def _resolve(path: Path) -> tuple[Path, Path]:
     """DIR (holding landmask.npz) or FILE.npz -> (npz, sidecar json)."""
     if path.is_dir():
@@ -619,6 +668,9 @@ def _resolve(path: Path) -> tuple[Path, Path]:
 
 
 def check(path: str | Path) -> int:
+    """Prove the mask leaves the course open: every REQUIRED_SEA_POINTS entry clear and reachable
+    by water from the Vodice start (4-connected), the Prvić–Tijat passage open. 0 = ok, 1 = not
+    (every failing point is named)."""
     npz, side_path = _resolve(Path(path))
     try:
         lm = LandMask.load(npz)
@@ -642,6 +694,43 @@ def check(path: str | Path) -> int:
         print(f"  sha256 conforme à {side_path.name}")
     else:
         print(f"  attention : pas de fichier {side_path.name} (sha256 non vérifié)")
+
+    f = lm.frame
+    start = REQUIRED_SEA_POINTS["vodice_start"]
+    r0, c0 = (int(v[0]) for v in lm.rc(*f.to_xy(*start)))
+    reach = flood_reachable(lm.mask, [(r0, c0)])
+    geo = compute_geofield(lm, [f.to_xy(*start)], 200.0 / NM_M, "centre")
+    failed = []
+    print("  points de passage obligatoires (accessibles par l'eau depuis Vodice) :")
+    for name, (lat, lon) in REQUIRED_SEA_POINTS.items():
+        x, y = f.to_xy(lat, lon)
+        clear = bool(lm.points_clear(x, y)[0])
+        r, c = (int(v[0]) for v in lm.rc(x, y))
+        inside = 0 <= r < ny and 0 <= c < nx
+        ok = clear and inside and bool(reach[r, c])
+        d = float(geo.distance(x, y)[0])
+        dist = f"{d:6.1f} nm" if math.isfinite(d) else "     - nm"
+        if ok:
+            state = "ok"
+        elif not inside:
+            state = "ÉCHEC : hors de la grille"
+        else:
+            state = "ÉCHEC : dans le masque" if not clear else "ÉCHEC : inaccessible"
+        print(f"    {name:<15} {lat:9.5f} N {lon:9.5f} E  {dist}  {state}")
+        if not ok:
+            failed.append(name)
+    lat, lon = PINCH_PRVIC_TIJAT
+    pinch = disc_clear(lm, PINCH_PRVIC_TIJAT, PINCH_RADIUS_NM)
+    print(
+        f"  passage Prvić–Tijat ({lat} N {lon} E, disque {PINCH_RADIUS_NM} nm) : "
+        + ("ouvert" if pinch else "ÉCHEC : fermé")
+    )
+    if not pinch:
+        failed.append("passage Prvić–Tijat")
+    if failed:
+        print(f"ÉCHEC : marges trop fortes ou données fausses, fermé : {', '.join(failed)}")
+        return 1
+    print("  vérification ok : tous les passages obligatoires sont ouverts")
     return 0
 
 
@@ -686,7 +775,8 @@ def main(argv: list[str] | None = None) -> int:
     except LandPrepError as exc:
         print(f"ÉCHEC : {exc}", file=sys.stderr)
         return 1
-    return 0
+    # CONTEXT: the margins must not close a required channel; fail loudly when they do
+    return check(args.out)
 
 
 if __name__ == "__main__":

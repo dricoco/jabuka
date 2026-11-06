@@ -356,3 +356,282 @@ class LandMask:
         ok = self.segments_clear(xs[:-1], ys[:-1], xs[1:], ys[1:])
         bad = np.nonzero(~ok)[0]
         return (True, None) if len(bad) == 0 else (False, int(bad[0]))
+
+
+# ---------------------------------------------------------------------- connectivity
+def _run_ids(clear: np.ndarray) -> tuple[np.ndarray, int]:
+    """Label runs of contiguous clear cells along axis 1 (row-major): run id per cell."""
+    start = clear.copy()
+    start[:, 1:] &= ~clear[:, :-1]
+    ids = np.cumsum(start.ravel(), dtype=np.int32 if clear.size < 2**31 else np.int64)
+    ids = ids.reshape(clear.shape)
+    return ids, int(ids[-1, -1]) + 1
+
+
+def _find(parent: list[int], i: int) -> int:
+    while parent[i] != i:
+        parent[i] = parent[parent[i]]  # path halving
+        i = parent[i]
+    return i
+
+
+def flood_reachable(blocked: np.ndarray, seeds_rc) -> np.ndarray:
+    """4-connected flood fill of clear cells from the seed cells (run-based, numpy).
+
+    Runs of contiguous clear cells along each row are labelled with a cumulative sum; two runs in
+    adjacent rows touch when they share a column. Joining touching runs (union-find over the few
+    thousand runs, not the cells) gives the connected components, so the cost does not depend on
+    the length or the number of turns of the path. Seeds outside the grid or on blocked cells are
+    ignored."""
+    clear = ~np.asarray(blocked, dtype=bool)
+    ny, nx = clear.shape
+    seeds = np.asarray(seeds_rc, dtype=np.int64).reshape(-1, 2)
+    inside = (seeds[:, 0] >= 0) & (seeds[:, 0] < ny) & (seeds[:, 1] >= 0) & (seeds[:, 1] < nx)
+    s = seeds[inside]
+    s = s[clear[s[:, 0], s[:, 1]]]
+    if len(s) == 0:
+        return np.zeros_like(clear)
+    ids, n = _run_ids(clear)
+    # one (upper run, lower run) pair per stretch of vertically touching cells
+    both = clear[:-1] & clear[1:]
+    up, dn = ids[:-1], ids[1:]
+    first = both.copy()
+    first[:, 1:] &= ~(both[:, :-1] & (up[:, 1:] == up[:, :-1]) & (dn[:, 1:] == dn[:, :-1]))
+    pairs = np.unique(np.stack([up[first], dn[first]], axis=1), axis=0)
+    parent = list(range(n))
+    for a, b in pairs.tolist():
+        ra, rb = _find(parent, a), _find(parent, b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    roots = np.array([_find(parent, i) for i in range(n)], dtype=np.int64)
+    seed_roots = np.unique(roots[ids[s[:, 0], s[:, 1]]])
+    return clear & np.isin(roots, seed_roots)[ids]
+
+
+# ---------------------------------------------------------------------- geodesic fields
+_SQ2, _SQ5 = math.sqrt(2.0), math.sqrt(5.0)
+# 16-neighbour moves (dr, dc, length in cells): max error vs straight line 2.7 % (8-nb: 8 %)
+_MOVES = [
+    *((dr, dc, 1.0) for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))),
+    *((dr, dc, _SQ2) for dr in (-1, 1) for dc in (-1, 1)),
+    *((dr, dc, _SQ5) for dr in (-1, 1) for dc in (-2, 2)),
+    *((dr, dc, _SQ5) for dr in (-2, 2) for dc in (-1, 1)),
+]
+
+
+def _shift(a: np.ndarray, dr: int, dc: int, fill) -> np.ndarray:
+    """out[r, c] = a[r - dr, c - dc] (fill outside)."""
+    ny, nx = a.shape
+    out = np.full_like(a, fill)
+    rs, re = max(dr, 0), ny + min(dr, 0)
+    cs, ce = max(dc, 0), nx + min(dc, 0)
+    if rs < re and cs < ce:
+        out[rs:re, cs:ce] = a[rs - dr : re - dr, cs - dc : ce - dc]
+    return out
+
+
+def _move_allowed(clear: np.ndarray, dr: int, dc: int) -> np.ndarray:
+    """allowed[r, c]: the move from (r - dr, c - dc) to (r, c) stays in clear cells, including
+    the cells it cuts through (no squeezing between two diagonal blocked cells)."""
+    ok = clear & _shift(clear, dr, dc, False)
+    sr, sc = int(np.sign(dr)), int(np.sign(dc))
+    if abs(dr) == 1 and abs(dc) == 1:
+        ok &= _shift(clear, dr, 0, False) & _shift(clear, 0, dc, False)
+    elif abs(dr) == 1:  # (1, 2): passes cells (r - dr, c - sc) and (r, c - sc)
+        ok &= _shift(clear, dr, sc, False) & _shift(clear, 0, sc, False)
+    elif abs(dc) == 1:  # (2, 1): passes cells (r - sr, c - dc) and (r - sr, c)
+        ok &= _shift(clear, sr, dc, False) & _shift(clear, sr, 0, False)
+    return ok
+
+
+class GeoField:
+    """Distance (nm) by water to a target, on a coarse grid; inf when unreachable or outside."""
+
+    def __init__(self, dist: np.ndarray, x0_nm: float, y0_nm: float, gcell_nm: float) -> None:
+        self.dist = np.asarray(dist, dtype=np.float64)
+        if self.dist.ndim != 2:
+            raise ValueError("GeoField distances must be 2-D")
+        self.x0_nm = float(x0_nm)
+        self.y0_nm = float(y0_nm)
+        self.gcell_nm = float(gcell_nm)
+
+    def distance(self, x, y) -> np.ndarray:
+        """Bilinear between the 4 surrounding cell centres when they are all finite, else the
+        value of the cell holding the point. inf when unreachable or outside the grid."""
+        x, y = _f64(x, y)
+        u = (x - self.x0_nm) / self.gcell_nm
+        v = (y - self.y0_nm) / self.gcell_nm
+        c = np.floor(u).astype(np.int64)
+        r = np.floor(v).astype(np.int64)
+        ny, nx = self.dist.shape
+        out = (r < 0) | (r >= ny) | (c < 0) | (c >= nx)
+        cell = self.dist[np.clip(r, 0, ny - 1), np.clip(c, 0, nx - 1)]
+        c0 = np.clip(np.floor(u - 0.5).astype(np.int64), 0, nx - 1)
+        r0 = np.clip(np.floor(v - 0.5).astype(np.int64), 0, ny - 1)
+        c1, r1 = np.minimum(c0 + 1, nx - 1), np.minimum(r0 + 1, ny - 1)
+        fu = np.clip(u - 0.5 - c0, 0.0, 1.0)
+        fv = np.clip(v - 0.5 - r0, 0.0, 1.0)
+        q = (self.dist[r0, c0], self.dist[r0, c1], self.dist[r1, c0], self.dist[r1, c1])
+        finite = np.isfinite(q[0]) & np.isfinite(q[1]) & np.isfinite(q[2]) & np.isfinite(q[3])
+        with np.errstate(invalid="ignore"):
+            bil = (q[0] * (1 - fu) + q[1] * fu) * (1 - fv) + (q[2] * (1 - fu) + q[3] * fu) * fv
+        d = np.where(finite & np.isfinite(cell), bil, cell)
+        return np.where(out, np.inf, d)
+
+
+def coarse_blocked(lm: LandMask, gcell_nm: float, mode: str = "centre") -> tuple[np.ndarray, int]:
+    """Blocked coarse grid of B x B fine cells (B = round(gcell / cell)).
+
+    mode "centre": a coarse cell is blocked when the fine cell at its centre is (a channel at
+    least 2 coarse cells wide stays open; prep at 200 m). mode "any": blocked when any fine cell
+    in it is (conservative; on demand at 400 m)."""
+    b = max(1, int(round(gcell_nm / lm.cell_nm)))
+    if mode == "any":
+        return _block_any(lm.mask, b), b
+    if mode != "centre":
+        raise ValueError(f"unknown geofield mode {mode!r}")
+    ny, nx = lm.shape
+    gy, gx = -(-ny // b), -(-nx // b)
+    out = np.ones((gy, gx), dtype=bool)
+    sub = lm.mask[b // 2 :: b, b // 2 :: b]
+    out[: sub.shape[0], : sub.shape[1]] = sub
+    return out, b
+
+
+def compute_geofield(
+    lm: LandMask,
+    seeds_xy,
+    gcell_nm: float = 200.0 / NM_M,
+    mode: str = "centre",
+    seed_radius_nm: float = 0.0,
+    max_iter: int = 5000,
+) -> GeoField:
+    """Geodesic (by water) distance to the nearest seed, 16-neighbour relaxation in numpy.
+
+    Every clear coarse cell within max(gcell, seed radius) of a seed starts at its straight-line
+    distance minus the seed radius; distances then relax until nothing changes. RuntimeError past
+    max_iter."""
+    blocked, b = coarse_blocked(lm, gcell_nm, mode)
+    h = b * lm.cell_nm
+    gy, gx = blocked.shape
+    clear = ~blocked
+    seeds = np.asarray(seeds_xy, dtype=np.float64).reshape(-1, 2)
+    cx = lm.x0_nm + (np.arange(gx) + 0.5) * h
+    cy = lm.y0_nm + (np.arange(gy) + 0.5) * h
+    d = np.full((gy, gx), np.inf)
+    reach = max(h, float(seed_radius_nm))
+    for sx, sy in seeds:
+        e = np.hypot(cx[None, :] - sx, cy[:, None] - sy)
+        init = np.where(clear & (e <= reach), np.maximum(e - seed_radius_nm, 0.0), np.inf)
+        np.minimum(d, init, out=d)
+    # Gauss-Seidel row sweeps (down, then up) until nothing changes. Each row first takes the
+    # moves coming from the 1-2 rows already swept, then the exact horizontal pass along it.
+    # Same move set and costs as a plain Jacobi relaxation, hence the same fixed point (the
+    # shortest paths), in a few sweeps instead of one iteration per cell of path length.
+    costs = {
+        (dr, dc): np.where(_move_allowed(clear, dr, dc), w * h, np.inf) for dr, dc, w in _MOVES
+    }
+    link = np.zeros((gy, gx), dtype=bool)  # link[r, c]: the move c-1 <-> c is allowed
+    link[:, 1:] = clear[:, 1:] & clear[:, :-1]
+    pad = np.full((gy, gx + 4), np.inf)
+    pad[:, 2:-2] = d
+    for _ in range(max_iter):
+        changed = False
+        for sign, rows in ((1, range(gy)), (-1, range(gy - 1, -1, -1))):
+            moves = [(dr, dc, c) for (dr, dc), c in costs.items() if dr * sign > 0]
+            for r in rows:
+                row = pad[r, 2:-2]
+                new = row.copy()
+                for dr, dc, cost in moves:
+                    rs = r - dr
+                    if 0 <= rs < gy:
+                        np.minimum(new, pad[rs, 2 - dc : 2 - dc + gx] + cost[r], out=new)
+                new = _row_pass(new, link[r], h)
+                if not changed and not np.array_equal(new, row):
+                    changed = True
+                row[...] = new
+        if not changed:
+            return GeoField(pad[:, 2:-2].copy(), lm.x0_nm, lm.y0_nm, h)
+    raise RuntimeError(f"compute_geofield did not converge in {max_iter} sweeps")
+
+
+# Segment offset for the segmented running minimum: larger than any distance + row length (nm),
+# small enough to keep float64 rounding far below a metre.
+_BIG = 1e4
+
+
+def _row_pass(v: np.ndarray, link: np.ndarray, h: float) -> np.ndarray:
+    """Exact 1-D relaxation along a row: min over linked cells of v[j] + |c - j| * h, where
+    link[c] allows the move between c-1 and c. Segmented running minimum in both directions."""
+    n = len(v)
+    pos = np.arange(n) * h
+    seg = np.cumsum(~link) * _BIG  # a new segment wherever the move is not allowed
+    fwd = np.minimum.accumulate(v - pos - seg) + pos + seg
+    rv, rl = v[::-1], np.concatenate(([False], link[:0:-1]))
+    rseg = np.cumsum(~rl) * _BIG
+    bwd = (np.minimum.accumulate(rv - pos - rseg) + pos + rseg)[::-1]
+    cand = np.minimum(fwd, bwd)
+    cand[cand > _BIG / 2] = np.inf  # values carried over from another segment
+    # keep only real improvements: rounding noise must not count as a change (convergence)
+    return np.where(cand < v - 1e-9, cand, v)
+
+
+def save_geofields(path: str | Path, fields: dict[tuple[float, float, float], GeoField]) -> None:
+    """One npz: fields float32 [K, gy, gx], keys float64 [K, 3] = (lat, lon, radius_nm)."""
+    if not fields:
+        raise ValueError("no geofields to save")
+    items = list(fields.items())
+    g0 = items[0][1]
+    for _, f in items:
+        if f.dist.shape != g0.dist.shape or (f.x0_nm, f.y0_nm, f.gcell_nm) != (
+            g0.x0_nm,
+            g0.y0_nm,
+            g0.gcell_nm,
+        ):
+            raise ValueError("all geofields in one file must share the grid")
+    np.savez_compressed(
+        Path(path),
+        fields=np.stack([f.dist for _, f in items]).astype(np.float32),
+        keys=np.array([k for k, _ in items], dtype=np.float64),
+        x0_nm=np.float64(g0.x0_nm),
+        y0_nm=np.float64(g0.y0_nm),
+        gcell_nm=np.float64(g0.gcell_nm),
+    )
+
+
+def load_geofields(path: str | Path) -> dict[tuple[float, float, float], GeoField]:
+    """Inverse of save_geofields; ValueError on anything unexpected (never unpickles)."""
+    try:
+        with np.load(Path(path), allow_pickle=False) as z:
+            if not isinstance(z, np.lib.npyio.NpzFile):
+                raise ValueError("not an npz archive")
+            need = ("fields", "keys", "x0_nm", "y0_nm", "gcell_nm")
+            missing = [k for k in need if k not in z.files]
+            if missing:
+                raise ValueError(f"missing keys: {', '.join(missing)}")
+            a = {k: z[k] for k in need}
+    except ValueError as exc:
+        raise ValueError(f"invalid geofields {path}: {exc}") from None
+    except (OSError, zipfile.BadZipFile, EOFError, KeyError) as exc:
+        raise ValueError(f"unreadable geofields {path}: {exc}") from None
+    fields, keys = a["fields"], a["keys"]
+    if fields.dtype.kind != "f" or fields.ndim != 3 or 0 in fields.shape:
+        raise ValueError(f"invalid geofields {path}: fields must be float [K, gy, gx]")
+    if keys.dtype.kind != "f" or keys.shape != (fields.shape[0], 3) or not np.isfinite(keys).all():
+        raise ValueError(f"invalid geofields {path}: keys must be finite float [K, 3]")
+    if np.isnan(fields).any():
+        raise ValueError(f"invalid geofields {path}: NaN distances")
+    geo = []
+    for k in ("x0_nm", "y0_nm", "gcell_nm"):
+        v = a[k]
+        if v.shape != () or v.dtype.kind != "f" or not math.isfinite(float(v)):
+            raise ValueError(f"invalid geofields {path}: {k} must be a finite 0-d float")
+        geo.append(float(v))
+    if geo[2] <= 0:
+        raise ValueError(f"invalid geofields {path}: gcell_nm must be > 0")
+    return {
+        (round(float(k[0]), 4), round(float(k[1]), 4), round(float(k[2]), 3)): GeoField(
+            fields[i], *geo
+        )
+        for i, k in enumerate(keys)
+    }
