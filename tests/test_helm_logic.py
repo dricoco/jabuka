@@ -252,3 +252,63 @@ def test_nav_alerts_are_listed_and_a_nav_failure_is_not_no_wind() -> None:
     no_wind = {"wind": {"source": "NONE"}, "helm": {"primary": None}, "alerts": ["PAS DE VENT"]}
     assert js(f"primaryView({json.dumps(no_wind)})")["label"] == "PAS DE VENT"
     assert js("navAlerts({})") == [] and js("navAlerts(null)") == []
+
+
+# -- 03-06: the route drives the primary number and the countdown, the laylines are the fallback --
+ROUTE_OK = {
+    "state": "ok",
+    "reason": None,
+    "version": 2,
+    "primary": "twa",
+    "target": 42.0,
+    "deviation": -4.0,
+    "target_twa": 42.0,
+    "target_tack": "stbd",
+    "target_hdg_t": 119.0,
+    "countdown_s": 510,
+    "tack_kind": "tack",
+    "updating": False,
+    "missed": False,
+    "stay": {"active": False, "tack": None, "released_land": False, "release_in_s": None},
+}
+
+
+def test_primary_prefers_the_route() -> None:
+    up = {"helm": {"primary": "twa_up", "target": 37.7}, "wind": {"source": "LIVE"}}
+    p = js(f"primaryView({json.dumps(dict(up, route=ROUTE_OK))})")
+    assert (p["label"], p["main"], p["unit"]) == ("TWA ROUTE ↑", "42°", "tribord")
+    assert p["value"] == "42° tribord"
+    down = dict(ROUTE_OK, target=150.0, target_twa=-150.0, target_tack="port")
+    p = js(f"primaryView({json.dumps(dict(up, route=down))})")
+    assert (p["label"], p["value"]) == ("TWA ROUTE ↓", "150° bâbord")
+    reach = dict(ROUTE_OK, primary="hdg", target=119.0, target_twa=95.0)
+    p = js(f"primaryView({json.dumps(dict(up, route=reach, display=DISP_M))})")
+    assert (p["label"], p["value"], p["main"], p["unit"]) == ("CAP ROUTE", "114°M", "114°", "M")
+    # no valid route: exactly the Phase 2 output
+    for r in (None, dict(ROUTE_OK, state="computing"), dict(ROUTE_OK, state="no_pack")):
+        p = js(f"primaryView({json.dumps(dict(up, route=r))})")
+        assert (p["label"], p["value"]) == ("TWA CIBLE ↑", "38°"), r
+
+
+def test_deviation_and_countdown_prefer_the_route() -> None:
+    n = {"helm": {"primary": "twa_up", "deviation": 7.0}, "route": ROUTE_OK}
+    want = {"text": "-4°", "hint": "ABATTRE", "cls": "warn"}
+    assert js(f"deviationView({json.dumps(n)})") == want
+    hdg = dict(ROUTE_OK, primary="hdg", deviation=6.0)
+    assert js(f"deviationView({json.dumps(dict(n, route=hdg))})")["hint"] == "◄ BÂBORD"
+    lay = {"state": "normal", "countdown_s": 720}
+    assert js(f"fmtCountdown({json.dumps(lay)}, 'beat', {json.dumps(ROUTE_OK)})") == (
+        "Virement dans 08:30"
+    )
+    bad = dict(ROUTE_OK, state="failed")
+    assert js(f"fmtCountdown({json.dumps(lay)}, 'beat', {json.dumps(bad)})") == (
+        "Virement dans 12 min"
+    )
+    v = js(f"helmView({json.dumps(dict(NAV, route=ROUTE_OK))})")
+    assert v["countdown"] == "Virement dans 08:30" and v["countdownSource"] == "route"
+    assert v["primary"]["label"] == "TWA ROUTE ↑"
+    # the tracer fixture's route block (no pack) leaves the Phase 2 helm untouched
+    v = js(f"helmView({json.dumps(NAV)})")
+    assert v["countdownSource"] == "layline" and v["primary"]["label"] == "TWA CIBLE ↑"
+    now = js(f"helmView({json.dumps(dict(NAV, route=dict(ROUTE_OK, countdown_s=-5)))})")
+    assert (now["countdown"], now["countdownCls"]) == ("VIREZ", "alert")
