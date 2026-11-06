@@ -292,3 +292,34 @@ def test_custom_name_writes_alternate_wind_file(rp, tmp_path) -> None:
     assert rc in (0, 3)
     assert (out / "wind_organiser.npz").is_file() and (out / "wind_organiser.json").is_file()
     assert _grib_cli(rp.fixtures / "grib" / "sample_grib1.grb", out, "--name", "../evil") == 2
+
+
+def test_fill_wind_fills_u_and_v_together(capsys) -> None:
+    """03-REVIEW MD-01: masked / IDW-edge wind cells are filled from the nearest valid cell (u and
+    v from the same one) and the filled fraction is reported."""
+    from jabuka.prep.wxpack import Cube
+
+    u = np.full((1, 3, 4), 2.0, np.float32)
+    v = np.full((1, 3, 4), -3.0, np.float32)
+    u[0, :, 0] = np.nan  # west column masked in u only
+    v[0, 2, 3] = np.nan  # one cell masked in v only
+    u[0, 1, 1], v[0, 1, 1] = 5.0, -7.0  # the nearest valid cell for (1, 0)
+    cube = Cube(
+        t=np.array([0], np.int64),
+        lat=np.array([43.0, 43.1, 43.2]),
+        lon=np.array([15.0, 15.1, 15.2, 15.3]),
+        fields={"u": u, "v": v},
+    )
+    frac = gribmod.fill_wind(cube)
+    assert frac == pytest.approx(4 / 12)
+    fu, fv = cube.fields["u"][0], cube.fields["v"][0]
+    assert np.isfinite(fu).all() and np.isfinite(fv).all()
+    assert (fu[1, 0], fv[1, 0]) == (5.0, -7.0)  # both components from the same cell
+    assert fu.dtype == np.float32
+    assert "33.3%" in capsys.readouterr().out
+
+
+def test_rotated_grid_edges_are_filled(write_grib, tmp_path) -> None:
+    f = write_grib(tmp_path / "rot.grib2", [_rotated("10u", 6.0), _rotated("10v", -2.0)])
+    cube = import_generic(f, default_crop())
+    assert np.isfinite(cube.fields["u"]).all() and np.isfinite(cube.fields["v"]).all()

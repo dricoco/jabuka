@@ -196,7 +196,9 @@ def decode_wind_files(
         return k
 
     st = _decode_regular(paths, crop or default_crop(), tmp_dir, kind)
-    return st.cube(("u", "v"))
+    cube = st.cube(("u", "v"))
+    fill_wind(cube)
+    return cube
 
 
 def _decode_regular(
@@ -260,6 +262,28 @@ def fill_nearest(a: np.ndarray, max_iter: int | None = None) -> np.ndarray:
             break
         out[fill] = cand[fill]
     return out
+
+
+def fill_wind(cube: Cube) -> float:
+    """Fill wind cells without a value (bitmap / land-masked cells, IDW edges) from the nearest
+    valid cell, u and v together so a cell takes both components from the same source
+    (03-REVIEW MD-01: a NaN cell used to become a calm at runtime). Returns the filled
+    fraction (printed when > 0); ValueError when a time step has no valid cell at all."""
+    u = np.asarray(cube.fields["u"], dtype=np.float64)
+    v = np.asarray(cube.fields["v"], dtype=np.float64)
+    bad = ~(np.isfinite(u) & np.isfinite(v))
+    if not bad.any():
+        return 0.0
+    u = np.where(bad, np.nan, u)
+    v = np.where(bad, np.nan, v)
+    fu, fv = fill_nearest(u), fill_nearest(v)
+    if np.isnan(fu).any() or np.isnan(fv).any():
+        raise ValueError("vent : une échéance sans aucune cellule valide sur la zone")
+    cube.fields["u"] = fu.astype(np.float32)
+    cube.fields["v"] = fv.astype(np.float32)
+    frac = float(bad.mean())
+    print(f"vent : {frac:.1%} des cellules sans valeur, complétées par la cellule voisine")
+    return frac
 
 
 _WAVE_NAMES = {"swh": "hs", "mwd": "mwd"}
@@ -597,4 +621,6 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
     if not st.by_t:
         present = ", ".join(dict.fromkeys(found)) or "aucun"
         raise ValueError(f"aucun champ de vent 10 m trouvé ; champs présents : {present}")
-    return st.cube(("u", "v"))
+    cube = st.cube(("u", "v"))
+    fill_wind(cube)
+    return cube

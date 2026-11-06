@@ -133,7 +133,10 @@ class WindField:
         return self._s.horizon_hold(t)
 
     def uv_kn(self, t: float, x, y, bias: BiasParams | None = None):
-        """Air motion (u east, v north) in knots at frame points (x, y) nm, bias applied."""
+        """Air motion (u east, v north) in knots at frame points (x, y) nm, bias applied.
+
+        The pack loader refuses wind cells without a value inside the race area (MD-01), so a
+        NaN can only come from the crop margin outside it; it is taken as a calm there."""
         val = self._s.values_xy(t, x, y)
         u = np.nan_to_num(val["u"], nan=0.0)
         v = np.nan_to_num(val["v"], nan=0.0)
@@ -146,10 +149,14 @@ class WindField:
     def at(
         self, t: float, lat: float, lon: float, bias: BiasParams | None = None
     ) -> tuple[float, float]:
-        """Scalar (TWD FROM rad, TWS kn) at a position (core GRIB-only wind, WIND-05)."""
+        """Scalar (TWD FROM rad, TWS kn) at a position (core GRIB-only wind, WIND-05). NaN (never
+        a calm) when the interpolation touches a cell without a value (03-REVIEW MD-01): the
+        core then has no GRIB wind there."""
         val = self._s.values_ll(t, lat, lon)
-        u = float(np.nan_to_num(val["u"][0], nan=0.0))
-        v = float(np.nan_to_num(val["v"][0], nan=0.0))
+        u = float(val["u"][0])
+        v = float(val["v"][0])
+        if not (math.isfinite(u) and math.isfinite(v)):
+            return math.nan, math.nan
         u, v = _apply_bias(u, v, t, bias)
         return math.atan2(-u, -v) % (2.0 * math.pi), math.hypot(u, v)
 
