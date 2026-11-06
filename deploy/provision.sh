@@ -291,9 +291,28 @@ for f in /home/*/.ssh/authorized_keys; do
     fi
 done
 if [ "$have_key" -eq 1 ]; then
-    write_file /etc/ssh/sshd_config.d/jabuka.conf "# Jabuka: key-only SSH (written by deploy/provision.sh)
-PasswordAuthentication no"
+    # sshd keeps the FIRST value it reads for each keyword and includes sshd_config.d/*.conf in
+    # lexical order, so a numbered drop-in (e.g. Imager/cloud-init 50-cloud-init.conf with
+    # "PasswordAuthentication yes") would win over "jabuka.conf". 00- sorts first.
+    write_file /etc/ssh/sshd_config.d/00-jabuka.conf "# Jabuka: key-only SSH (written by deploy/provision.sh)
+PasswordAuthentication no
+KbdInteractiveAuthentication no"
+    if [ -e /etc/ssh/sshd_config.d/jabuka.conf ]; then
+        run rm -f /etc/ssh/sshd_config.d/jabuka.conf # the old, overridable name
+    fi
+    run sshd -t
     run_tolerant systemctl reload ssh.service
+    # Verify the EFFECTIVE configuration, not just that the file was written.
+    if [ "$DRY_RUN" -eq 1 ]; then
+        show "sshd -T | grep -x 'passwordauthentication no' (verify)"
+    else
+        effective="$(sshd -T 2>/dev/null || true)"
+        for kv in "passwordauthentication no" "kbdinteractiveauthentication no"; do
+            if ! grep -qx "$kv" <<<"$effective"; then
+                warn "SSH is NOT key-only: sshd -T does not report '$kv' (another sshd_config.d drop-in or a Match block wins; fix it before the boat)"
+            fi
+        done
+    fi
 else
     warn "no non-empty /home/*/.ssh/authorized_keys: leaving SSH password login ON (lockout guard)"
 fi

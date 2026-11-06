@@ -247,3 +247,16 @@ def test_no_competing_ap_stack(deploy_dir: Path) -> None:
         text = p.read_text(errors="replace").lower()
         assert "hostapd" not in text, p
         assert "dhcpcd" not in text, p
+
+
+def test_ssh_key_only_drop_in_sorts_first_and_is_verified(deploy_dir: Path) -> None:
+    """WR-10: sshd keeps the first value per keyword and reads drop-ins in lexical order, so the
+    drop-in must sort first, and the effective config must be checked (sshd -T)."""
+    text = (deploy_dir / "provision.sh").read_text()
+    assert "/etc/ssh/sshd_config.d/00-jabuka.conf" in text
+    assert "write_file /etc/ssh/sshd_config.d/jabuka.conf" not in text
+    assert "PasswordAuthentication no\nKbdInteractiveAuthentication no" in text
+    assert "run sshd -t" in text
+    assert "sshd -T" in text
+    assert '"passwordauthentication no" "kbdinteractiveauthentication no"' in text
+    assert "SSH is NOT key-only" in text
