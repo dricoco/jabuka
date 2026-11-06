@@ -16,6 +16,8 @@ dependencies = [
     "uvicorn==0.54.0",
     "websockets==17.4",
     "pmtiles==3.8.1",
+    # Phase 3 router, GRIB interpolation, land mask (plan 03-05 owns this pin and the Pi relock)
+    "numpy==2.5.4",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +32,10 @@ dev = [
 # laptop race-pack prep (seamark extraction from the Geofabrik OSM extract), never on the Pi
 prep = [
     "osmium==4.3.2",
+    # Phase 3 race-pack prep (GRIB decoding, land polygons, Copernicus NetCDF), laptop only
+    "pygrib==2.1.8",
+    "shapely==2.2.0",
+    "netCDF4==1.7.5.1.post1",
 ]
 
 # All console scripts are declared up front (plan 01-01) so the wave-2 plans
@@ -47,6 +53,9 @@ jabuka-fastnet-relay = "jabuka.tools.fastnet_relay:main"  # Plan B receive-only 
 # Phase 2: declared up front (plan 02-01) so the wave-2 plans never edit this file.
 jabuka-prep-map = "jabuka.prep.map:main"              # (02-02) laptop race-pack builder
 jabuka-prep-polar = "jabuka.prep.polar:main"          # (02-02) polar converter
+# Phase 3 (plan 03-05 declares them; modules from 03-02 and 03-03).
+jabuka-prep = "jabuka.prep.cli:main"                  # (03-02) race-pack prep (laptop)
+jabuka-route-bench = "jabuka.route.bench:main"        # (03-03) Pi router benchmark
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jabuka"]
