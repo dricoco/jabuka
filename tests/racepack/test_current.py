@@ -16,10 +16,9 @@ else:
 # netCDF4 is skipped even under JABUKA_REQUIRE_ROUTE: one interpreter without a wheel is accepted
 netCDF4 = pytest.importorskip("netCDF4")
 
-from jabuka.prep.current import import_copernicus  # noqa: E402
-
 from jabuka.prep import cli  # noqa: E402
 from jabuka.prep import current as current_mod  # noqa: E402
+from jabuka.prep.current import import_copernicus  # noqa: E402
 from jabuka.prep.wxpack import default_crop  # noqa: E402
 from jabuka.route.racepack import load_pack  # noqa: E402
 
