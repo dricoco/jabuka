@@ -367,3 +367,19 @@ def test_zone_slow_boat_has_no_trusted_heading() -> None:
     sol = WindPipeline(Settings(zone_radius_nm=3.0)).update(inp, 0.0)
     assert sol.in_zone is True and sol.hdg is None and sol.heading_src is None
     assert sol.source == "NONE"  # computed wind needs a trusted heading
+
+
+def test_gps_dropout_in_the_zone_keeps_the_compass_untrusted() -> None:
+    """IN-05: near Jabuka a stale position (dropout) keeps the zone (untrusted compass, CAP NON
+    FIABLE) for ZONE_HOLD_S; it expires, and a fix outside the zone clears it at once."""
+    p = WindPipeline(Settings(zone_radius_nm=3.0))
+    assert p.update(_zone_inputs(2.0), 0.0).in_zone is True
+    lost = _zone_inputs(2.0)
+    lost.pop(W.POSITION)
+    sol = p.update(lost, 60.0)
+    assert sol.in_zone is True and sol.heading_trusted is False
+    assert "CAP NON FIABLE (zone Jabuka)" in sol.alerts
+    assert p.update(lost, 60.0 + W.ZONE_HOLD_S + 1.0).in_zone is False  # hold expired
+    p.update(_zone_inputs(2.0), 1000.0)
+    assert p.update(_zone_inputs(3.2), 1001.0).in_zone is False  # a real fix outside
+    assert p.update(lost, 1002.0).in_zone is False

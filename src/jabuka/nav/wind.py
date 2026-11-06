@@ -70,6 +70,7 @@ INPUT_PATHS = (
 COG_MIN_SOG_KN = 1.0  # below this, COG is noise: no heading from it
 CHECK_DTWA_DEG = 10.0
 CHECK_HOLD_S = 60.0
+ZONE_HOLD_S = 300.0  # last "in the Jabuka zone" kept this long through a GPS dropout (IN-05)
 LIVE_HOLD_S = 5.0  # a live source missing one tick is held this long before MANUEL/NONE (WR-02)
 MIN_WEIGHT_MS = 1e-3  # vector weight floor so a 0 kn manual entry keeps its direction
 
@@ -200,6 +201,7 @@ class WindPipeline:
         self._source: tuple[str, str | None] | None = None
         self._check_since: float | None = None
         self._live: tuple | None = None  # (t_mono, source, twd, twd_lay, tws) of the last live
+        self._zone_at: float | None = None  # t_mono of the last fix inside the Jabuka zone
 
     # -- heading -----------------------------------------------------------------------------
     def heading(self, inputs: Inputs) -> float | None:
@@ -231,8 +233,13 @@ class WindPipeline:
         self._ema_lay.tau = s.tau_layline_s
         self._ema_tws.tau = s.tau_helm_s
 
-        # 1. heading: compass, or COG inside the Jabuka zone
+        # 1. heading: compass, or COG inside the Jabuka zone. A GPS dropout near Jabuka keeps the
+        # zone (untrusted compass) for ZONE_HOLD_S after the last fix inside it (IN-05)
         zone = self.in_zone(inputs)
+        if position(inputs) is not None:
+            self._zone_at = t_mono if zone else None
+        elif self._zone_at is not None and 0.0 <= t_mono - self._zone_at <= ZONE_HOLD_S:
+            zone = True
         cog = num(inputs.get(COG))
         sog = num(inputs.get(SOG))
         cog_ok = cog is not None and sog is not None and ms_to_kn(sog) > COG_MIN_SOG_KN

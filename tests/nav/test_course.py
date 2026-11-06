@@ -366,6 +366,21 @@ def test_hairpin_annuler_then_real_rounding_advances(tmp_path: Path) -> None:
     assert cs.course.active_idx == 3 and active_id(cs) == "blitvenica"
 
 
+def test_gps_gap_restarts_the_rounding_debounce(tmp_path: Path) -> None:
+    """IN-05: 5 s of abeam evidence, a 30 s GPS outage, then one fix: no advance on that single
+    sample; the 10 s must hold again from the first fix after the gap."""
+    cs, _ = store(tmp_path)
+    t = run(cs, at(61, 0.4), 0.0, 2)
+    t = run(cs, at(81, 0.4), t, 5)  # abeam from t=2 to t=6
+    for k in range(30):  # no position (stale GPS): the state machine does not run
+        cs.on_tick(None, None, t + k)
+    t += 30
+    t = run(cs, at(81, 0.4), t, 10)  # back: 9 s of fresh evidence
+    assert cs.course.active_idx == 1
+    cs.on_tick(*at(81, 0.4), t)  # 10 s held after the gap
+    assert cs.course.active_idx == 2
+
+
 def test_undo_after_60_s_is_gone(tmp_path: Path) -> None:
     from jabuka.nav.course import BannerGone
 

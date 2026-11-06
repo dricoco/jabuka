@@ -60,6 +60,7 @@ NAME_MAX = 40
 ZONE_MARGIN_NM = 0.25  # arrival zone = leg radius + this (RESEARCH A10)
 GATE_NM = 2.0  # nothing fires further than this from the active mark
 DEBOUNCE_S = 10.0  # rounding evidence must hold this long
+FSM_GAP_S = 3.0  # a longer gap between position samples restarts the debounce (IN-05)
 BANNER_S = 60.0  # Annuler window
 FINISH_MIN_NM = 0.05  # finish radius floor (a radius-0 custom finish is still reachable)
 HAIRPIN_DEG = 90.0  # course change above which abeam also needs "past the mark" on the way out
@@ -226,6 +227,7 @@ class CourseStore:
         self._entered = False
         self._cand_since: float | None = None
         self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
+        self._last_fsm_t: float | None = None  # t_mono of the previous position sample
         self._banner_until: float | None = None  # t_mono end of the banner window
         raw = load_json_with_bak(self.path, None)
         if raw is not None:
@@ -632,6 +634,11 @@ class CourseStore:
             log.exception("course state machine failed")
 
     def _fsm(self, lat: float, lon: float, t: float) -> None:
+        # IN-05: the debounce needs DEBOUNCE_S of continuous evidence; after a GPS gap the first
+        # fix starts a fresh candidate instead of advancing on a single sample
+        last, self._last_fsm_t = self._last_fsm_t, t
+        if last is not None and not 0.0 <= t - last <= FSM_GAP_S:
+            self._cand_since = None
         c = self.course
         idx = c.active_idx
         if c.finished or not 1 <= idx < len(c.seq):
