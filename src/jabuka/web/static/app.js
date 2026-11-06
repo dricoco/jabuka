@@ -17,6 +17,7 @@
 
 import { linkState } from "./diag_logic.js";
 import { windBadge } from "./helm_logic.js";
+import { applyI18n, t } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 export const bus = new EventTarget();
@@ -141,7 +142,7 @@ function applyThemeClass(theme) {
   if (meta) meta.setAttribute("content", night ? "#000000" : "#ffffff");
   const btn = $("night-toggle");
   if (btn) {
-    btn.textContent = night ? "Jour" : "☾ Nuit";
+    btn.textContent = t(night ? "theme.day" : "theme.night");
     btn.setAttribute("aria-pressed", night ? "true" : "false");
   }
   const slider = $("night-brightness");
@@ -176,7 +177,7 @@ function buildTopControls() {
   slider.max = "100";
   slider.step = "10";
   slider.value = String(Math.round(storedBrightness() * 100));
-  slider.setAttribute("aria-label", "Luminosité nuit");
+  slider.setAttribute("aria-label", t("theme.brightAria"));
   slider.addEventListener("input", () => {
     store(BRIGHT_KEY, String(Number(slider.value) / 100));
     applyBrightness();
@@ -185,7 +186,7 @@ function buildTopControls() {
   btn.type = "button";
   btn.id = "night-toggle";
   btn.className = "ctrl";
-  btn.setAttribute("aria-label", "Mode nuit");
+  btn.setAttribute("aria-label", t("theme.nightAria"));
   btn.addEventListener("click", () => {
     const night = !document.body.classList.contains("theme-night");
     setAppTheme(night ? "night" : "day");
@@ -206,6 +207,8 @@ function trackTopbar() {
 }
 
 // -- tabs ---------------------------------------------------------------------------------------
+// sessionStorage "jabuka.tab": set by a language switch (reglages.js) just before the reload
+export const TAB_KEY = "jabuka.tab";
 let currentTab = "barre";
 function showTab(name) {
   currentTab = name;
@@ -262,7 +265,7 @@ function setLink(state) {
   if (state === link) return;
   link = state;
   document.body.classList.toggle("link-stale", state !== "live");
-  badge("link", state === "live" ? null : "PERTE DONNÉES", "bad");
+  badge("link", state === "live" ? null : t("badge.link"), "bad");
   emit("link", state);
 }
 
@@ -339,11 +342,19 @@ const MODULES = [
 
 // Screen awake (HELM-04): Wake Lock / NoSleep video from a user gesture (the first tap anywhere,
 // retried on later taps until something holds the screen), shown as "ÉCRAN: verrou|vidéo|aucun"
-// ("aucun" is an alert). Capture phase on window, so the lock overlay cannot swallow it.
-const WAKE_CLS = { verrou: "good", vidéo: "warn", aucun: "bad" };
+// ("aucun" is an alert) in the tablet's language. Capture phase on window, so the lock overlay
+// cannot swallow it. wakelock.js states: "verrou" | "vidéo" | "aucun".
+const WAKE = [
+  ["verrou", "good", "wake.verrou"],
+  ["vidéo", "warn", "wake.video"],
+  ["aucun", "bad", "wake.aucun"],
+];
 
 async function setupWake() {
-  const show = (state) => badge("wake", `ÉCRAN: ${state}`, WAKE_CLS[state] ?? "bad");
+  const show = (state) => {
+    const [, cls, key] = WAKE.find(([id]) => id === state) ?? WAKE[2];
+    badge("wake", t("badge.wake", { state: t(key) }), cls);
+  };
   try {
     const w = await import("./wakelock.js");
     show(w.wakeState());
@@ -374,7 +385,7 @@ async function loadMap() {
     badge("map", null);
   } catch (e) {
     console.error("map unavailable", e);
-    badge("map", "CARTE INDISPONIBLE", "bad");
+    badge("map", t("badge.mapUnavailable"), "bad");
     if (e?.message !== "webgl") {
       setTimeout(loadMap, mapRetryMs);
       mapRetryMs = Math.min(mapRetryMs * 2, 60000);
@@ -388,11 +399,26 @@ async function loadModule(name, path, sectionId) {
     await mod.mount({ section: sectionId ? $(sectionId) : null, api, bus, badge, latest });
   } catch (e) {
     console.error(`module ${name} failed`, e);
-    badge(`mod-${name}`, `${name.toUpperCase()} INDISPONIBLE`, "warn");
+    badge(`mod-${name}`, t("badge.moduleUnavailable", { name: name.toUpperCase() }), "warn");
   }
 }
 
+// The tab to show first: "barre", or the one a language switch (Réglages) reloaded from.
+function firstTab() {
+  try {
+    const tab = sessionStorage.getItem(TAB_KEY);
+    sessionStorage.removeItem(TAB_KEY);
+    if (tab && document.getElementById(`tab-${tab}`)) return tab;
+  } catch {
+    /* no session storage */
+  }
+  return "barre";
+}
+
 function init() {
+  applyI18n(document); // static labels of index.html in the tablet's language (i18n.js)
+  document.title = t("app.title");
+  currentTab = firstTab();
   applyThemeClass(storedTheme());
   buildTopControls();
   applyThemeClass(storedTheme());
@@ -401,7 +427,7 @@ function init() {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
   }
   window.jabuka = Object.assign(window.jabuka ?? {}, { bus, api, setAppTheme });
-  badge("link", "PERTE DONNÉES", "bad");
+  badge("link", t("badge.link"), "bad");
   document.body.classList.add("link-stale");
   // helm first and awaited: the numbers must show even if a later module fails
   loadModule(...MODULES[0]).then(() => {

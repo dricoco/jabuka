@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,31 +9,34 @@
 </head>
 <body>
   <header>
-    <a href="/" target="_top" class="back">← Barre</a>
-    <h1>Jabuka diagnostics</h1>
-    <span id="conn" class="conn conn-down">connecting…</span>
+    <a href="/" target="_top" class="back" data-i18n="diag.back">← Barre</a>
+    <h1 data-i18n="diag.title">Diagnostics Jabuka</h1>
+    <span id="conn" class="conn conn-down" data-i18n="diag.connecting">connexion…</span>
   </header>
 
   <section id="alerts" class="alerts" role="alert" hidden></section>
 
   <section class="panel event-panel">
-    <input id="event-label" type="text" maxlength="200" placeholder="label (optional)" autocomplete="off">
-    <button id="event-btn" type="button">Event marker</button>
+    <input id="event-label" type="text" maxlength="200" placeholder="libellé (optionnel)" data-i18n-ph="diag.labelPh" autocomplete="off">
+    <button id="event-btn" type="button" data-i18n="diag.eventBtn">Marqueur d'événement</button>
     <span id="event-ack" aria-live="polite"></span>
   </section>
 
   <section id="clock-panel" class="panel">
-    <div id="gate" class="gate gate-blocked">routing: blocked</div>
+    <div id="gate" class="gate gate-blocked" data-i18n="diag.gateInitial">routage : bloqué</div>
     <table id="clock-table" class="kv"></table>
   </section>
 
   <section class="panel">
-    <h2>Values</h2>
+    <h2 data-i18n="diag.values">Valeurs</h2>
     <table id="values">
       <thead>
         <tr>
-          <th>path</th><th>value (SI)</th><th>display</th><th>unit</th><th>src</th>
-          <th>ref</th><th>ch</th><th>disp</th><th>age s</th>
+          <th data-i18n="diag.colPath">chemin</th><th data-i18n="diag.colSi">valeur (SI)</th>
+          <th data-i18n="diag.colDisplay">affichage</th><th data-i18n="diag.colUnit">unité</th>
+          <th data-i18n="diag.colSrc">src</th><th data-i18n="diag.colRef">réf</th>
+          <th data-i18n="diag.colCh">ch</th><th data-i18n="diag.colDisp">disp</th>
+          <th data-i18n="diag.colAge">âge s</th>
         </tr>
       </thead>
       <tbody id="values-body"></tbody>
@@ -41,12 +44,12 @@
   </section>
 
   <section class="panel">
-    <h2>Health</h2>
+    <h2 data-i18n="diag.health">Santé</h2>
     <div id="health"></div>
   </section>
 
   <section class="panel">
-    <h2>Core</h2>
+    <h2 data-i18n="diag.core">Cœur</h2>
     <table id="core-table" class="kv"></table>
   </section>
 </body>

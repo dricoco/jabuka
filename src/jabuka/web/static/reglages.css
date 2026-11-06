@@ -14,6 +14,16 @@
 }
 .reglages-row input[type="checkbox"] { min-width: 48px; width: 48px; height: 48px; }
 
+/* Langue / Language / Jezik (quick 001): three 64 px buttons, the active one outlined. */
+.lang-select { max-width: 720px; margin: 0 0 16px; }
+.lang-select h3 { margin: 4px 0 6px; font-size: 20px; }
+.lang-row { display: flex; gap: 10px; }
+.lang-btn {
+  min-height: 56px; min-width: 88px; font-size: 22px; font-weight: 700; cursor: pointer;
+  color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 6px;
+}
+.lang-btn.active { border-color: var(--accent); border-width: 4px; }
+
 /* Vent manuel (WIND-04): above the settings form, 48 px controls. */
 .manual-wind {
   max-width: 720px; margin: 0 0 16px; padding: 8px 12px 12px;

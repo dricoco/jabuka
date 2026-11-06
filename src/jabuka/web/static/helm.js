@@ -10,6 +10,7 @@
 //   #badges:     wind source (app.js) + CAP NON FIABLE / COURANT / ANGLES RÉELS + one red badge
 //                per nav alert (B&G cross-check, unreadable files, nav computation failure...)
 import { helmView } from "./helm_logic.js";
+import { t } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 const MODE_KEY = "jabuka.mapMode";
@@ -62,7 +63,7 @@ function layout(section) {
   const top = $("helm-top");
   const bottom = $("helm-bottom");
   const box = top.querySelector(".primary-box");
-  if (!$("helm-stale")) box.append(el("div", { id: "helm-stale", class: "stale-msg", hidden: "" }, "PERTE DONNÉES"));
+  if (!$("helm-stale")) box.append(el("div", { id: "helm-stale", class: "stale-msg", hidden: "" }, t("helm.stale")));
   const devCell = cellOf("helm-deviation");
   if (devCell && !$("helm-hint")) {
     devCell.classList.add("dev-cell");
@@ -75,7 +76,7 @@ function layout(section) {
     if (c && bottomRow && markCell) bottomRow.insertBefore(c, markCell);
   }
   const speedLabel = cellOf("helm-speed")?.querySelector(".label");
-  if (speedLabel) speedLabel.textContent = "BSP / cible";
+  if (speedLabel) speedLabel.textContent = t("helm.bspTarget");
   for (const id of ["helm-dtw", "helm-ttw"]) cellOf(id)?.remove();
   // distance to the layline under the layline countdown (NAV-02)
   const countdown = $("helm-countdown");
@@ -86,9 +87,9 @@ function layout(section) {
 
   if (!$("map-ctrls")) {
     const ctrls = el("div", { id: "map-ctrls", class: "map-ctrls" });
-    const north = el("button", { type: "button", id: "map-north", class: "ctrl" }, "Nord en haut");
-    const course = el("button", { type: "button", id: "map-course", class: "ctrl" }, "Cap en haut");
-    const centre = el("button", { type: "button", id: "map-centre", class: "ctrl" }, "Centrer");
+    const north = el("button", { type: "button", id: "map-north", class: "ctrl" }, t("helm.northUp"));
+    const course = el("button", { type: "button", id: "map-course", class: "ctrl" }, t("helm.courseUp"));
+    const centre = el("button", { type: "button", id: "map-centre", class: "ctrl" }, t("helm.centre"));
     ctrls.append(north, course, centre);
     section.insertBefore(ctrls, bottom);
   }
@@ -145,7 +146,7 @@ function setStale(stale) {
   sec?.classList.toggle("stale", stale);
   const msg = $("helm-stale");
   if (msg) {
-    msg.textContent = "PERTE DONNÉES";
+    msg.textContent = t("helm.stale");
     msg.hidden = !stale;
   }
 }

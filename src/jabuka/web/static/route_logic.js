@@ -3,53 +3,12 @@
 // number (countdown, cost, age, bias, targets); this file only formats them. Every string goes
 // to the page through textContent (route.js), never as HTML.
 //
-// STR holds every helm string of the route features in one table, so a later language switch
-// (Slovenian, French) only swaps this table.
+// Every helm string of the route features is a "route.*" key of i18n.js (fr / en / sl); STR.x is
+// t("route.x") in the tablet's language. The core's reasons go through trServer.
 import { fmtCountdown, fmtDuration, fmtHeading } from "./helm_logic.js";
+import { SERVER, t, trServer } from "./i18n.js";
 
-export const STR = {
-  twaRouteUp: "TWA ROUTE ↑",
-  twaRouteDown: "TWA ROUTE ↓",
-  capRoute: "CAP ROUTE",
-  tack: { stbd: "tribord", port: "bâbord" },
-  tackIn: "Virement dans",
-  gybeIn: "Empannage dans",
-  tackNow: "VIREZ",
-  wrongTack: "MAUVAIS BORD",
-  gybeNow: "EMPANNEZ",
-  updating: "Route mise à jour…",
-  landTackIn: "Virement imposé (terre) dans",
-  noTack: "Pas de virement prévu",
-  laylineDist: "Layline à ",
-  costPrefix: "Ne pas virer : ",
-  agePrefix: "Route : il y a ",
-  ageRecent: "< 1 min",
-  level: "Route : niveau ",
-  offRoute: "Hors route",
-  stayOn: "On reste",
-  capRouteLine: "Cap route ",
-  twaRouteLine: "TWA route ",
-  computing: "Calcul de la route…",
-  blockedClock: "Routage bloqué : ",
-  blockedClockDefault: "heure GPS non valide",
-  noPack: "Pas de pack météo : ",
-  noPackDefault: "pack de course non chargé",
-  failed: "Routage en échec : ",
-  failedDefault: "erreur du routeur",
-  disabled: "Routage désactivé (Réglages)",
-  outdated: "Route retirée : ",
-  outdatedDefault: "route périmée",
-  staleFail: "Recalcul en échec : ",
-  routing: "Routage : ",
-  stay: "ON RESTE",
-  stayCancel: "ANNULER ON RESTE",
-  stayRefused: "On reste impossible : ",
-  biasPrefix: "Biais GRIB ",
-  biasOff: "Biais GRIB désactivé",
-  biasLearning: "Biais GRIB : apprentissage",
-  biasFrozen: "Biais GRIB : gelé, Jabuka",
-  biasSuffix: { "s'estompe": " (s'estompe)", "gelé (Jabuka)": " (gelé, Jabuka)" },
-};
+export const STR = new Proxy({}, { get: (_o, k) => (typeof k === "string" ? t(`route.${k}`) : undefined) });
 
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -69,7 +28,7 @@ export function fmtClock(seconds) {
   return `${Math.floor(m / 60)} h ${pad2(m % 60)}`;
 }
 
-export const tackWord = (tack) => STR.tack[tack] ?? "";
+export const tackWord = (tack) => (tack === "stbd" || tack === "port" ? t(`tack.${tack}`) : "");
 
 // The helm's countdown line: {text, cls ("" | "warn" | "alert"), source ("route" | "layline")}.
 // From the route when it is valid, else exactly the Phase 2 layline text.
@@ -81,7 +40,7 @@ export function countdownView(nav) {
   const stay = r.stay ?? {};
   // only before the release: afterwards the forced tack is due, VIREZ below (03-REVIEW LO-08)
   if (stay.active && stay.released_land && isNum(stay.release_in_s) && stay.release_in_s > 0) {
-    return route(`${STR.landTackIn} ${fmtClock(stay.release_in_s)}`, "warn");
+    return route(t("route.landTackIn", { t: fmtClock(stay.release_in_s) }), "warn");
   }
   const cd = r.countdown_s;
   if (!isNum(cd)) return route(STR.noTack);
@@ -90,26 +49,27 @@ export function countdownView(nav) {
     if (cd > MISSED_S) return route(gybe ? STR.gybeNow : STR.tackNow, "alert");
     return route(STR.updating, "warn");
   }
-  return route(`${gybe ? STR.gybeIn : STR.tackIn} ${fmtClock(cd)}`);
+  return route(t(gybe ? "helm.gybeIn" : "helm.tackIn", { t: fmtClock(cd) }));
 }
 
 // "Ne pas virer : +4 min" / "Ne pas virer : < 1 min"; null when the core has no cost.
 export function costText(route) {
   if (!routeOk(route) || !route.cost_text) return null;
-  return `${STR.costPrefix}${String(route.cost_text)}`;
+  return t("route.cost", { c: String(route.cost_text) });
 }
 
 // "Biais GRIB +12° ×1.15" (+ " (s'estompe)" / " (gelé, Jabuka)"); null when nothing to say.
 export function biasText(bias) {
   if (!bias) return null;
-  if (bias.enabled === false || bias.state === "désactivé") return STR.biasOff;
+  if (bias.enabled === false || bias.state === SERVER.BIAS_OFF) return STR.biasOff;
   if (bias.valid && isNum(bias.dir_deg) && isNum(bias.ratio)) {
     const d = Math.round(bias.dir_deg);
     const dir = `${d >= 0 ? "+" : "-"}${Math.abs(d)}°`;
-    return `${STR.biasPrefix}${dir} ×${bias.ratio.toFixed(2)}${STR.biasSuffix[bias.state] ?? ""}`;
+    const suffix = { [SERVER.BIAS_FADING]: STR.biasFading, [SERVER.BIAS_FROZEN]: STR.biasFrozenSuffix }[bias.state];
+    return t("route.bias", { d: dir, k: bias.ratio.toFixed(2) }) + (suffix ?? "");
   }
-  if (bias.state === "apprentissage") return STR.biasLearning;
-  if (bias.state === "gelé (Jabuka)") return STR.biasFrozen;
+  if (bias.state === SERVER.BIAS_LEARNING) return STR.biasLearning;
+  if (bias.state === SERVER.BIAS_FROZEN) return STR.biasFrozen;
   return null;
 }
 
@@ -123,42 +83,43 @@ export function stayButton(route) {
 
 function ageText(ageS) {
   if (!isNum(ageS)) return null;
-  if (ageS < 60) return `${STR.agePrefix}${STR.ageRecent}`;
-  if (ageS < 3600) return `${STR.agePrefix}${Math.floor(ageS / 60)} min`;
-  return `${STR.agePrefix}${fmtDuration(ageS)}`;
+  if (ageS < 60) return t("route.age", { a: STR.ageRecent });
+  if (ageS < 3600) return t("route.age", { a: `${Math.floor(ageS / 60)} min` });
+  return t("route.age", { a: fmtDuration(ageS) });
 }
 
-// The state line: why there is no route, or what the current route is doing.
+// The state line: why there is no route, or what the current route is doing (the core's reason
+// in the tablet's language).
 function statusText(r) {
-  const why = (prefix, fallback) => `${prefix}${r.reason ? String(r.reason) : fallback}`;
+  const why = (key, fallback) => t(key, { r: r.reason ? trServer(r.reason) : fallback });
   switch (r.state) {
     case "ok": {
       if (r.updating) return STR.updating;
       const parts = [];
       if (r.stay?.active) {
         const w = tackWord(r.stay.tack);
-        parts.push(w ? `${STR.stayOn} (${w})` : STR.stayOn);
+        parts.push(w ? t("route.stayOnTack", { w }) : STR.stayOn);
       }
       if (r.off_route) parts.push(STR.offRoute);
-      if (r.level && r.level !== "L0") parts.push(`${STR.level}${String(r.level)}`);
+      if (r.level && r.level !== "L0") parts.push(t("route.level", { l: String(r.level) }));
       // the route is still steerable but its last recompute failed (03-REVIEW CR-02)
-      if (r.stale && r.last_fail) parts.push(`${STR.staleFail}${String(r.last_fail)}`);
+      if (r.stale && r.last_fail) parts.push(t("route.staleFail", { r: trServer(r.last_fail) }));
       return parts.join(" · ");
     }
     case "outdated":
-      return why(STR.outdated, STR.outdatedDefault);
+      return why("route.outdated", STR.outdatedDefault);
     case "blocked_clock":
-      return why(STR.blockedClock, STR.blockedClockDefault);
+      return why("route.blockedClock", STR.blockedClockDefault);
     case "no_pack":
-      return why(STR.noPack, STR.noPackDefault);
+      return why("route.noPack", STR.noPackDefault);
     case "computing":
       return STR.computing;
     case "failed":
-      return why(STR.failed, STR.failedDefault);
+      return why("route.failed", STR.failedDefault);
     case "disabled":
       return STR.disabled;
     default:
-      return why(STR.routing, String(r.state));
+      return why("route.routing", String(r.state));
   }
 }
 
@@ -188,10 +149,10 @@ export function routeBand(nav) {
     if (isNum(r.age_s) && r.age_s > 1200) ageCls = "warn";
     if (r.primary === "twa") {
       const h = fmtHeading(r.target_hdg_t, nav?.display);
-      lines.target = h === "—" ? null : `${STR.capRouteLine}${h}`;
+      lines.target = h === "—" ? null : t("route.capRouteLine", { h });
     } else if (r.primary === "hdg" && isNum(r.target_twa)) {
       const w = tackWord(r.target_tack);
-      lines.target = `${STR.twaRouteLine}${Math.round(Math.abs(r.target_twa))}°${w ? ` ${w}` : ""}`;
+      lines.target = t("route.twaRouteLine", { a: `${Math.round(Math.abs(r.target_twa))}°${w ? ` ${w}` : ""}` });
     }
   }
   const cls = ok ? (r.updating || r.stale ? "warn" : "") : (STATE_CLS[r.state] ?? "bad");
