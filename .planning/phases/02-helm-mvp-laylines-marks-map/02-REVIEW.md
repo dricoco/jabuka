@@ -47,7 +47,30 @@ by_severity:
   high: 3
   medium: 7
   low: 8
-status: issues_found
+status: fixed
+fixed_at: 2026-11-06
+fix_base: 3c9d996
+fixed: 18
+skipped: 0
+fixes:
+  CR-01: "e786999 nav alerts are red top-bar badges on every tab; a nav crash reads ERREUR CALCUL (label + wind badge), not PAS DE VENT; nav_errors on Diag"
+  CR-02: "285e26e after Annuler, leaving the zone the boat was seen in counts as the rounding (10 s debounce); Annuler outside the zone still needs a fresh entry; test_course.py:281 no longer pins the stuck state"
+  CR-03: "33bbe89 beat/run legs: TWA target follows the leg; a reaching boat gets its tack's polar heading (or a sailable fetch CTS), never the bearing into the no-go zone (needs human check of the helm UX)"
+  WR-01: "7fc9254 turns > 90 deg (Jabuka) need abeam AND past the mark along the outgoing leg, or the zone exit; long-way roundings use the zone exit only"
+  WR-02: "932a9cc LIVE/LIVE_BG share one filter family; a live dropout is held 5 s before MANUEL/NONE resets the filters"
+  WR-03: "44f538e clock.utc_epoch (GPS UTC or None) for manual-wind age and the Annuler window; unknown age shown as MANUEL âge ?; AST test bans clock.wall in domain code"
+  WR-04: "0f7de31 map.js setTheme serialized, only the latest request applied; theme toggled during map load applied after load"
+  WR-05: "23e861e re-selecting the active template is a no-op; template change needs a confirming second tap; shared active mark kept on switch"
+  WR-06: "3296b37 vector source maxzoom patched from /racepack/info (degraded packs overzoom)"
+  WR-07: "da28c80 prep-polar skips an all-zero TWS 0 column / TWA 0 row, still rejects non-zero speeds there"
+  IN-01: "2f60f3a next/prev take base_version (409 on a double Suiv.); new core/hardening.py: JSON-only mutations (415), 64 KiB body cap (413), Host check (421), CSP + X-Frame-Options SAMEORIGIN (DENY would break the Diag iframe) + nosniff + no-referrer"
+  IN-02: "1b5573a failed/slow map load torn down and retried with back-off; overlays/carte wait on mapReady()"
+  IN-03: "f8b9537 a mark inserted before the active finish becomes active"
+  IN-04: "a13db16 Polar needs a TWS > 0 curve; race-pack polar smoke-tests targets() at 6/12/20 kn, builtin on any failure"
+  IN-05: "e9a8a97 Jabuka zone held 5 min through a GPS dropout; rounding debounce restarts after a > 3 s position gap"
+  IN-06: "02d5248 Autre bord is always the polar heading, also in sailed mode"
+  IN-07: "40da6ac gate = max(2 nm, zone + 0.5 nm); leg/primary hysteresis reset on a new mark; write-failure alert cleared by the next good write"
+  IN-08: "8d10c7b external /lock-early.js shows a stored lock before any module loads (CSP-safe); locking blurs the focused input"
 ---
 
 # Phase 2: Code Review Report
@@ -55,7 +78,7 @@ status: issues_found
 **Reviewed:** 2026-11-06T10:10:22Z
 **Depth:** deep (cross-module: state store -> wind -> polar -> course FSM -> laylines -> nav message -> helm/carte/lock UI, plus the laptop prep tools)
 **Files Reviewed:** 33
-**Status:** issues_found
+**Status:** issues_found at review; all 18 findings fixed since (see `fixes` in the frontmatter)
 
 Severity mapping: BLOCKER = critical/high, WARNING = medium, INFO = low.
 
