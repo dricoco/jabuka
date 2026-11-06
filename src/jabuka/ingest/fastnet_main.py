@@ -90,7 +90,7 @@ class FastnetIngest:
         """Never raises: bad bytes or decoder bugs are counted, the read loop keeps going."""
         try:
             self.rawlog.write_chunk(b)  # RAW FIRST: on disk before anything interprets the bytes
-        except (OSError, ValueError) as e:  # disk full / closed log: keep live data flowing
+        except Exception as e:  # disk full / closed log: keep live data flowing
             self.raw_errors += 1
             log.error("raw log write failed: %s", e)
         try:
@@ -205,9 +205,20 @@ class FastnetIngest:
         try:
             self.send(data)
             self.messages_sent += 1
-        except OSError as e:
+        except Exception as e:  # OSError, or OverflowError/ValueError from a bad address
             self.send_errors += 1
             log.debug("udp send failed: %s", e)
+
+    def flush_once(self) -> None:
+        """Periodic raw-log flush/fsync and retention pass. Never raises: an ENOSPC/EIO from
+        flush or fsync is counted in raw_errors instead of killing the flusher task."""
+        try:
+            self.rawlog.maybe_flush()
+        except Exception as e:
+            self.raw_errors += 1
+            log.error("raw log flush failed: %s", e)
+        if self.retention is not None:
+            self.retention.maybe_run(protect=[self.rawlog.current_path])  # never raises
 
     def _emit(self, values: list[dict]) -> None:
         try:
@@ -222,16 +233,34 @@ class FastnetIngest:
         try:
             self.send(data)
             self.messages_sent += 1
-        except OSError as e:  # never raise into the read path
+        except Exception as e:  # never raise into the read path
             self.send_errors += 1
             log.debug("udp send failed: %s", e)
 
 
 def parse_hostport(text: str) -> tuple[str, int]:
     host, _, port = text.rpartition(":")
-    if not host or not port.isdigit():
-        raise argparse.ArgumentTypeError(f"expected HOST:PORT, got {text!r}")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise argparse.ArgumentTypeError(f"expected HOST:PORT (port 1-65535), got {text!r}")
     return host, int(port)
+
+
+def supervise(task: asyncio.Task, done: asyncio.Future[int]) -> None:
+    """Every ingest task runs forever: if one ends (exception or return) the process exits 1, so
+    systemd restarts it. The watchdog alone only detects a blocked loop, not a dead task."""
+
+    def _on_done(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.error("task %s died: %r", t.get_name(), exc, exc_info=exc)
+        else:
+            log.error("task %s ended unexpectedly", t.get_name())
+        if not done.done():
+            done.set_result(1)
+
+    task.add_done_callback(_on_done)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -374,9 +403,7 @@ async def _run(args: argparse.Namespace) -> int:
         # the flush/fsync cadence also applies when the bus goes quiet
         while True:
             await asyncio.sleep(1.0)
-            rawlog.maybe_flush()
-            if ingest.retention is not None:
-                ingest.retention.maybe_run(protect=[rawlog.current_path])
+            ingest.flush_once()
 
     async def heartbeat() -> None:
         # independent of byte arrival: a silent bus or a missing device is still reported
@@ -404,6 +431,8 @@ async def _run(args: argparse.Namespace) -> int:
     interval = sdnotify.watchdog_interval()
     if interval is not None:
         tasks.append(asyncio.create_task(sdnotify.watchdog_loop(interval), name="watchdog"))
+    for t in tasks:
+        supervise(t, done)
     sdnotify.notify("READY=1")  # UDP socket + heartbeat running; device open if present
     try:
         rc = await done

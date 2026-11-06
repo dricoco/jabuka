@@ -332,3 +332,83 @@ def test_heartbeat_reports_raw_log_and_send_failures(tmp_path: Path) -> None:
     h = ingest.health()
     assert h["raw_errors"] == len(chunks) - 1
     assert h["send_errors"] > 0
+
+
+# -- WR-11: background tasks cannot die silently ----------------------------------------------
+def test_parse_hostport_range_checks_the_port() -> None:
+    import argparse
+
+    import pytest
+
+    assert fastnet_main.parse_hostport("127.0.0.1:47100") == ("127.0.0.1", 47100)
+    for bad in ("127.0.0.1:99999", "127.0.0.1:0", "127.0.0.1:65536", "host:", ":1"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            fastnet_main.parse_hostport(bad)
+
+
+def test_send_exceptions_never_escape(tmp_path: Path) -> None:
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
+
+    def overflow(b: bytes) -> None:
+        raise OverflowError("port must be 0-65535")
+
+    ingest = FastnetIngest(rawlog, overflow)
+    for c in chunks_from_capture(EXAMPLE2)[:50]:
+        ingest.on_chunk(c)  # "never raises"
+    ingest.send_heartbeat()
+    rawlog.close()
+    assert ingest.send_errors > 1
+
+
+def test_flush_once_survives_enospc(tmp_path: Path) -> None:
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
+    ingest = FastnetIngest(rawlog, lambda b: None)
+
+    def enospc() -> None:
+        raise OSError(28, "No space left on device")
+
+    rawlog.maybe_flush = enospc  # type: ignore[method-assign]
+    ingest.flush_once()
+    ingest.flush_once()
+    assert ingest.raw_errors == 2
+    rawlog.close()
+
+
+def test_supervise_exits_when_a_task_dies() -> None:
+    import asyncio
+
+    async def scenario() -> tuple[int, bool]:
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[int] = loop.create_future()
+
+        async def boom() -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("flusher died")
+
+        async def forever() -> None:
+            await asyncio.sleep(3600)
+
+        ok = asyncio.create_task(forever(), name="ok")
+        fastnet_main.supervise(ok, done)
+        fastnet_main.supervise(asyncio.create_task(boom(), name="boom"), done)
+        rc = await asyncio.wait_for(done, 2)
+        ok.cancel()
+        await asyncio.sleep(0)
+        return rc, done.done()
+
+    assert asyncio.run(scenario()) == (1, True)
+
+
+def test_supervise_ignores_cancellation() -> None:
+    import asyncio
+
+    async def scenario() -> bool:
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[int] = loop.create_future()
+        t = asyncio.create_task(asyncio.sleep(3600), name="t")
+        fastnet_main.supervise(t, done)
+        t.cancel()
+        await asyncio.sleep(0.01)
+        return done.done()
+
+    assert asyncio.run(scenario()) is False
