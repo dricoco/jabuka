@@ -126,7 +126,15 @@ def cycle_with_env(env: RouterEnv, creq: CycleRequest) -> CycleResult:
         try:
             polar = env.polar_for(base.polar_curves, base.eff, base.eff_up, base.eff_down)
             eta_old, old_valid, old_reason = evaluate_path(
-                creq.old_path, base.lat, base.lon, base.t0, env, polar, base.bias, s
+                creq.old_path,
+                base.lat,
+                base.lon,
+                base.t0,
+                env,
+                polar,
+                base.bias,
+                s,
+                t_hint=creq.old_t_here,
             )
         except ValueError as exc:
             eta_old, old_valid, old_reason = None, False, str(exc)

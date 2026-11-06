@@ -235,6 +235,17 @@ def test_corrupt_route_file_is_ignored_with_an_alert(routing_core, fake_pool, rh
     fake_pool.hold = False
 
 
+def test_request_carries_the_follower_route_time(routing_core, fake_pool, rh) -> None:
+    # 03-REVIEW MD-03: the worker re-evaluates the old route from the helm's own projection
+    core, pos = _start(routing_core, fake_pool, rh)
+    assert fake_pool.requests[0].old_t_here is None  # no route yet
+    core.call(core.router.request, "timer", False)
+    _run(core, pos, 1)
+    creq = fake_pool.requests[-1]
+    assert creq.old_path is not None and creq.old_t_here is not None
+    assert creq.old_path[0].t <= creq.old_t_here <= creq.old_path[-1].t
+
+
 # -- detected tack / low-speed COG (03-REVIEW MD-02) ----------------------------------------------
 def test_an_early_tack_reroutes_as_outdated(routing_core, fake_pool, rh) -> None:
     core = routing_core(pool_factory=lambda: fake_pool)

@@ -95,3 +95,46 @@ def test_first_side_change(beat) -> None:
     later = first_side_change(r.path, tp.t + 1.0, tack0=req.tack0)
     assert later == (r.tacks[1] if len(r.tacks) > 1 else None)
     assert first_side_change(r.path[:1], req.t0) is None
+
+
+def _hairpin_path(leg_s: float = 1800.0):
+    """3 nm north on a reach (wind 270), round, 3 nm back south 0.4 nm east: a hairpin."""
+    pts = []
+    for k in range(7):
+        lat, lon = _offset(OPEN, 0.0, 0.5 * k)
+        pts.append(PathPoint(T0 + leg_s * k / 6, lat, lon, 90.0, 1, 6.0, 90.0, 12.0))
+    t_mark = T0 + leg_s + 240.0
+    for k in range(7):
+        lat, lon = _offset(_offset(OPEN, 90.0, 0.4), 0.0, 3.0 - 0.5 * k)
+        pts.append(PathPoint(t_mark + leg_s * k / 6, lat, lon, -90.0, -1, 6.0, 90.0, 12.0))
+    return tuple(pts)
+
+
+def test_hairpin_old_route_is_evaluated_from_the_follower_window(
+    env_factory, uniform_wind, polar_curves
+) -> None:
+    """03-REVIEW MD-03: projected onto the return leg, the old route looked ~an hour shorter."""
+    env = env_factory(uniform_wind(270.0, 12.0))
+    pg = env.polar_for(polar_curves, 1.0)
+    path = _hairpin_path()
+    t_here = T0 + 600.0  # the follower: 1 nm up the outbound leg
+    lat, lon = _offset(_offset(OPEN, 0.0, 1.0), 90.0, 0.25)  # nearer the return leg
+    s = RouterSettings()
+    blind, ok1, _ = evaluate_path(path, lat, lon, t_here, env, pg, None, s)
+    eta, ok2, _ = evaluate_path(path, lat, lon, t_here, env, pg, None, s, t_hint=t_here)
+    assert ok1 and ok2
+    # 2 nm of outbound leg, the rounding and 2 nm of return leg (~4.4 nm) are counted again
+    assert eta - blind > 1500.0
+
+
+def test_rejoin_time_is_added(env_factory, uniform_wind, polar_curves) -> None:
+    env = env_factory(uniform_wind(270.0, 12.0))
+    pg = env.polar_for(polar_curves, 1.0)
+    path = _hairpin_path()[:7]
+    s = RouterSettings()
+    on, _, _ = evaluate_path(path, OPEN[0], OPEN[1], T0, env, pg, None, s)
+    off_lat, off_lon = _offset(OPEN, 270.0, 0.5)  # 0.5 nm abeam
+    off, valid, _ = evaluate_path(path, off_lat, off_lon, T0, env, pg, None, s)
+    reach = float(pg.speed(np.array([12.0]), np.array([90.0]))[0])
+    assert valid
+    assert off - on == pytest.approx(0.5 / reach * 3600.0, rel=0.05)

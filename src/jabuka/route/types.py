@@ -185,6 +185,8 @@ class CycleRequest:
     want_forced: bool = True
     stay_active: bool = False
     old_path: tuple[PathPoint, ...] | None = None
+    # route time of the helm follower's projection on old_path (evaluate_path window, MD-03)
+    old_t_here: float | None = None
 
 
 @dataclass(frozen=True)

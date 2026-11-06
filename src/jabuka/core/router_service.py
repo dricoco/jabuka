@@ -579,7 +579,14 @@ class RouterService:
             settings=rs,
         )
         old = self.route.path if self.route is not None else None
-        return CycleRequest(base=base, want_forced=want_forced, stay_active=stay, old_path=old)
+        f = self._last_follow
+        return CycleRequest(
+            base=base,
+            want_forced=want_forced,
+            stay_active=stay,
+            old_path=old,
+            old_t_here=f.t_route_here if old is not None and f is not None else None,
+        )
 
     def _bias_params(self, now: float | None) -> BiasParams | None:
         """Bias applied to the GRIB now (None when switched off or nothing learned)."""
