@@ -131,5 +131,64 @@
   "heading_ref": "M",
   "variation": 4.7
  },
- "alerts": []
+ "alerts": [],
+ "route": {
+  "state": "no_pack",
+  "reason": "wind.npz absent du pack var/racepack",
+  "version": 0,
+  "kind": null,
+  "age_s": null,
+  "computed_utc": null,
+  "level": null,
+  "eta_utc": null,
+  "leg_eta_utc": null,
+  "primary": null,
+  "target": null,
+  "deviation": null,
+  "target_twa": null,
+  "target_tack": null,
+  "target_hdg_t": null,
+  "xte_nm": null,
+  "off_route": false,
+  "countdown_s": null,
+  "tack_kind": null,
+  "tack_lat": null,
+  "tack_lon": null,
+  "missed": false,
+  "updating": false,
+  "cost_s": null,
+  "cost_text": null,
+  "stay": {
+   "active": false,
+   "tack": null,
+   "released_land": false,
+   "release_in_s": null
+  },
+  "horizon_hold": false,
+  "start_in_margin": false,
+  "bias": {
+   "enabled": true,
+   "valid": false,
+   "state": null,
+   "dir_deg": null,
+   "ratio": null,
+   "text": null,
+   "reason": null
+  },
+  "pack": {
+   "ok": false,
+   "model": null,
+   "run": null,
+   "alerts": []
+  },
+  "health": {
+   "jobs": 0,
+   "ok": 0,
+   "timeouts": 0,
+   "crashes": 0,
+   "last_ms": null,
+   "running": 0,
+   "pending": 0
+  }
+ }
 }

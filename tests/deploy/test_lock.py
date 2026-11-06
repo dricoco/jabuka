@@ -16,6 +16,7 @@ EXPECTED_LOCKED = {
     "fastapi",
     "h11",
     "idna",
+    "numpy",  # Phase 3 router (plan 03-05)
     "opentelemetry-api",
     "pmtiles",
     "pydantic",

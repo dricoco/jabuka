@@ -79,6 +79,10 @@ class NavService:
     def settings(self):
         return self.settings_store.settings
 
+    def set_grib_provider(self, provider: wind.GribProvider | None) -> None:
+        """GRIB wind at (lat, lon) for the GPS + GRIB-only source (set by the core's router)."""
+        self.wind.grib = provider
+
     # -- inputs ------------------------------------------------------------------------------
     def _inputs(self) -> dict[str, dict | None]:
         return {p: self.state.latest(p) for p in wind.INPUT_PATHS}
@@ -141,6 +145,8 @@ class NavService:
         bsp_ms = wind.num(inputs.get(wind.BSP))
         sog_kn = ms_to_kn(sog_ms) if sog_ms is not None else None
         bsp_kn = ms_to_kn(bsp_ms) if bsp_ms is not None else None
+        # GPS + GRIB: SOG stands in for the (silent) log for % polar and the laylines
+        speed_kn = sog_kn if w.source == "GRIB" else bsp_kn
         msg["boat"] = {
             "lat": lat,
             "lon": lon,
@@ -177,9 +183,9 @@ class NavService:
             targets_eff = apply_efficiency(
                 self.polar.targets(tws_kn), s.efficiency, s.efficiency_up, s.efficiency_down
             )
-            if twa_abs is not None and bsp_kn is not None:
+            if twa_abs is not None and speed_kn is not None:
                 ref = eff_now * self.polar.speed(tws_kn, twa_abs)
-                pct = bsp_kn / ref * 100.0 if ref > 0.05 else None
+                pct = speed_kn / ref * 100.0 if ref > 0.05 else None
         msg["polar"] = {
             "name": self.polar.name,
             "eff": s.efficiency,
@@ -223,7 +229,7 @@ class NavService:
             }
         if target is not None and lat is not None and lon is not None:
             boat = laylines.BoatState(
-                lat=lat, lon=lon, hdg=hdg_t, cog=cog, sog_kn=sog_kn, bsp_kn=bsp_kn
+                lat=lat, lon=lon, hdg=hdg_t, cog=cog, sog_kn=sog_kn, bsp_kn=speed_kn
             )
             reach_bsp = None
             if w.ok and tws_kn is not None and twa_abs is not None:

@@ -13,6 +13,9 @@ turns the latest instrument values into a WindSolution once per tick (RESEARCH P
    - LIVE_BG: the Hercules true wind (direction, else heading + angleTrueWater) when the computed
      inputs are missing or true_wind_source is "instrument".
    - MANUEL: the stored manual entry, sticky until cleared.
+   - GRIB (WIND-05, Phase 3): with the bus silent and grib_wind_fallback on, the race-pack GRIB
+     at the boat position and GPS time (bias-corrected, from the provider set by the core). The
+     heading is GPS COG (SOG > 1 kn, else none: no TWA and no laylines) and SOG stands in for BSP.
    - NONE.
 3. Cross-check: when both the computed and the Hercules values are fresh, dTWA/dTWS are published,
    with an alert after 60 s continuously above 10 deg.
@@ -28,7 +31,7 @@ monotonic clock (t_mono) and the injected wall clock (t_wall, manual age only).
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,6 +75,10 @@ MIN_WEIGHT_MS = 1e-3  # vector weight floor so a 0 kn manual entry keeps its dir
 
 ALERT_ZONE = "CAP NON FIABLE (zone Jabuka)"
 ALERT_CHECK = "Écart TWA calculé/B&G > 10°"
+ALERT_GRIB = "VENT GRIB (pas d'instruments)"
+
+# (lat, lon) deg -> (TWD FROM rad TRUE, TWS m/s) of the race-pack GRIB, or None (not covered)
+GribProvider = Callable[[float, float], tuple[float, float] | None]
 
 Inputs = Mapping[str, Mapping[str, Any] | None]
 
@@ -168,7 +175,7 @@ class ScalarEma:
 
 @dataclass
 class WindSolution:
-    source: str = "NONE"  # LIVE | LIVE_BG | MANUEL | NONE
+    source: str = "NONE"  # LIVE | LIVE_BG | MANUEL | GRIB | NONE
     stale: bool = False
     twd: float | None = None  # rad TRUE, FROM (helm-damped)
     twd_lay: float | None = None  # rad TRUE, FROM (layline-damped)
@@ -188,8 +195,9 @@ class WindSolution:
 
 
 class WindPipeline:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, grib: GribProvider | None = None) -> None:
         self.settings = settings
+        self.grib = grib  # set by the core when a race pack is loaded (NavService)
         self.last: WindSolution = WindSolution()
         self._ema_helm = VectorEma(settings.tau_helm_s)
         self._ema_lay = VectorEma(settings.tau_layline_s)
@@ -274,6 +282,12 @@ class WindPipeline:
             sol.source = "MANUEL"
             raw = (wrap_2pi(math.radians(manual.twd_t_deg)), kn_to_ms(manual.tws_kn))
             self._manual_age(sol, manual, t_wall)
+        else:
+            raw = self._grib(sol, inputs)
+            if raw is not None:
+                # GPS + GRIB: the heading is COG (only above 1 kn), never the compass alone
+                hdg, hdg_src = (cog, "cog") if cog_ok else (None, None)
+                sol.heading_trusted = cog_ok and not zone
 
         # heading for the TWA: the trusted one, else COG as a best effort (MANUEL, LIVE_BG)
         if hdg is None and cog_ok:
@@ -297,8 +311,27 @@ class WindPipeline:
                 sol.twa = wrap_pi(sol.twd - hdg)
             elif sol.source == "LIVE_BG" and twa_i is not None:
                 sol.twa = wrap_pi(twa_i)
+            elif sol.source == "GRIB":
+                sol.twd_lay = None  # no heading: no laylines (Phase 2 NONE handling)
         self.last = sol
         return sol
+
+    def _grib(self, sol: WindSolution, inputs: Inputs) -> tuple[float, float] | None:
+        """GRIB wind at the boat (source GRIB + alert), or None when off / not covered."""
+        if not self.settings.grib_wind_fallback or self.grib is None:
+            return None
+        pos = position(inputs)
+        if pos is None:
+            return None
+        try:
+            g = self.grib(pos[0], pos[1])
+        except Exception:  # noqa: BLE001 - a GRIB problem means no GRIB wind, never a crash
+            return None
+        if g is None or not all(math.isfinite(x) for x in g):
+            return None
+        sol.source = "GRIB"
+        sol.alerts.append(ALERT_GRIB)
+        return wrap_2pi(g[0]), max(0.0, g[1])
 
     def _cross_check(
         self,

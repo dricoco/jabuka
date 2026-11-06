@@ -23,6 +23,7 @@ from jabuka.common.clock import Clock, SimClock, make_clock
 from jabuka.core.bus import start_udp_listener
 from jabuka.core.derived_log import DerivedLogger
 from jabuka.core.nav_service import NavService
+from jabuka.core.router_service import RouterService
 from jabuka.core.state import StateStore
 from jabuka.core.tiles import Racepack
 from jabuka.core.web import Hub, create_app
@@ -45,6 +46,7 @@ class CoreContext:
     nav: NavService
     racepack_dir: Path | None = None
     racepack: Racepack | None = None  # built by tiles.racepack_router (index once, at startup)
+    router: RouterService | None = None  # live routing (plan 03-05), built by create()
     bus_log: RotatingAppendLog | None = None
     derived: DerivedLogger | None = None
     events_log: RotatingAppendLog | None = None
@@ -64,6 +66,7 @@ class CoreContext:
             "events_errors": 0,
             "flush_errors": 0,
             "nav_errors": 0,
+            "router_errors": 0,
         }
     )
     started_mono: float = 0.0
@@ -109,13 +112,18 @@ class CoreContext:
         # one retention policy for the whole data volume; the core owns the budgets
         retention = Retention(logs, budget_bytes=log_budget_bytes, mono=clock.monotonic)
         state = StateStore(clock)
+        hub = Hub()
+        nav = NavService(state, clock, data_dir, racepack_dir)
+        router = RouterService(state, clock, nav, hub, data_dir, racepack_dir)
+        nav.set_grib_provider(router.grib_wind_at)  # GPS + GRIB-only wind (WIND-05)
         return cls(
             clock=clock,
             state=state,
-            hub=Hub(),
+            hub=hub,
             data_dir=data_dir,
-            nav=NavService(state, clock, data_dir, racepack_dir),
+            nav=nav,
             racepack_dir=racepack_dir,
+            router=router,
             bus_log=bus,
             derived=DerivedLogger(logs / "derived", clock),
             events_log=events_log,
@@ -239,6 +247,7 @@ class CoreContext:
                 "events_errors": self.stats.get("events_errors", 0),
                 "flush_errors": self.stats.get("flush_errors", 0),
                 "nav_errors": self.stats.get("nav_errors", 0),
+                "router_errors": self.stats.get("router_errors", 0),
                 "ws_clients": len(self.hub.clients),
                 "uptime_s": round(max(0.0, self.clock.monotonic() - self.started_mono), 3),
                 "disk": self.retention.status() if self.retention is not None else None,
@@ -258,7 +267,21 @@ class CoreContext:
             log.exception("nav update failed")
             return None
         self.stats["nav_errors"] = max(self.stats.get("nav_errors", 0), self.nav.errors)
+        self.route_nav(msg)
         return msg
+
+    def route_nav(self, msg: dict) -> None:
+        """Add the route block (RouterService.tick); never raises, failures counted in stats
+        router_errors and shown as route.state "failed"."""
+        if self.router is None:
+            return
+        try:
+            self.router.tick(msg)
+        except Exception:
+            self.stats["router_errors"] = self.stats.get("router_errors", 0) + 1
+            log.exception("router tick failed")
+            msg["route"] = {"state": "failed", "reason": "erreur du routeur"}
+        self.stats["router_errors"] = max(self.stats.get("router_errors", 0), self.router.errors)
 
     def nav_text(self, msg: dict | None) -> str | None:
         if msg is None:
@@ -350,6 +373,8 @@ class CoreContext:
             self._tasks.append(
                 asyncio.create_task(sdnotify.watchdog_loop(interval), name="jabuka-watchdog")
             )
+        if self.router is not None:
+            await self.router.startup()  # race pack + worker pool (the worker starts on demand)
         sdnotify.notify("READY=1")  # UDP listener bound, tick running
 
     async def shutdown(self) -> None:
@@ -361,6 +386,8 @@ class CoreContext:
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
+        if self.router is not None:
+            await self.router.shutdown()  # kills the routing worker
         if self._transport is not None:
             self._transport.close()
             self._transport = None

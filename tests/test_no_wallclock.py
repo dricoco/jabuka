@@ -1,5 +1,5 @@
-"""Inject the clock everywhere: core/, common/ (except common/clock.py) and nav/ never read the
-time directly."""
+"""Inject the clock everywhere: core/, common/ (except common/clock.py), nav/ and route/ never read
+the time directly (route/ may time itself with time.perf_counter, which is not banned)."""
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ def _scanned() -> list[Path]:
         sorted((PKG / "core").glob("*.py"))
         + sorted((PKG / "common").glob("*.py"))
         + sorted((PKG / "nav").glob("*.py"))
+        + sorted((PKG / "route").glob("*.py"))
     )
     return [f for f in files if f.name != "clock.py"]
 
@@ -52,6 +53,7 @@ def test_scan_covers_core_and_common() -> None:
     names = {f.name for f in _scanned()}
     assert {"state.py", "main.py", "web.py", "messages.py"} <= names
     assert {"laylines.py", "wind.py", "polar.py", "course.py", "nav_service.py"} <= names
+    assert {"isochrone.py", "router_service.py", "advice.py", "bias.py", "bench.py"} <= names
     assert "clock.py" not in names
 
 
