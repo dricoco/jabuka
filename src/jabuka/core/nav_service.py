@@ -74,6 +74,7 @@ class NavService:
         self.errors = 0
         self._prev_leg: str | None = None
         self._prev_primary: str | None = None
+        self._prev_target: tuple[int, str] | None = None  # hysteresis is per mark (IN-07)
 
     @property
     def settings(self):
@@ -221,6 +222,9 @@ class NavService:
                 "btw_t": None,
                 "ttw_s": None,
             }
+        if target is not None and (target.idx, target.mark.id) != self._prev_target:
+            self._prev_target = (target.idx, target.mark.id)
+            self._prev_leg = self._prev_primary = None  # a new leg starts without hysteresis
         if target is not None and lat is not None and lon is not None:
             boat = laylines.BoatState(
                 lat=lat, lon=lon, hdg=hdg_t, cog=cog, sog_kn=sog_kn, bsp_kn=bsp_kn

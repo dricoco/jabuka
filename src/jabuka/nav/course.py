@@ -58,7 +58,9 @@ MAX_SEQ = 30
 NAME_MAX = 40
 
 ZONE_MARGIN_NM = 0.25  # arrival zone = leg radius + this (RESEARCH A10)
-GATE_NM = 2.0  # nothing fires further than this from the active mark
+GATE_NM = 2.0  # nothing fires further than this from the active mark...
+GATE_OVER_ZONE_NM = 0.5  # ...or than this beyond a large zone (radius up to 3 nm, IN-07)
+WRITE_ALERT = "Écriture du parcours impossible"
 DEBOUNCE_S = 10.0  # rounding evidence must hold this long
 FSM_GAP_S = 3.0  # a longer gap between position samples restarts the debounce (IN-05)
 BANNER_S = 60.0  # Annuler window
@@ -278,6 +280,7 @@ class CourseStore:
         self._check_version(base_version)
         version = self.version + 1
         self._write(course, version)
+        self._clear_write_alert()
         self._set(course, version)
         if event is not None:
             self._emit({**event, "version": version})
@@ -299,7 +302,8 @@ class CourseStore:
             self._commit(course, None, event)
         except OSError:
             log.exception("course write failed during the tick")
-            self.alerts.append("Écriture du parcours impossible")
+            if WRITE_ALERT not in self.alerts:
+                self.alerts.append(WRITE_ALERT)
             self._set(course, self.version + 1)
             self._emit({**event, "version": self.version, "persisted": False})
 
@@ -307,11 +311,17 @@ class CourseStore:
         """Banner expiry / suppression cleared: persisted without a version bump."""
         try:
             self._write(course, self.version)
+            self._clear_write_alert()
         except OSError:
             log.exception("course write failed")
         self.course = course
         if course.banner is None:
             self._banner_until = None
+
+    def _clear_write_alert(self) -> None:
+        """A successful write ends a transient disk failure's alert (IN-07)."""
+        if WRITE_ALERT in self.alerts:
+            self.alerts.remove(WRITE_ALERT)
 
     def _copy(self, **update: Any) -> Course:
         return self.course.model_copy(deep=True, update=update)
@@ -675,7 +685,7 @@ class CourseStore:
             if d <= max(leg.radius_nm, FINISH_MIN_NM):
                 self._finish(t, idx, mark)
             return
-        if d > GATE_NM:
+        if d > max(GATE_NM, zone + GATE_OVER_ZONE_NM):  # a zone past 2 nm can still be left
             self._entered = False
             self._cand_since = None
             return

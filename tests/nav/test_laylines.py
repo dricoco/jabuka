@@ -364,3 +364,25 @@ def test_nav_service_current_ignored_in_the_zone(tmp_path) -> None:
 def test_nav_service_sailed_setting_without_samples_reports_polar(tmp_path) -> None:
     nav, _ = _nav_with_inputs(tmp_path, layline_source="sailed")
     assert nav.update()["layline"]["src"] == "polar"
+
+
+def test_nav_service_hysteresis_restarts_on_a_new_mark(tmp_path, monkeypatch) -> None:
+    """IN-07: the previous leg type / primary number of the mark just rounded never carry over
+    to the next mark (its first ticks would keep the old leg's hysteresis)."""
+    import jabuka.core.nav_service as ns
+
+    nav, _ = _nav_with_inputs(tmp_path)
+    seen: list[tuple] = []
+    real = ns.laylines.solve
+
+    def spy(*a, **k):
+        seen.append((k.get("prev_leg"), k.get("prev_primary")))
+        return real(*a, **k)
+
+    monkeypatch.setattr(ns.laylines, "solve", spy)
+    nav.update()
+    nav.update()
+    assert seen[0] == (None, None) and seen[1][0] == "beat"
+    nav.course.next()
+    nav.update()
+    assert seen[2] == (None, None)

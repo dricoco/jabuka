@@ -381,6 +381,38 @@ def test_gps_gap_restarts_the_rounding_debounce(tmp_path: Path) -> None:
     assert cs.course.active_idx == 2
 
 
+def test_large_radius_zone_exit_still_advances(tmp_path: Path) -> None:
+    """IN-07: radius 2 nm -> zone 2.25 nm, past the 2 nm gate: leaving the zone (without abeam)
+    still counts, the gate follows the zone."""
+    cs, _ = store(tmp_path)
+    cs.set_leg(1, radius_nm=2.0)
+    t = run(cs, at(61, 2.1), 0.0, 3)  # inside the 2.25 nm zone, in front of the abeam line
+    t = run(cs, at(51, 2.4), t, 10)  # left the zone, not abeam
+    assert cs.course.active_idx == 1
+    cs.on_tick(*at(51, 2.4), t)
+    assert cs.course.active_idx == 2
+
+
+def test_write_failure_alert_clears_after_a_successful_write(tmp_path: Path, monkeypatch) -> None:
+    """IN-07: one transient disk failure during the tick must not show "Écriture du parcours
+    impossible" for the rest of the race."""
+    import jabuka.nav.course as course_mod
+
+    cs, _ = store(tmp_path)
+    real = course_mod.atomic_write_json
+
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(course_mod, "atomic_write_json", full)
+    t = run(cs, at(61, 0.4), 0.0, 2)
+    t = run(cs, at(81, 0.4), t, 11)  # advance applied in memory, write failed
+    assert cs.course.active_idx == 2 and cs.alerts == ["Écriture du parcours impossible"]
+    monkeypatch.setattr(course_mod, "atomic_write_json", real)
+    cs.confirm_sides()
+    assert cs.alerts == []
+
+
 def test_undo_after_60_s_is_gone(tmp_path: Path) -> None:
     from jabuka.nav.course import BannerGone
 
