@@ -364,33 +364,54 @@ verrouillée ; portable chargé à bord ; SD de secours et ce runbook dans le sa
 
 Commande : `bash scripts/commissioning-rehearsal.sh --steps all` (complète, hors ligne : la
 répétition du pack réel `R6.dryrun` est `SKIP « hors ligne »` ; avec internet ajouter
-`--online`). Le 12 novembre, refaire `R3.*` avec `--capture` sur la vraie capture (§3).
+`--online`). Le 12 novembre, refaire `R3.*` avec `--capture` sur la vraie capture (§3). La
+version rapide (`bash scripts/commissioning-rehearsal.sh`, ~10 s) tourne dans la porte
+(`tests/commissioning`).
 
-Dernière répétition rapide (porte, `bash scripts/commissioning-rehearsal.sh`, 2026-11-06) :
+Dernière répétition complète : **2026-11-06 20:15 UTC**, commit de la tâche 3 du plan 04-02 (sur
+`9ed8631`), portable i7, Python 3.14, capture de test `example2_fastnet_data.txt`, **202 s**,
+code 0. Lignes résumées (le détail complet est dans `var/rehearsal/<horodatage>/results.json`) :
 
 ```text
+[HUMAN] R1.packing §1 Sac de bord
+[PASS] R1.wheelhouse §1 Wheelhouse complète : 19 paquets verrouillés, une roue chacun + jabuka
+[HUMAN] R1.soak §1 Endurance race-36h : aucun rapport race-36h dans var/soak : bash scripts/soak.sh
 [HUMAN] R2.wiring §2 Prise sur le bus
-[PASS] R2.silent §2 Bus muet → NO BYTES : attendu NO BYTES (code 2), obtenu code 2 (fichier)
-[PASS] R2.swap §2 Fils inversés → croiser Blanc/Vert : attendu BYTES BUT NO VALID FRAMES (code 3), obtenu code 3 (fichier)
-[PASS] R2.noisy §2 Bus bruité → NOISY : attendu NOISY (code 4), obtenu code 4 (fichier)
-[PASS] R2.ok §2 Bon câblage → OK : attendu OK (code 0), obtenu code 0 (fichier)
+[PASS] R2.silent §2 Bus muet → NO BYTES : attendu NO BYTES (code 2), obtenu code 2 (pty en direct)
+[PASS] R2.swap §2 Fils inversés → croiser Blanc/Vert : attendu BYTES BUT NO VALID FRAMES (code 3), obtenu code 3 (pty en direct)
+[PASS] R2.noisy §2 Bus bruité → NOISY : attendu NOISY (code 4), obtenu code 4 (pty en direct)
+[PASS] R2.ok §2 Bon câblage → OK : attendu OK (code 0), obtenu code 0 (pty en direct) : OK: 102.6 frames/s, 54 channels
 [HUMAN] R3.pages §3 Pages B&G pendant la capture
-[PASS] R3.capture §3 Capture brute (fastnet-probe) : probe code 0 : OK: 105.1 frames/s, 54 channels
+[PASS] R3.capture §3 Capture brute (fastnet-probe) : probe code 0 : OK: 102.6 frames/s, 54 channels ; fichiers ['capture.log', 'inventory.json']
 [PASS] R3.inventory §3 Inventaire des canaux : 42 canaux décodés sur 54 vus
-[PASS] R3.archive §3 Archive de la capture
-[PASS] R3.replay §3 Rejeu propre dans la chaîne : 42 chemins de l'inventaire servis par /api/state en 0.9 s
-[PASS] R3.logcheck §3 Journaux du rejeu intacts : jabuka-logcheck code 0
-[PASS] R4.variation §4 Cap magnétique + variation = cap vrai : cap bus 111.0°M + variation 4.7° = 115.7°T, nav 115.7°T
-[PASS] R4.cog_hdg §4 COG contre cap vrai : écart 0.3° (≤ 3°, sans courant)
-[PASS] R4.awa_sign §4 Signe de l'AWA : tribord amures (TWA +45) → AWA +33°
-[PASS] R4.twd §4 TWD calculé contre scripté : écart 0.4° (≤ 5°) ; moitié instrument SKIP (pas de canal 0x6D)
+[PASS] R3.archive §3 Archive de la capture : archive/capture-20261106T201554Z.tar.gz (sha256 326f78d706fb…)
+[PASS] R3.replay §3 Rejeu propre dans la chaîne : 42 chemins de l'inventaire servis par /api/state en 0.6 s
+[PASS] R3.logcheck §3 Journaux du rejeu intacts : jabuka-logcheck code 0 : logcheck: OK (1 files, 0 torn tails)
+[PASS] R4.variation §4 Cap magnétique + variation = cap vrai : cap bus 111.0°M + variation 4.7° = 115.7°T, nav 115.7°T, bateau 116.0°T
+[PASS] R4.cog_hdg §4 COG contre cap vrai : COG 116.0°T, cap vrai 115.7°T : écart 0.3° (≤ 3°, sans courant)
+[PASS] R4.awa_sign §4 Signe de l'AWA : tribord amures (TWA +45) → AWA +33°, TWA nav +45°
+[PASS] R4.twd §4 TWD calculé contre scripté : écart 0.4° (≤ 5°) ; moitié instrument SKIP (pas de canal TWD 0x6D)
 [HUMAN] R4.dock §4 Contrôles au port / au moteur
 [HUMAN] R4.underway §4 Contrôles sous voiles
-[PASS] R5.offline §5 Page de barre sans internet : 8 ressources, toutes servies par le Pi
-[PASS] R7.drill §7 Changement de parcours : parcours B → Finir ici à Mulo → Finir ici annulé → Côtés confirmés → parcours A en 0.06 s
-[PASS] R9.summary §9 Bilan go / no-go : 15 PASS, 0 FAIL, 0 SKIP, 4 HUMAN
-jabuka-rehearsal: 16 PASS, 0 FAIL, 0 SKIP, 4 HUMAN en 9 s -> OK
+[PASS] R5.offline §5 Page de barre sans internet : 8 ressources de la page, toutes servies par le Pi
+[HUMAN] R5.setup §5 Réglage de la tablette
+[PASS] R6.pack §6 Route adoptée sur le pack : route version 1 adoptée (état ok, pack uniform ok)
+[SKIP] R6.dryrun §6 Répétition du pack réel : hors ligne (--online lance scripts/racepack-dryrun.sh)
+[HUMAN] R6.friday §6 Pack final du vendredi
+[PASS] R7.drill §7 Changement de parcours : parcours B → Finir ici à Mulo → Finir ici annulé → Côtés confirmés → parcours A en 0.07 s (< 30 s)
+[HUMAN] R7.si §7 Parcours d'après les IC
+[PASS] R8.gribonly §8 Bus muet → GRIB : GRIB (TWD 160.6°T, 12.0 nd, alerte VENT GRIB (pas d'instruments)) → LIVE au retour du bus
+[PASS] R8.manual §8 Vent manuel : GRIB → saisie 150°M 14 nd → MANUEL 154.7°T → effacé → GRIB
+[PASS] R8.stay §8 ON RESTE : ON RESTE actif (bord stbd) → ANNULER ON RESTE : inactif
+[PASS] R8.powerpull §8 Coupure d'alimentation : kill -9 ingest + cœur, redémarrage en 0.9 s : parcours, réglages et vent manuel identiques, bus de retour, jabuka-logcheck OK
+[HUMAN] R8.boat §8 Exercices à bord
+[HUMAN] R8.sdswap §8 Échange de carte SD
+[PASS] R9.summary §9 Bilan go / no-go : 21 PASS, 0 FAIL, 1 SKIP, 11 HUMAN
+jabuka-rehearsal: 22 PASS, 0 FAIL, 1 SKIP, 11 HUMAN en 202 s -> OK
 ```
+
+À refaire après le gel (11 nov.) : `R1.soak` doit alors être `PASS` (rapport race-36h du
+portable) et la wheelhouse reconstruite depuis le tag.
 
 ## Annexe B — Renvois
 

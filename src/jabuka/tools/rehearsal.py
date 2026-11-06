@@ -12,13 +12,17 @@ One line per step: ``[PASS|FAIL|SKIP|HUMAN] <id> §<n> <titre> : <détail>``. Ex
 failed, 1 otherwise, 2 on a setup error (unknown step, missing capture).
 
 Every tool runs as a subprocess ``[python, -m, module]`` with its existing flags only. Dev tool:
-it may read the wall clock and binds 127.0.0.1 ports and ptys only.
+it may read the wall clock and binds 127.0.0.1 ports and ptys only. Like the other jabuka.tools
+modules it never opens a file for writing itself (tests/bus/test_no_write_path.py): outputs go
+through jabuka.common.atomicio, and tool output is kept in memory and saved to OUT/logs at the end.
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import io
 import json
 import math
 import os
@@ -30,10 +34,12 @@ import socket
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -41,12 +47,14 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from jabuka.common.atomicio import atomic_write_bytes, atomic_write_json
 from jabuka.tools.probe import EXIT_CODES, VERDICT_TITLES
 
 REPO = Path(__file__).resolve().parents[3]
 DEFAULT_CAPTURE = REPO / "tests" / "fixtures" / "fastnet" / "example2_fastnet_data.txt"
 PROBE_LIVE_S = 5  # fastnet-probe LIVE_MIN_SECONDS
 REPLAY_DEADLINE_S = 20.0
+LOG_CAP_BYTES = 2_000_000  # per tool log kept in memory (the tail)
 
 PASS, FAIL, SKIP, HUMAN = "PASS", "FAIL", "SKIP", "HUMAN"
 
@@ -104,6 +112,29 @@ class Context:
     results: dict[str, Result] = field(default_factory=dict)
     procs: list[subprocess.Popen] = field(default_factory=list)
     cache: dict[str, Any] = field(default_factory=dict)
+    logs: dict[str, bytearray] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    # -- logs ----------------------------------------------------------------------------------
+    def log(self, name: str, data: bytes | str) -> None:
+        if isinstance(data, str):
+            data = data.encode("utf-8", errors="replace")
+        with self.lock:
+            buf = self.logs.setdefault(name, bytearray())
+            buf += data
+            if len(buf) > LOG_CAP_BYTES:
+                del buf[: len(buf) - LOG_CAP_BYTES]
+
+    def save_logs(self) -> None:
+        with self.lock:
+            logs = {k: bytes(v) for k, v in self.logs.items()}
+        for name, data in logs.items():
+            atomic_write_bytes(self.log_path(name), data)
+
+    def _drain(self, name: str, proc: subprocess.Popen) -> None:
+        assert proc.stdout is not None
+        for chunk in iter(partial(proc.stdout.read1, 65536), b""):
+            self.log(name, chunk)
 
     # -- subprocesses --------------------------------------------------------------------------
     def log_path(self, name: str) -> Path:
@@ -112,15 +143,17 @@ class Context:
         return d / f"{name}.log"
 
     def spawn(self, name: str, module: str, *args: str) -> subprocess.Popen:
-        log = open(self.log_path(name), "ab")  # noqa: SIM115 - closed with the process
+        self.log(name, f"$ {module} {' '.join(args)}\n")
         proc = subprocess.Popen(
             [sys.executable, "-m", module, *args],
-            stdout=log,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
             cwd=REPO,
         )
-        proc._jabuka_log = log  # type: ignore[attr-defined]
+        drain = threading.Thread(target=self._drain, args=(name, proc), daemon=True)
+        drain.start()
+        proc._jabuka_drain = drain  # type: ignore[attr-defined]
         self.procs.append(proc)
         return proc
 
@@ -134,8 +167,7 @@ class Context:
             cwd=REPO,
         )
         text = proc.stdout + proc.stderr
-        with open(self.log_path(name), "a", encoding="utf-8") as f:
-            f.write(f"$ {module} {' '.join(args)}\n{text}\nexit {proc.returncode}\n")
+        self.log(name, f"$ {module} {' '.join(args)}\n{text}\nexit {proc.returncode}\n")
         return proc.returncode, text
 
     def stop(self, proc: subprocess.Popen | None, sig: int = signal.SIGTERM) -> None:
@@ -150,9 +182,9 @@ class Context:
                 proc.wait(timeout=5)
             except ProcessLookupError:
                 pass
-        log = getattr(proc, "_jabuka_log", None)
-        if log is not None:
-            log.close()
+        drain = getattr(proc, "_jabuka_drain", None)
+        if drain is not None:
+            drain.join(timeout=2.0)  # a child that kept the pipe open must not hang the run
         if proc in self.procs:
             self.procs.remove(proc)
 
@@ -235,7 +267,8 @@ def live_probe(ctx: Context, name: str, replay_args: list[str], out: Path) -> tu
 # -- §2 wiring: the swap-wires drill -----------------------------------------------------------
 def _write_capture(path: Path, data: bytes, line: int = 40) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(data[i : i + line].hex() + "\n" for i in range(0, len(data), line)))
+    text = "".join(data[i : i + line].hex() + "\n" for i in range(0, len(data), line))
+    atomic_write_bytes(path, text.encode("ascii"))
     return path
 
 
@@ -323,11 +356,14 @@ def step_archive(ctx: Context) -> Result:
     adir = ctx.out / "archive"
     adir.mkdir(parents=True, exist_ok=True)
     tgz = adir / f"capture-{ts}.tar.gz"
-    with tarfile.open(tgz, "w:gz") as tar:
+    raw = io.BytesIO()
+    with tarfile.TarFile(fileobj=raw, mode="w") as tar:
         for f in files:
             tar.add(f, arcname=f.name)
-    digest = hashlib.sha256(tgz.read_bytes()).hexdigest()
-    Path(f"{tgz}.sha256").write_text(f"{digest}  {tgz.name}\n", encoding="utf-8")
+    data = gzip.compress(raw.getvalue(), mtime=0)
+    atomic_write_bytes(tgz, data)
+    digest = hashlib.sha256(data).hexdigest()
+    atomic_write_bytes(Path(f"{tgz}.sha256"), f"{digest}  {tgz.name}\n".encode())
     return Result(PASS, f"{tgz} (sha256 {digest[:12]}…)")
 
 
@@ -514,23 +550,6 @@ def angle_diff(a: float, b: float) -> float:
     return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
-def reset_pty_termios(link: Path) -> None:
-    """A pty silently drops PARENB, so a pty left at 28800 makes the restarted ingest's
-    tcsetattr fail (glibc >= 2.42); a real UART keeps PARENB. Put the pty back to its fresh
-    38400 state before restarting the ingest on the same pty (tests/deploy/test_crash_recovery)."""
-    import termios
-
-    fd = os.open(link, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-    try:
-        attrs = termios.tcgetattr(fd)
-        cbaud = termios.CBAUD | (termios.CBAUD << 16)
-        attrs[2] = (attrs[2] & ~cbaud) | termios.B38400
-        attrs[4] = attrs[5] = termios.B38400
-        termios.tcsetattr(fd, termios.TCSANOW, attrs)
-    finally:
-        os.close(fd)
-
-
 def write_boat_pack(pack: Path, start: datetime) -> Path:
     """Rehearsal race pack: the committed 25 m land mask plus a uniform wind (the synth's wind)
     covering start - 1 day .. start + 3 days, written with the race-pack writer."""
@@ -691,7 +710,6 @@ class BoatStack:
         self.ctx.stop(self.ingest, signal.SIGKILL)
         self.ctx.stop(self.core, signal.SIGKILL)
         t0 = time.monotonic()
-        reset_pty_termios(self.link)
         self._spawn_core()
         self._spawn_ingest()
         return time.monotonic() - t0
@@ -910,8 +928,7 @@ def step_dryrun(ctx: Context) -> Result:
         text=True,
         timeout=3600,
     )
-    with open(ctx.log_path("racepack-dryrun"), "w", encoding="utf-8") as f:
-        f.write(proc.stdout + proc.stderr)
+    ctx.log("racepack-dryrun", proc.stdout + proc.stderr)
     last = [x for x in (proc.stdout + proc.stderr).splitlines() if x.strip()]
     return Result(
         PASS if proc.returncode == 0 else FAIL,
@@ -1279,6 +1296,7 @@ def run_steps(ctx: Context, steps: list[Step], echo: Callable[[str], None] = pri
         if stack is not None:
             stack.stop()
         ctx.stop_all()
+        ctx.save_logs()
     return 1 if any(r.status == FAIL for r in ctx.results.values()) else 0
 
 
@@ -1384,9 +1402,7 @@ def main(argv: list[str] | None = None) -> int:
                 if s.id in ctx.results
             ],
         }
-        (out / "results.json").write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        atomic_write_json(out / "results.json", payload)
     return code
 
 

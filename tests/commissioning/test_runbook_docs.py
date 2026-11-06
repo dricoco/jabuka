@@ -123,7 +123,7 @@ def test_exit_code_table_is_the_probes() -> None:
 def _sh_commands(text: str) -> list[str]:
     """Logical lines (backslash continuations joined) of ```sh / ```bash blocks."""
     out: list[str] = []
-    for block in re.findall(r"^```(?:sh|bash)\n(.*?)^```", text, re.M | re.S):
+    for block in re.findall(r"^[ \t]*```(?:sh|bash)\n(.*?)^[ \t]*```", text, re.M | re.S):
         buf = ""
         for raw in block.splitlines():
             line = raw.rstrip()
