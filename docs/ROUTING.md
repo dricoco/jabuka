@@ -211,3 +211,109 @@ extrapolation for the Pi 3B is x15-x25 (L0 about 9-15 s), so L0 is expected to p
 Write in the phase summary (or STATE.md): p50/p95/max per level, jitter, RSS, the CPU
 temperature and `vcgencmd get_throttled` at start and end (both in the JSON), and the
 recommended level. That level becomes the `route_level` setting in Réglages (plan 03-05).
+
+## À la barre : utiliser la route (opérateur)
+
+Phrases courtes, à lire de nuit. Tout est calculé par le Pi ; la tablette ne fait qu'afficher.
+
+### Lire l'onglet Barre
+
+| Ce qu'on voit | Ce que ça veut dire |
+|---|---|
+| `TWA ROUTE ↑ 42° tribord` | Barrer cet angle au vent, sur ce bord. ↑ au près, ↓ au portant. |
+| `CAP ROUTE 114°M` | Au travers : barrer ce cap (magnétique par défaut). |
+| `TWA CIBLE` / `CAP À SUIVRE` | Pas de route valide : ce sont les laylines (Phase 2). |
+| `LOFER` / `ABATTRE` / `◄ BÂBORD` | L'écart à la cible de la route. |
+| `Virement dans 08:30` | Temps avant le virement de la route. `Empannage dans …` au portant. |
+| `VIREZ` (inversé) | C'est maintenant. Reste affiché 2 min. |
+| `Route mise à jour…` | Virement conseillé manqué depuis 2 min : le Pi recalcule. Ne pas virer sur l'ancien conseil. |
+| `Layline à 1,5 nm` | Distance à la layline (seulement quand le compte à rebours vient des laylines). |
+| `Ne pas virer : +4 min` | Ce que coûte de rester sur ce bord (`< 1 min` : sans importance). |
+| `Route : il y a 3 min` | Âge de la route. Normal : moins de 5 min (recalcul toutes les 5 min). |
+| `Cap route 114°M` / `TWA route 95° bâbord` | L'autre forme de la même cible, pour vérifier. |
+| `Biais GRIB +12° ×1.15` | Le GRIB est corrigé par le vent mesuré : +12° de direction, vent ×1,15. |
+| `(s'estompe)` | Plus de mesure fiable : la correction diminue avec le temps (τ 2,5 h). |
+| `(gelé, Jabuka)` | Zone magnétique de Jabuka : la correction est figée, pas apprise. |
+| `Biais GRIB : apprentissage` | Les 10 premières minutes de mesures stables. |
+| `Route : niveau L2` | Le Pi tourne en mode allégé (banc). La route reste bonne, moins fine. |
+| `Hors route` | Plus de 0,5 nm ou 20° de la route : un recalcul part après 2 min. |
+
+Sur la carte : la route en trait violet (rouge pointillé la nuit), les virements en points, le
+prochain virement en gros point.
+
+### ON RESTE
+
+Quand l'appuyer :
+
+- On ne veut pas virer maintenant (risée attendue, trafic, manœuvre pas prête, équipage).
+- Le Pi recalcule avec le bord actuel tenu au moins 5 min de plus (Réglages « On reste : marge
+  (min) »).
+- Le bouton devient `ANNULER ON RESTE`. Le compte à rebours montre le **premier virement
+  possible**.
+- Fin automatique : au prochain virement détecté (TWA qui change de signe pendant 30 s), ou
+  `ANNULER ON RESTE`.
+
+`Virement imposé (terre) dans 01:35` : le bord tenu va vers la terre ou un danger. Il faut virer
+avant la fin du décompte, ON RESTE ou pas.
+
+Écran verrouillé (cadenas) : le bouton ne fait rien. Déverrouiller : appui 2 s sur le cadenas.
+
+`On reste impossible : amure inconnue …` : le Pi ne sait pas sur quel bord on est (pas de vent).
+Attendre le vent, ou saisir un vent manuel.
+
+### Badge GRIB (bus B&G muet)
+
+- Le badge vent passe à `GRIB` et l'alerte `VENT GRIB (pas d'instruments)` s'affiche.
+- Le vent vient du GRIB (corrigé du biais) à la position GPS.
+- Cap = COG du GPS, vitesse = SOG. Sous 1 nd : pas de TWA, pas de laylines.
+- La route et les laylines continuent. Vérifier le vent à l'œil et sur les répétiteurs B&G.
+- Pour l'interdire : Réglages « Vent GRIB sans instruments » sur non.
+
+### Couper la correction du GRIB
+
+Si le biais affiché paraît faux (capteur de vent déréglé, bateau mal calibré) :
+Réglages « Correction du GRIB (biais) » sur non. La bande affiche `Biais GRIB désactivé`. La
+route suivante utilise le GRIB brut.
+
+### Niveau de routage (banc Pi)
+
+Après le banc du 2026-11-09 (section « Banc d'essai Pi ») : Réglages « Niveau de routage (banc
+Pi) » = le `NIVEAU RECOMMANDÉ` du banc. En course, si `Route : il y a` dépasse souvent 10 min ou
+si Diag montre des `timeouts` au routeur : monter d'un niveau (L0 → L1 → …).
+
+### Alertes et que faire
+
+| Alerte / ligne d'état | Action |
+|---|---|
+| `ROUTE INVALIDE : …` | Le Pi a jeté une route qui touchait la terre. Il garde l'ancienne et recalcule. Rien à faire ; si ça se répète, barrer aux laylines et regarder la carte. |
+| `MÉTÉO INCOMPLÈTE : …` | Le pack ne couvre pas toute la course (heure, marque). Au-delà, le routeur tient le dernier champ. À quai : refaire le pack (WEATHER-PACK.md). En mer : se méfier de la route en fin de période. |
+| `Routage bloqué : heure GPS non valide` | Pas d'heure GPS (antenne, gpsd). Vérifier le GPS sur Diag (`routing: ok`). Barrer aux laylines en attendant. |
+| `Pas de pack météo : …` | Pas de `wind.npz` lisible sur le Pi. Recopier le pack, redémarrer le cœur. |
+| `Routage en échec : …` | Le calcul a échoué (délai, plantage). Nouvel essai automatique après 1 min. Si ça dure : monter le niveau de routage. |
+| `Calcul de la route…` | Premier calcul en cours (quelques secondes, jusqu'à 1 min au Pi). |
+| `Routage désactivé (Réglages)` | Réglages « Routage actif » sur oui. |
+
+### Repli : les laylines
+
+Tant qu'il n'y a pas de route valide, l'onglet Barre affiche **les laylines de la Phase 2**
+(`TWA CIBLE`, `Virement dans 12 min`, `Layline à 1,5 nm`, `Autre bord`). Rien à faire : la route
+reprend la main dès qu'elle revient. La ligne d'état dit pourquoi il n'y a pas de route.
+
+### Diag
+
+La page Diag a une ligne `router` : `pack_ok`, `pool` (jobs, ok, timeouts, crashes, `last_ms`
+= durée du dernier calcul), couverture, état ON RESTE, coût. À regarder avant le départ : `pack_ok
+true`, `ok` qui augmente, `timeouts 0`.
+
+### Répétition sur le portable (avec internet)
+
+```bash
+bash scripts/racepack-dryrun.sh          # pack réel -> var/racepack-dryrun, banc, routage A
+```
+
+Le script télécharge ICON-EU et EWAM (fenêtre maintenant + 3 h → + 27 h), construit le masque
+terre (OSM), les champs géo, contrôle le pack, lance le banc rapide et route le parcours A depuis
+Vodice dans un vrai cœur. Il s'arrête à la première étape en échec. Si Overpass est injoignable
+et le cache OSM vide, il s'arrête ; pour une répétition seulement,
+`JABUKA_DRYRUN_LANDMASK=tests/fixtures/route/landmask_race_25m` reprend le masque OSM du
+2026-11-06 (jamais pour le pack du vendredi).

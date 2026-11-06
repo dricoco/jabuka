@@ -133,3 +133,38 @@ rsync -av --delete var/racepack/ "$PI:$PACK_DIR/"
 
 Never copy only the `.npz` files: without the matching `.json` sidecar (sha256) the Pi rejects
 them.
+
+## Checklist vendredi 13 novembre (pack final)
+
+Heures en UTC (heure locale = UTC + 1). Portable avec internet, au port. Cocher dans l'ordre.
+
+| Heure (UTC) | Étape | OK si |
+|---|---|---|
+| avant 15:00 | Portable chargé, venv à jour (`bash scripts/bootstrap-dev.sh`), Pi allumé sur le bateau, tablette chargée | `bootstrap: ok` |
+| avant 15:00 | Répétition rapide : `bash scripts/racepack-dryrun.sh` (pack de test dans `var/racepack-dryrun`, pas celui de la course) | résumé affiché, code 0 |
+| ≈ 15:40 | Run 12Z d'ICON-EU complet. `jabuka-prep wind --out var/racepack` | `run 2026-11-13T12:00:00Z`, `COUVERTURE MÉTÉO : OK`, code 0 |
+| 15:45 | `jabuka-prep waves --out var/racepack` | run 12Z, pas d'`ALERTE` |
+| 15:50 | Masque terre et champs géo déjà dans `var/racepack` (construits avant) ; sinon `jabuka-prep land build --out var/racepack` puis `geofields` (ROUTING.md) | `landmask.npz`, `geofields.npz` présents |
+| 15:50 | Option : prévision de l'organisateur `jabuka-prep grib FICHIER --out var/racepack --name wind_organiser` | champs trouvés listés |
+| 15:50 | Option : courant Copernicus (compte personnel, section plus haut) `jabuka-prep current current_med.nc --out var/racepack` | `courant` OK dans `coverage.txt` |
+| 16:00 | `jabuka-prep check --out var/racepack` | `COUVERTURE MÉTÉO : OK`, code 0 |
+| 16:05 | Copie vers le Pi : `rsync -av --delete var/racepack/ "$PI:$PACK_DIR/"` | pas d'erreur rsync |
+| 16:10 | Redémarrer le cœur : `ssh $PI sudo systemctl restart jabuka-core` | service `active` |
+| 16:15 | Tablette, onglet Diag : `routing: ok` (heure GPS), ligne `router` : `pack_ok true`, `pack` = ICON-EU run 12Z, pas d'alerte | tout vert |
+| 16:20 | Tablette, onglet Barre : une route apparaît (trait sur la carte, `Route : il y a …`, `TWA ROUTE` ou `CAP ROUTE`) | en moins de 1 min |
+| 16:25 | Essai ON RESTE puis ANNULER ON RESTE ; verrouiller l'écran | le bouton change, verrou OK |
+
+La fenêtre météo commence à 18:00 locale (17:00 UTC) : tout doit être fini vers 16:30 UTC.
+
+### Si DWD est en retard
+
+- Le run 12Z n'est pas encore complet à 15:40 : l'outil prend tout seul le **run précédent**
+  (06Z ou 09Z) dont toutes les échéances sont publiées. C'est acceptable : refaire `wind` à 16:15
+  si le temps le permet, puis `check`, copie, redémarrage.
+- `MÉTÉO INCOMPLÈTE : vent jusqu'au 15/11 06:00 seulement` (fin de fenêtre courte de quelques
+  heures) : acceptable. Au-delà de la dernière échéance le routeur garde le dernier champ
+  (`horizon_hold`) ; les laylines restent justes avec le vent mesuré. Noter l'heure limite.
+- Fin de fenêtre courte de plus de 12 h, ou une marque hors grille : ne pas partir avec ce pack
+  seul ; prendre un autre GRIB (organisateur, OpenSkiron via XyGrib) avec `jabuka-prep grib`.
+- Pas d'internet du tout : garder le pack de la veille (même procédure de copie). La route sera
+  moins juste ; le biais GRIB corrige une partie de l'écart en course.
