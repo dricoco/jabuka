@@ -238,7 +238,9 @@ l. **Probe on a disconnected bus.** With the ingest stopped and the bus NOT conn
    sudo systemctl start jabuka-ingest-fastnet
    ```
 
-   Expected: a `NO BYTES` verdict (the adapter is fine, nothing is talking).
+   Expected: a `NO BYTES` verdict (the adapter is fine, nothing is talking). If the ingest is
+   still running the probe prints `PORT BUSY` and exits 1 without a wiring verdict: the port is
+   opened with an exclusive lock, so two readers never split the byte stream.
 
 m. **Package lock review.** Read `deploy/requirements.lock` and confirm the 17 resolved names
    are exactly: annotated-doc, annotated-types, anyio, click, fastapi, h11, idna,

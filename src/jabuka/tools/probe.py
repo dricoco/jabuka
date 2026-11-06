@@ -8,7 +8,9 @@ name, count, last value/display, layouts seen and (for Heading, TWD, Tidal Set a
 layouts) raw record hex, so the unknown "°T" layout code can be found offline.
 
 Exit codes: 0 ok, 2 silent, 3 no_frames (swap wires), 4 noisy, 5 few_bytes, 1 error/device
-missing. Stop jabuka-ingest-fastnet first: only one process may own the port.
+missing/port busy. Stop jabuka-ingest-fastnet first: the port is opened with an exclusive lock, and
+while another process holds it the probe reports PORT BUSY (no wiring verdict) instead of reading a
+random share of the bytes.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import fastnet_decoder
 from fastnet_decoder import interpreter as _interp
 
 from jabuka.common.atomicio import atomic_write_json
-from jabuka.ingest.bus_health import classify
+from jabuka.ingest.bus_health import HINT_BUSY, classify
 from jabuka.ingest.fastnet_decode import decode_to_values
 from jabuka.ingest.fastnet_framing import (
     BROADCAST,
@@ -45,7 +47,7 @@ from jabuka.ingest.fastnet_framing import (
 )
 from jabuka.ingest.fastnet_records import iter_records, layout_code, record_hex
 from jabuka.ingest.rawlog import RotatingAppendLog
-from jabuka.ingest.serial_ro import open_fastnet
+from jabuka.ingest.serial_ro import PortBusyError, open_fastnet
 
 WIRE_RATE = 2400.0  # bytes/s at 28800 8O2 (12 bits per byte)
 LIVE_MIN_SECONDS = 5.0
@@ -68,6 +70,7 @@ VERDICT_TITLES = {
     "few_bytes": "FEW BYTES, NO FRAMES",
     "noisy": "NOISY",
     "missing": "DEVICE MISSING",
+    "busy": "PORT BUSY",
 }
 
 fastnet_decoder.set_log_level("ERROR")
@@ -330,6 +333,7 @@ def run_probe(
 
     framer = CountingFramer()
     inv = Inventory()
+    busy = False
     error: str | None = None
     tioc: dict | None = None
     capture_path: Path | None = None
@@ -347,13 +351,20 @@ def run_probe(
             info, error = _read_live(source, seconds, out_dir, framer, inv, on_open)
             window_s = info["elapsed_s"]
             tioc = info["tiocgicount"]
+        except PortBusyError as e:  # never judge the wiring from a shared byte stream
+            window_s = 0.0
+            busy = True
+            error = str(e)
         except Exception as e:  # FileNotFoundError, SerialException, termios errors
             window_s = 0.0
             error = f"cannot open {source}: {e}"
         capture_path = _finish_capture(out_dir)
 
     s = framer.stats
-    if mode == "live" and error is not None and s.bytes_in == 0:
+    if busy:
+        state, hint = "busy", HINT_BUSY
+        exit_code = EXIT_ERROR
+    elif mode == "live" and error is not None and s.bytes_in == 0:
         state, hint = "missing", f"DEVICE MISSING: {error}"
         exit_code = EXIT_ERROR
     else:

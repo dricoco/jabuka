@@ -7,7 +7,7 @@ from jabuka.ingest.fastnet_framing import FramerStats
 
 
 def test_states_contract() -> None:
-    assert STATES == ("ok", "silent", "few_bytes", "no_frames", "noisy", "missing")
+    assert STATES == ("ok", "silent", "few_bytes", "no_frames", "noisy", "missing", "busy")
 
 
 def test_silent() -> None:

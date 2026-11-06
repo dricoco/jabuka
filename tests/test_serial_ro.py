@@ -182,3 +182,20 @@ def test_open_turns_off_echo_and_flow_control(pty_pair) -> None:
         assert r == [], os.read(master, 64)
     finally:
         ser.close()
+
+
+# -- WR-04: exclusive open --------------------------------------------------------------------
+def test_second_open_is_refused_without_touching_the_tty(pty_pair) -> None:
+    from jabuka.ingest.serial_ro import PortBusyError
+
+    _, path = pty_pair
+    first = open_fastnet(path)
+    try:
+        before = termios.tcgetattr(first.fileno())
+        with pytest.raises(PortBusyError):
+            open_fastnet(path)
+        assert termios.tcgetattr(first.fileno()) == before  # speed/flags untouched
+    finally:
+        first.close()
+    again = open_fastnet(path)  # the lock goes with the fd
+    again.close()

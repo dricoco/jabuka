@@ -275,3 +275,32 @@ def test_heartbeat_payload_contract(tmp_path: Path) -> None:
     assert h["frames_per_s"] > 0 and h["bytes_per_s"] > 0
     assert h["hint"].startswith("OK: ")
     assert isinstance(h["unknown_ch"], list) and len(h["unknown_ch"]) <= 50
+
+
+def test_ingest_reports_busy_port(tmp_path: Path) -> None:
+    """WR-04: a second reader (probe, manual ingest) is refused and reported, not interleaved."""
+    import asyncio
+
+    from jabuka.ingest.fastnet_main import DeviceReader
+    from jabuka.ingest.serial_ro import open_fastnet
+
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
+    ingest = FastnetIngest(rawlog, lambda b: None)
+    loop = asyncio.new_event_loop()
+    try:
+        with PtyFeeder() as feeder:
+            holder = open_fastnet(feeder.slave_path)
+            reader = DeviceReader(feeder.slave_path, ingest, loop)
+            try:
+                assert reader.try_open() is False
+                h = ingest.health()
+                assert h["device"] == "busy" and h["state"] == "busy"
+                assert "PORT BUSY" in h["hint"]
+            finally:
+                holder.close()
+            assert reader.try_open() is True
+            assert ingest.health()["device"] == "ok"
+            reader.close()
+    finally:
+        loop.close()
+        rawlog.close()

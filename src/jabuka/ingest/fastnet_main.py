@@ -24,13 +24,13 @@ from pathlib import Path
 from typing import Any
 
 from jabuka.common import messages, sdnotify
-from jabuka.ingest.bus_health import HINT_MISSING, WindowStats, classify
+from jabuka.ingest.bus_health import HINT_BUSY, HINT_MISSING, WindowStats, classify
 from jabuka.ingest.fastnet_decode import ROUTED_CHANNELS, decode_to_values
 from jabuka.ingest.fastnet_framing import CountingFramer
 from jabuka.ingest.fastnet_records import iter_records, record_hex
 from jabuka.ingest.rawlog import RotatingAppendLog
 from jabuka.ingest.retention import Retention
-from jabuka.ingest.serial_ro import open_fastnet
+from jabuka.ingest.serial_ro import PortBusyError, open_fastnet
 
 log = logging.getLogger("jabuka.ingest.fastnet")
 
@@ -70,6 +70,7 @@ class FastnetIngest:
         self.window = WindowStats(HEALTH_WINDOW_S)
         # device state, maintained by DeviceReader (the reconnect loop)
         self.device_open = False
+        self.device_busy = False  # another process holds the port (exclusive lock)
         self.reconnects = 0
         self.last_error: str | None = None
         # data-volume retention (free-space reserve), run by the flusher task
@@ -158,10 +159,12 @@ class FastnetIngest:
                 float(r["span_s"]),
                 len(self.channels_seen),
             )
+        elif self.device_busy:
+            state, hint = "busy", HINT_BUSY
         else:
             state, hint = "missing", HINT_MISSING
         return {
-            "device": "ok" if self.device_open else "missing",
+            "device": "ok" if self.device_open else ("busy" if self.device_busy else "missing"),
             "state": state,
             "hint": hint,
             "bytes_per_s": r["bytes_per_s"],
@@ -275,10 +278,17 @@ class DeviceReader:
         ing = self.ingest
         try:
             ser = open_fastnet(self.device)
+        except PortBusyError as e:
+            ing.device_open = False
+            ing.device_busy = True
+            ing.last_error = str(e)
+            return False
         except Exception as e:  # FileNotFoundError / SerialException / OSError while unplugged
             ing.device_open = False
+            ing.device_busy = False
             ing.last_error = f"open {self.device}: {e}"
             return False
+        ing.device_busy = False
         self.ser = ser
         self.fd = ser.fileno()
         if self.opens > 0:

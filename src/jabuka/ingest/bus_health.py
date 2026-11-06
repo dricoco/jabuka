@@ -10,7 +10,8 @@ order (RESEARCH Pitfall 2):
 - valid ratio below 0.9              -> "noisy"      (ground/termination)
 - otherwise                          -> "ok"
 
-"missing" (device absent) is set by the caller; classify() only judges bytes.
+"missing" (device absent) and "busy" (another process holds the port) are set by the caller;
+classify() only judges bytes.
 Random noise yields zero valid frames, so frames_ok == 0 is a strong signal.
 """
 
@@ -19,7 +20,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
-STATES = ("ok", "silent", "few_bytes", "no_frames", "noisy", "missing")
+STATES = ("ok", "silent", "few_bytes", "no_frames", "noisy", "missing", "busy")
 
 NO_FRAMES_MIN_BYTES = 2000
 MIN_VALID_RATIO = 0.9
@@ -30,6 +31,10 @@ HINT_NO_FRAMES = "BYTES BUT NO VALID FRAMES: swap White/Green (A/B); confirm 288
 HINT_FEW_BYTES = "FEW BYTES, NO FRAMES: run longer; check Black→GND and A/B"
 HINT_NOISY = "NOISY: connect Black→GND; remove any added termination"
 HINT_MISSING = "DEVICE MISSING: adapter unplugged or /dev/fastnet symlink absent"
+HINT_BUSY = (
+    "PORT BUSY: another process holds the port; stop it first "
+    "(sudo systemctl stop jabuka-ingest-fastnet, or end fastnet-probe). No wiring verdict."
+)
 
 
 def classify(

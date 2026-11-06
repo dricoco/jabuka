@@ -16,6 +16,7 @@ On the DTECH in RS-485 mode a break or an echoed byte drives the B&G bus. So:
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import termios
@@ -27,6 +28,13 @@ FASTNET_BAUD = 28800
 
 
 _RO = "Fastnet port is receive-only"
+
+
+class PortBusyError(SerialException):
+    """Another process holds the port (exclusive flock): two readers would each get a random
+    share of the bytes and break frames apart."""
+
+
 # local modes under which the line discipline itself transmits (echo of received bytes)
 _ECHO_LFLAGS = (
     termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ECHONL | termios.ICANON | termios.IEXTEN
@@ -76,6 +84,19 @@ class ReadOnlySerial(serial.Serial):
         except OSError as msg:
             self.fd = None
             raise SerialException(msg.errno, f"could not open port {self._port}: {msg}") from msg
+        # Exclusive lock BEFORE touching termios: a second opener must fail without changing the
+        # speed/flags of the tty the first reader is using (pyserial would lock only later).
+        if self._exclusive:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as e:
+                os.close(self.fd)
+                self.fd = None
+                if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    raise PortBusyError(
+                        e.errno, f"port busy: another process holds {self._port}"
+                    ) from e
+                raise SerialException(e.errno, f"could not lock port {self._port}: {e}") from e
         self.pipe_abort_read_r, self.pipe_abort_read_w = os.pipe()
         self.pipe_abort_write_r, self.pipe_abort_write_w = os.pipe()
         fcntl.fcntl(self.pipe_abort_read_r, fcntl.F_SETFL, os.O_NONBLOCK)
@@ -149,7 +170,9 @@ class ReadOnlySerial(serial.Serial):
 
 
 def open_fastnet(path: str) -> ReadOnlySerial:
-    """Open the Fastnet device receive-only at 28800 baud, 8 data bits, odd parity, 2 stop bits."""
+    """Open the Fastnet device receive-only at 28800 baud, 8 data bits, odd parity, 2 stop bits,
+    with an exclusive flock: raises PortBusyError while another reader (ingest, probe, relay)
+    holds it."""
     return ReadOnlySerial(
         path,
         baudrate=FASTNET_BAUD,
@@ -157,4 +180,5 @@ def open_fastnet(path: str) -> ReadOnlySerial:
         parity=serial.PARITY_ODD,
         stopbits=serial.STOPBITS_TWO,
         timeout=0,
+        exclusive=True,
     )

@@ -242,3 +242,23 @@ def test_replay_cli_lists_fault_flags() -> None:
     assert args.silence == [(1.0, 2.0), (5.0, 0.5)]
     with pytest.raises(SystemExit):
         build_arg_parser().parse_args(["x.txt", "--silence", "bad"])
+
+
+def test_probe_reports_port_busy_instead_of_a_wiring_verdict(tmp_path: Path) -> None:
+    """WR-04: with the ingest still running, the probe used to read a random share of the bytes
+    and tell the user to swap the wires."""
+    from jabuka.ingest.serial_ro import open_fastnet
+
+    with PtyFeeder() as feeder:
+        holder = open_fastnet(feeder.slave_path)  # e.g. jabuka-ingest-fastnet
+        try:
+            report = run_probe(feeder.slave_path, seconds=1, out_dir=tmp_path / "p")
+        finally:
+            holder.close()
+    assert report.state == "busy"
+    assert report.exit_code == 1
+    assert "PORT BUSY" in report.hint and "swap" not in report.hint.lower()
+    assert "jabuka-ingest-fastnet" in report.hint
+    inv = json.loads((tmp_path / "p" / "inventory.json").read_text())
+    assert inv["verdict"]["state"] == "busy"
+    assert "PORT BUSY" in probe_mod.format_report(report)
