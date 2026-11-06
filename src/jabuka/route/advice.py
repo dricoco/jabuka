@@ -337,3 +337,77 @@ def cost_text(cost_s: float | None) -> str | None:
     if cost_s < 60.0:
         return "< 1 min"
     return f"+{round(cost_s / 60.0)} min"
+
+
+# --------------------------------------------------------------------------------------------
+# Reroute decisions (RED skeleton)
+# --------------------------------------------------------------------------------------------
+
+
+class TriggerInputs(NamedTuple):
+    course_version: int = 0
+    bias_eff: tuple[float, float] | None = None
+    manual_version: int = 0
+    off_route: bool = False
+    stay_version: int = 0
+    missed: bool = False
+    pack_version: int = 0
+    has_route: bool = False
+
+
+class Trigger(NamedTuple):
+    reason: str
+    forced: bool
+
+
+class Triggers:
+    def __init__(self, cadence_s: float = 300.0):
+        self.cadence_s = cadence_s
+
+    def check(self, now: float, inputs: TriggerInputs) -> list[Trigger]:
+        return []
+
+    def mark_requested(self, now: float, inputs: TriggerInputs) -> None:
+        pass
+
+
+def should_replace(
+    new_eta: float,
+    now: float,
+    cur_eta_old_now: float | None,
+    cur_valid: bool,
+    cur_age_s: float | None,
+    forced: bool,
+) -> tuple[bool, str]:
+    return False, "kept"
+
+
+class OffRouteWatch:
+    def __init__(self, xte_nm: float = 0.5, dev_deg: float = 20.0, sustain_s: float = 120.0):
+        pass
+
+    def update(self, t: float, follow: Follow) -> bool:
+        return False
+
+    def reset(self) -> None:
+        pass
+
+
+class StayOnTack:
+    def __init__(self) -> None:
+        self.active = False
+        self.tack: int | None = None
+        self.since: float | None = None
+        self.version = 0
+
+    def activate(self, t: float, tack: int) -> None:
+        pass
+
+    def cancel(self) -> None:
+        pass
+
+    def on_tack(self, event: TackEvent) -> None:
+        pass
+
+    def to_dict(self) -> dict[str, Any]:
+        return {}
