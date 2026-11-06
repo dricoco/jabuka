@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 2
-current_phase_name: Helm MVP — Laylines, Marks & Map
+current_phase: 4
+current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
-stopped_at: Roadmap and state initialized; ready to plan Phase 1
-last_updated: "2026-11-06T03:11:32.094Z"
-last_activity: 2026-11-06
-last_activity_desc: Phase 2 execution started
+stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
+last_updated: "2026-11-07T00:00:00Z"
+last_activity: 2026-11-07
+last_activity_desc: Resumed after crash; merged 04-01, quick-002, quick-003; master gate green (1464 passed x2)
 state_head: 69c3f736a9aa3ecd604e4b162d27f2deeaff0d46
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 9
-  completed_plans: 5
+  total_plans: 16
+  completed_plans: 15
   percent: 0
 ---
 
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 
 ## Current Position
 
-Phase: 2 (Helm MVP — Laylines, Marks & Map) — EXECUTING
-Plan: 2 of 5
-Status: Ready to execute
-Last activity: 2026-11-06 — Phase 2 execution started
+Phase: 4 (Race Readiness — Hardening & Commissioning) — EXECUTING
+Plan: 04-01 and 04-02 complete; 04-03 (Pi soak) next
+Status: Phases 1–3 executed; quick 001–003 done; master gate green 2026-11-07
+Last activity: 2026-11-07 — resumed after a PC crash, merged 04-01 + quick-002 + quick-003 (one post-merge fix: typed marks checked against RACE_AREA)
 
 Progress: [░░░░░░░░░░] 0%
 
