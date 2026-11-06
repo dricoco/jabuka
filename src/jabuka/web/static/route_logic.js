@@ -15,6 +15,7 @@ export const STR = {
   tackIn: "Virement dans",
   gybeIn: "Empannage dans",
   tackNow: "VIREZ",
+  wrongTack: "MAUVAIS BORD",
   gybeNow: "EMPANNEZ",
   updating: "Route mise à jour…",
   landTackIn: "Virement imposé (terre) dans",

@@ -83,6 +83,7 @@ MISSED_MAX_S = 180.0  # "Route mise à jour…" (missed-tack reroute) at most th
 ROUNDING_TOL_S = 600.0  # course advanced by a rounding: the boat is this close to the leg's end
 PRIMARY_TWA_UP_DEG = 70.0  # |target TWA| below: steer the TWA (upwind)
 PRIMARY_TWA_DOWN_DEG = 110.0  # above: steer the TWA (downwind); between: the heading
+WRONG_TACK_MIN_DEG = 15.0  # |TWA| below: head to wind / mid-tack, the side is not meaningful
 
 REASON_DISABLED = "routage désactivé (Réglages)"
 REASON_CLOCK = "heure GPS non valide"
@@ -1066,11 +1067,19 @@ class RouterService:
         twa_abs = abs(f.target_twa)
         wind = msg.get("wind") or {}
         boat = msg.get("boat") or {}
+        twa_now = wind.get("twa")
+        # on the other tack than the route's (HI-01): |TWA| - |target| would read ~0, green
+        wrong = (
+            twa_now is not None
+            and abs(twa_now) >= WRONG_TACK_MIN_DEG
+            and (1 if twa_now > 0 else -1) != int(f.target_tack)
+        )
+        block["wrong_tack"] = bool(wrong)
         if twa_abs < PRIMARY_TWA_UP_DEG or twa_abs > PRIMARY_TWA_DOWN_DEG:
             block["primary"] = "twa"
             block["target"] = _r(twa_abs, 1)
-            twa_now = wind.get("twa")
-            block["deviation"] = _r(abs(twa_now) - twa_abs, 1) if twa_now is not None else None
+            if twa_now is not None and not wrong:
+                block["deviation"] = _r(abs(twa_now) - twa_abs, 1)
         else:
             block["primary"] = "hdg"
             block["target"] = block["target_hdg_t"]
@@ -1290,6 +1299,7 @@ class RouterService:
             "target_tack": None,
             "target_hdg_t": None,
             "xte_nm": None,
+            "wrong_tack": False,
             "off_route": False,
             "countdown_s": None,
             "tack_kind": None,
@@ -1421,7 +1431,8 @@ class RouterService:
                     },
                 }
             )
-        nxt = next((tk for tk in r.tacks if tk.t > r.adopted_t), None)
+        # route time of the boat at adoption is t0: a tack at t0 is the next one (HI-01)
+        nxt = next((tk for tk in r.tacks if tk.t >= r.t0 - 1.0), None)
         if nxt is not None:
             features.append(
                 {

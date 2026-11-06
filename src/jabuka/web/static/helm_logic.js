@@ -131,6 +131,8 @@ const roundSym = (x) => Math.sign(x) * Math.round(Math.abs(x));
 export function deviationView(nav) {
   const route = nav?.route;
   if (routeOk(route) && route.primary) {
+    // on the other tack than the route's: no signed |TWA| difference, say it (03-REVIEW HI-01)
+    if (route.wrong_tack) return { text: "—", hint: STR.wrongTack, cls: "bad" };
     // same semantics from the core: |TWA| - |target| (LOFER/ABATTRE), heading - target (side)
     const primary = route.primary === "hdg" ? "cts" : "twa_up";
     return deviationView({ helm: { primary, deviation: route.deviation } });

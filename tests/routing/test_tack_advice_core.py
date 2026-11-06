@@ -246,3 +246,94 @@ def test_stay_round_trip_through_the_real_worker(routing_core, rh, tmp_path) -> 
     if r["kind"] == "stay":
         msg = core.client.get("/api/route").json()
         assert msg["kind"] == "stay" and msg["legs"][0]["mark_id"] == "plic-sestre"
+
+
+# -- a tack at the route start (03-REVIEW HI-01, the reviewer's tack_now.py) ---------------------
+def test_tack_at_t0_from_the_real_router_is_announced(rh, tmp_path) -> None:
+    from jabuka.nav.polar import load_racepack_polar, polar_to_json
+    from jabuka.route.advice import MissedTackWatch, RouteFollower
+    from jabuka.route.cycle import build_env
+    from jabuka.route.isochrone import route
+    from jabuka.route.polar_grid import normalize_curves
+    from jabuka.route.types import LEVELS, CourseMark, RouteRequest
+
+    env = build_env(rh.make_pack(tmp_path / "racepack"))  # wind 045 / 18 kn
+    curves = normalize_curves(
+        [
+            (tws, [(a, b) for a, b in pts if 0 < a <= 180])
+            for tws, pts in polar_to_json(load_racepack_polar(None))["curves"]
+        ]
+    )
+    mark = CourseMark("plic-sestre", "Plic", *rh.PLIC_SESTRE, "none", 0.0)
+    lat, lon = geo.offset(*rh.PLIC_SESTRE, math.radians(180.0), 4.0)  # 4 nm S, on port
+    t0 = rh.T_START
+    req = RouteRequest("x", t0, lat, lon, -1, None, (mark,), curves, 1.0, None, None, None,
+                       LEVELS["L0"])  # fmt: skip
+    res = route(req, env)
+    assert res.ok, res.reason
+    assert res.tacks and res.tacks[0].t == t0 and res.path[0].tack == 1  # the route tacks now
+    follower = RouteFollower(res.path, res.tacks)
+    watch = MissedTackWatch()
+    port_hdg = 85.0  # TWA -40: the boat stays on port
+    fired = []
+    for s in range(0, 301, 10):
+        la, lo = geo.offset(lat, lon, math.radians(port_hdg), 6.0 * s / 3600)
+        f = follower.follow(t0 + s, la, lo, cog_deg=port_hdg, twd_deg=45.0)
+        assert f.next_tack is not None and f.next_tack[0] == t0, s
+        assert f.countdown_s == pytest.approx(-s, abs=1.5)  # VIREZ, then overdue
+        if watch.update(t0 + s, f.countdown_s, None):
+            fired.append(s)
+    assert fired == [130]
+
+
+def _tack_now_route(creq) -> CycleResult:
+    """The route starts on port (heading 085) while the boat sails starboard: tack at t0."""
+    b = creq.base
+    t0 = b.t0
+    a = (b.lat, b.lon)
+    c = geo.offset(*a, math.radians(85.0), 2.0)
+    path = (
+        PathPoint(t0, *a, -40.0, -1, 6.0, 45.0, 18.0),
+        PathPoint(t0 + 1200.0, *c, -40.0, -1, 6.0, 45.0, 18.0),
+    )
+    opt = RouteResult(
+        ok=True,
+        reason=None,
+        request_id=b.request_id,
+        t0=t0,
+        path=path,
+        tacks=(TackPoint(t0, *a, 1, -1, "tack"),),
+        legs=(LegResult("plic-sestre", t0 + 1200.0, *c),),
+        eta=t0 + 1200.0,
+        valid=True,
+    )
+    old = creq.old_path is not None
+    return CycleResult(opt, None, None, opt.eta if old else None, True if old else None, None, {})
+
+
+def test_tack_at_t0_in_the_core_is_virez_and_wrong_tack(routing_core, fake_pool, rh) -> None:
+    fake_pool.script = _tack_now_route
+    core = routing_core(pool_factory=lambda: fake_pool)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, NORTH)
+    core.tick(1.0)
+    core.settle()
+    nav = core.tick(0.0)
+    r = nav["route"]
+    assert r["version"] == 1 and r["target_tack"] == "port"
+    assert r["countdown_s"] is not None and r["countdown_s"] <= 1.0  # VIREZ, not "no tack"
+    assert r["wrong_tack"] is True and r["deviation"] is None  # never a green 0
+    msg = core.client.get("/api/route").json()
+    nxt = [f for f in msg["geojson"]["features"] if f["properties"]["role"] == "next_tack"]
+    assert len(nxt) == 1
+    for _ in range(100):  # still on starboard: VIREZ, overdue in wall time
+        core.sail(*pos, NORTH)
+        nav = core.tick(1.0)
+        core.settle()
+    assert nav["route"]["version"] == 1
+    assert nav["route"]["countdown_s"] == pytest.approx(-100.0, abs=2.0)
+    for _ in range(30):  # then a reroute (off-route or missed tack, whichever comes first)
+        core.sail(*pos, NORTH)
+        nav = core.tick(1.0)
+        core.settle()
+    assert any({"missed", "off_route"} & set(reasons) for _t, reasons in core.router.request_log)

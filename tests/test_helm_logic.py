@@ -312,6 +312,13 @@ def test_deviation_and_countdown_prefer_the_route() -> None:
     assert v["countdownSource"] == "layline" and v["primary"]["label"] == "TWA CIBLE ↑"
     now = js(f"helmView({json.dumps(dict(NAV, route=dict(ROUTE_OK, countdown_s=-5)))})")
     assert (now["countdown"], now["countdownCls"]) == ("VIREZ", "alert")
+    # 03-REVIEW HI-01: on the other tack than the route's, never a green "0°"
+    wrong = dict(ROUTE_OK, deviation=None, wrong_tack=True, countdown_s=0)
+    assert js(f"deviationView({json.dumps(dict(n, route=wrong))})") == {
+        "text": "—",
+        "hint": "MAUVAIS BORD",
+        "cls": "bad",
+    }
 
 
 def test_grib_badge_and_alert() -> None:

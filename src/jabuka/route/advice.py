@@ -26,6 +26,7 @@ LON0 = 15.65
 NM_PER_DEG_LAT = 60.0
 SEARCH_AHEAD = 40  # segments searched ahead of the last projection
 GLOBAL_SEARCH_NM = 2.0  # beyond this distance from all of them, search the whole rest
+DUE_S = 1.0  # a tack this close (route time) to the boat's projection is due now
 _EPS = 1e-12
 
 
@@ -254,7 +255,9 @@ class RouteFollower:
         target_tack = int(p[4])
         target_hdg = None if twd_deg is None else target_heading(twd_deg, target_twa)
 
-        upcoming = next((k for k in self.tacks if float(k[0]) > t_here), None)
+        # >= with a tolerance: a tack at the route's start (t0, the route begins on the other
+        # tack) is due now, not skipped (03-REVIEW HI-01)
+        upcoming = next((k for k in self.tacks if float(k[0]) >= t_here - DUE_S), None)
         next_tack, countdown = self._advised(t_now, t_here, upcoming, cog_deg, twd_deg)
 
         remaining = self._t[-1] - t_here
@@ -284,16 +287,27 @@ class RouteFollower:
         twd_deg: float | None,
     ) -> tuple[Any | None, float | None]:
         adv = self._adv
+        side = None
+        if cog_deg is not None and twd_deg is not None:
+            twa_now = _wrap180(twd_deg - cog_deg)  # twd = hdg + twa
+            if 15.0 <= abs(twa_now) <= 165.0:
+                side = 1 if twa_now > 0 else -1
         if adv is not None and adv is not upcoming and float(adv[0]) <= t_here:
             # the route has passed the advised tack: did the boat follow it?
-            side = None
-            if cog_deg is not None and twd_deg is not None:
-                twa_now = _wrap180(twd_deg - cog_deg)  # twd = hdg + twa
-                if 15.0 <= abs(twa_now) <= 165.0:
-                    side = 1 if twa_now > 0 else -1
             if side is not None and side == int(adv[3]) and self._adv_wall is not None:
                 self._adv_overdue = True
                 return adv, self._adv_wall - t_now  # still on the old tack: overdue
+        if upcoming is not None and float(upcoming[0]) - t_here <= DUE_S:
+            # due now. A boat that stays on the old tack does not move along the route, so the
+            # route-time countdown would stay at 0 forever: count in wall time from the moment
+            # it became due, so VIREZ turns into a missed tack (HI-01). A boat already on the
+            # new tack has done it: advise the following one.
+            if side is not None and side == int(upcoming[4]) != int(upcoming[3]):
+                t_done = float(upcoming[0])
+                upcoming = next((k for k in self.tacks if float(k[0]) > t_done), None)
+            elif upcoming is adv and self._adv_wall is not None:
+                self._adv_overdue = t_now > self._adv_wall
+                return upcoming, self._adv_wall - t_now
         self._adv_overdue = False
         self._adv = upcoming
         if upcoming is None:

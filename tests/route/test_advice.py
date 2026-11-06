@@ -172,6 +172,48 @@ def test_overdue_tack_counts_down_negative_and_fires_missed_once() -> None:
     assert fired == [T0 + 1330.0]  # first sample more than 120 s overdue, once
 
 
+def tack_now_path():
+    """A route that starts on port (TWA -40, course 040) while the boat is on starboard: the
+    router emits its tack at t0 (03-REVIEW HI-01, isochrone._tack_points)."""
+    path = []
+    for m in range(0, 31, 2):
+        lat, lon = _latlon(*_step(0.0, 0.0, 40.0, SPEED_NM_MIN * m))
+        path.append((T0 + 60.0 * m, lat, lon, -40.0, -1))
+    lat0, lon0 = _latlon(0.0, 0.0)
+    return path, [(T0, lat0, lon0, 1, -1, "tack")]
+
+
+def test_tack_at_route_start_is_due_now_and_missed() -> None:
+    path, tacks = tack_now_path()
+    follower = RouteFollower(path, tacks)
+    watch = MissedTackWatch()
+    f = follower.follow(T0, *_latlon(0.0, 0.0), 320.0, TWD)  # still on starboard
+    assert f.next_tack == tacks[0]
+    assert f.countdown_s == pytest.approx(0.0, abs=1.0)  # VIREZ now, not "no tack planned"
+    assert f.target_tack == -1
+    fired = []
+    for k in range(1, 20):  # the boat stays on starboard: the countdown runs in wall time
+        t = T0 + 10.0 * k
+        x, y = _step(0.0, 0.0, 320.0, SPEED_NM_MIN * (10.0 * k) / 60.0)
+        f = follower.follow(t, *_latlon(x, y), 320.0, TWD)
+        assert f.next_tack == tacks[0]
+        assert f.countdown_s == pytest.approx(-(10.0 * k), abs=1.5)
+        if watch.update(t, f.countdown_s, None):
+            fired.append(t)
+    assert fired == [T0 + 130.0]  # then the missed-tack reroute, once
+
+
+def test_tack_at_route_start_done_is_not_advised_again() -> None:
+    path, tacks = tack_now_path()
+    follower = RouteFollower(path, tacks)
+    f = follower.follow(T0, *_latlon(0.0, 0.0), 320.0, TWD)
+    assert f.countdown_s == pytest.approx(0.0, abs=1.0)
+    f = follower.follow(T0 + 20.0, *_latlon(0.0, 0.0), 40.0, TWD)  # tacked on the spot
+    assert f.next_tack is None and f.countdown_s is None
+    f = follower.follow(T0 + 60.0, *_latlon(*_step(0.0, 0.0, 40.0, 0.07)), 40.0, TWD)
+    assert f.next_tack is None and f.countdown_s is None
+
+
 # ---- tack detector ----------------------------------------------------------------------
 
 
