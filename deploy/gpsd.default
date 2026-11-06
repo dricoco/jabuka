@@ -1,0 +1,8 @@
+# Installed to /etc/default/gpsd by deploy/provision.sh (replaces the Debian default).
+# Only the VK-162 at /dev/gps (udev symlink). USB autoprobe is OFF, so gpsd never opens, probes
+# or reconfigures the RS-485 adapter on the B&G bus.
+# -n: poll the GPS even with no clients, so chrony (SHM 0) always gets time.
+START_DAEMON="true"
+DEVICES="/dev/gps"
+GPSD_OPTIONS="-n"
+USBAUTO="false"

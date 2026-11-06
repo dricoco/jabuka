@@ -1,0 +1,38 @@
+# Jabuka receive-only B&G Fastnet ingest.
+# Installed by deploy/provision.sh to /etc/systemd/system/ and enabled at boot.
+#
+# - Type=notify + WatchdogSec: the process sends READY=1 once /dev/fastnet is open and pings
+#   WATCHDOG=1 from its event loop, so a hung loop is killed and restarted.
+# - Restart=always + StartLimitIntervalSec=0: restart forever, never hit the start-rate limit.
+# - The unit is deliberately NOT bound to the device (no device binding / Requires on
+#   dev-fastnet.device): the process reports "device missing" in its health and reconnects itself.
+# - /dev/fastnet is root:dialout 0640 (deploy/udev/99-jabuka.rules), so via the dialout group this
+#   unprivileged user can only open it read-only.
+# - Conflicts=fastnet2ip.service: the Plan B tool and this ingest are never active together.
+
+[Unit]
+Description=Jabuka Fastnet ingest (receive-only)
+Documentation=file:///opt/jabuka/PI-SETUP.md
+Conflicts=fastnet2ip.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+User=jabuka
+Group=jabuka
+SupplementaryGroups=dialout
+ExecStart=/opt/jabuka/venv/bin/jabuka-ingest-fastnet --device /dev/fastnet --data-dir /var/lib/jabuka --udp 127.0.0.1:47100
+Restart=always
+RestartSec=2
+WatchdogSec=30
+StateDirectory=jabuka
+OOMScoreAdjust=-700
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/jabuka
+
+[Install]
+WantedBy=multi-user.target
