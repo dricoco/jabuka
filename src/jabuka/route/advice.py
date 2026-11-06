@@ -431,6 +431,9 @@ def cost_text(cost_s: float | None) -> str | None:
 REPLACE_MIN_GAIN_S = 180.0
 REPLACE_GAIN_FRAC = 0.01
 ROUTE_MAX_AGE_S = 1200.0
+# trusted UTC earlier than the last request by more than this: the clock stepped back
+# (GPS time step, 04-01 soak); the last route was computed for a time still to come
+CLOCK_BACK_TOL_S = 30.0
 
 
 class TriggerInputs(NamedTuple):
@@ -447,7 +450,8 @@ class TriggerInputs(NamedTuple):
 
 
 class Trigger(NamedTuple):
-    reason: str  # first | timer | course | bias | manual | off_route | stay | missed | pack
+    reason: str  # first | timer | clock | course | bias | manual | off_route | stay | missed
+    # | pack
     forced: bool  # forced triggers replace the current route without hysteresis
 
 
@@ -481,6 +485,10 @@ class Triggers:
             return out
         if now - self._req_t >= self.cadence_s:
             out.append(Trigger("timer", False))
+        elif now < self._req_t - CLOCK_BACK_TOL_S:
+            # the trusted UTC stepped back: the timer would stay silent until the clock caught
+            # up with the last request (up to an hour), and the shown route is from the future
+            out.append(Trigger("clock", True))
         if inputs.course_version != req.course_version:
             out.append(Trigger("course", True))
         if bias_changed(req.bias_eff, inputs.bias_eff):

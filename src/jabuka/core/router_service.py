@@ -35,6 +35,7 @@ from jabuka.core.state import StateStore
 from jabuka.nav.polar import polar_to_json
 from jabuka.route import cycle
 from jabuka.route.advice import (
+    CLOCK_BACK_TOL_S,
     ROUTE_MAX_AGE_S,
     Follow,
     MissedTackWatch,
@@ -104,6 +105,7 @@ REASON_OUT_MISSED = "virement manqué : nouvelle route impossible"
 REASON_OUT_AGE = "route périmée"
 REASON_OUT_FAIL = "le routeur échoue"
 REASON_OUT_RESTORED = "route sauvegardée : vérification en cours"
+REASON_OUT_CLOCK = "heure GPS revenue en arrière : recalcul en cours"
 
 ROUTE_FILE = "route.json"
 BIAS_FILE = "bias.json"
@@ -578,7 +580,10 @@ class RouterService:
             and (self.route is None or self._fail_streak > 0 or self.withdrawn is not None)
             and self._inflight == 0
             and self._last_req_t is not None
-            and now - self._last_req_t >= RETRY_NO_ROUTE_S
+            and (
+                now - self._last_req_t >= RETRY_NO_ROUTE_S
+                or now < self._last_req_t - CLOCK_BACK_TOL_S  # the clock stepped back (04-01)
+            )
         ):
             trigs.append(Trigger("retry", False))
         if not trigs or self.pool is None:
@@ -1028,6 +1033,8 @@ class RouterService:
             return None
         if self._restored_unverified:
             return REASON_OUT_RESTORED
+        if r.t0 > now + CLOCK_BACK_TOL_S:  # computed for a time still to come: UTC stepped back
+            return REASON_OUT_CLOCK
         if self._course_changed(r, f):
             return REASON_OUT_COURSE
         if self.missed and (
