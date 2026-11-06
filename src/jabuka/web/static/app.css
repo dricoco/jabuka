@@ -13,7 +13,8 @@ body.theme-day {
   --accent: #0050b3;
 }
 
-/* Night: pure red channel on true black, no green/blue light (HELM-03, Pitfall 4). */
+/* Night: pure red channel on true black, no green/blue light (HELM-03, Pitfall 4). app.js scales
+   the reds by the brightness slider (inline custom properties on body). */
 body.theme-night {
   --bg: #000000;
   --bg-band: rgba(0, 0, 0, 0.85);
@@ -24,6 +25,7 @@ body.theme-night {
   --warn: #c00000;
   --bad: #ff0000;
   --accent: #ff0000;
+  color-scheme: only light;
 }
 
 * { box-sizing: border-box; }
@@ -43,10 +45,23 @@ html, body {
 
 #topbar {
   position: fixed; top: 0; left: 0; right: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
   background: var(--bg-band); border-bottom: 1px solid var(--line);
   min-height: 52px; padding: 2px 6px;
 }
+#top-ctrls { display: flex; align-items: center; gap: 6px; flex: none; }
+button.ctrl {
+  min-height: 48px; min-width: 48px; padding: 0 12px;
+  font-size: 18px; font-weight: 700;
+  color: var(--fg); background: transparent;
+  border: 2px solid var(--line); border-radius: 8px;
+}
+button.ctrl[aria-pressed="true"] { border-color: var(--fg); }
+#night-brightness {
+  width: 120px; height: 48px; margin: 0;
+  color: var(--fg); background: transparent; accent-color: var(--fg);
+}
+#night-brightness[hidden] { display: none; }
 
 .tabs { display: flex; gap: 4px; }
 .tabs button, button.big {
@@ -60,7 +75,7 @@ button:disabled { opacity: 0.4; }
 button:focus { outline: none; }
 button:focus-visible { outline: 2px solid var(--accent); }
 
-#badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+#badges { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .badge {
   font-weight: 700; font-size: 16px; padding: 6px 10px; border-radius: 6px;
   border: 2px solid currentColor;
@@ -70,12 +85,12 @@ button:focus-visible { outline: 2px solid var(--accent); }
 .badge.bad { color: var(--bad); }
 
 #banner {
-  position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 30;
+  position: fixed; top: calc(var(--topbar-h, 52px) + 4px); left: 50%; transform: translateX(-50%); z-index: 30;
   background: var(--bg); color: var(--fg); border: 2px solid var(--fg); border-radius: 8px;
   padding: 10px 16px; font-size: 20px; font-weight: 700;
 }
 
-main { position: fixed; inset: 56px 0 0 0; z-index: 10; pointer-events: none; }
+main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer-events: none; }
 .tab { position: absolute; inset: 0; }
 .tab[hidden] { display: none !important; }
 .tab > * { pointer-events: auto; }
@@ -89,20 +104,76 @@ main { position: fixed; inset: 56px 0 0 0; z-index: 10; pointer-events: none; }
 .primary-box { text-align: center; }
 .label { color: var(--dim); font-size: 16px; font-weight: 600; text-transform: uppercase; }
 .primary-line { line-height: 1; font-variant-numeric: tabular-nums; }
-#primary { font-size: 22vh; font-weight: 800; }
+/* >= 20% of the viewport height in landscape and portrait (the inline box is ~1.15 em tall) */
+#primary { font-size: max(18.5vh, min(22vh, 26vw)); font-weight: 800; white-space: nowrap; }
 #primary-unit { font-size: 6vh; font-weight: 700; margin-left: 0.2em; }
 .secondary { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 8px; }
 .cell { display: flex; flex-direction: column; align-items: center; min-width: 120px; }
-.num { font-size: 5vh; font-weight: 700; font-variant-numeric: tabular-nums; }
+.num { font-size: min(5vh, 4.2vw); font-weight: 700; font-variant-numeric: tabular-nums; }
 .num.good { color: var(--good); }
 .num.warn { color: var(--warn); }
 .num.bad { color: var(--bad); }
-.countdown { text-align: center; font-size: 6vh; font-weight: 800; min-height: 1.2em; }
-.other { text-align: center; font-size: 3.5vh; color: var(--dim); }
+.countdown { text-align: center; font-size: min(6vh, 5.5vw); font-weight: 800; min-height: 1.2em; }
+.other { text-align: center; font-size: min(3.5vh, 3.5vw); color: var(--dim); }
 
-/* link lost: frozen numbers must never look live (Pitfall 5) */
-body.link-stale #tab-barre .band { opacity: 0.35; filter: grayscale(1); }
+.primary-line { white-space: nowrap; }
+.dev-cell { flex-direction: row; gap: 12px; align-items: baseline; }
+.dev-cell .num { font-size: min(6vh, 7vw); }
+.hint { font-size: min(5vh, 6vw); font-weight: 800; letter-spacing: 0.02em; }
+.hint.good { color: var(--good); }
+.hint.warn { color: var(--warn); }
+.hint.bad { color: var(--bad); }
+.mark-cell .num { font-size: min(4.5vh, 3.8vw); }
+.stale-msg { font-size: min(6vh, 7vw); font-weight: 900; color: var(--bad); }
+.stale-msg[hidden] { display: none; }
+
+/* map orientation buttons, over the map between the bands */
+.map-ctrls {
+  align-self: flex-end; display: flex; flex-direction: column; gap: 6px; margin: 6px 8px;
+}
+.map-ctrls button.ctrl { font-size: 15px; background: var(--bg-band); }
+
+/* link lost: frozen numbers must never look live (Pitfall 5). Dim colour only, no grayscale
+   filter (grey would leak green/blue light at night). */
+#tab-barre.stale .band *:not(.stale-msg) { color: var(--dim) !important; }
 
 #diag-frame { width: 100%; height: 100%; border: 0; background: #fff; }
 
-#lock-overlay { position: fixed; inset: 0; z-index: 100; touch-action: none; }
+/* -- lock mode (HELM-04): transparent full-screen layer above everything ----------------------- */
+#lock-overlay {
+  position: fixed; inset: 0; z-index: 100; touch-action: none;
+  background: transparent; user-select: none; -webkit-user-select: none;
+  -webkit-touch-callout: none; overscroll-behavior: none;
+}
+#lock-overlay[hidden] { display: none; }
+button.lock-btn { width: 64px; height: 64px; min-width: 64px; padding: 0; display: grid; place-items: center; }
+.unlock-btn {
+  position: absolute; top: 2px; right: 6px; width: 64px; height: 64px;
+  display: grid; place-items: center; color: var(--fg);
+  background: var(--bg-band); border: 2px solid var(--fg); border-radius: 50%;
+  touch-action: none;
+}
+.unlock-btn svg { pointer-events: none; }
+.lock-hint {
+  position: absolute; top: 74px; right: 6px; padding: 4px 8px; border-radius: 6px;
+  font-size: 15px; font-weight: 800; color: var(--fg); background: var(--bg-band);
+  border: 1px solid var(--line); pointer-events: none;
+}
+body.locked #topbar { border-bottom-color: var(--fg); }
+
+/* -- night: no light other than red (Pitfall 4) ----------------------------------------------- */
+body.theme-night #map { opacity: var(--map-k, 1); }
+body.theme-night * { scrollbar-color: var(--dim) #000000; }
+body.theme-night *:focus-visible { outline-color: var(--fg); }
+body.theme-night ::selection { background: var(--dim); color: #000000; }
+/* MapLibre controls are white/black by default */
+body.theme-night .maplibregl-ctrl,
+body.theme-night .maplibregl-ctrl * {
+  background-color: #000000 !important;
+  color: var(--dim) !important;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+body.theme-night .maplibregl-ctrl a,
+body.theme-night .maplibregl-ctrl-attrib a { color: var(--dim) !important; }
+body.theme-night .maplibregl-ctrl-attrib-button { filter: none; opacity: 0.4; }

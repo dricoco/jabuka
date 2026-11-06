@@ -37,7 +37,8 @@ def js(expr: str) -> object:
 
 def test_tracer_message_renders_the_helm() -> None:
     v = js(f"helmView({json.dumps(NAV)})")
-    assert v["primary"] == {"label": "TWA CIBLE ↑", "value": "38°", "unit": ""}
+    assert v["primary"]["label"] == "TWA CIBLE ↑"
+    assert v["primary"]["value"] == "38°"
     assert v["countdown"].startswith("Virement dans")
     assert v["mark"] == "Plić Sestre"
     assert v["badge"] == {"text": "LIVE", "cls": "good"}
@@ -50,11 +51,8 @@ def test_tracer_message_renders_the_helm() -> None:
 def test_primary_view_modes() -> None:
     disp = {"heading_ref": "M", "variation": 4.7}
     cts = {"helm": {"primary": "cts", "cts_t": 161.0}, "display": disp, "wind": {"source": "LIVE"}}
-    assert js(f"primaryView({json.dumps(cts)})") == {
-        "label": "CAP À SUIVRE",
-        "value": "156°",
-        "unit": "M",
-    }
+    p = js(f"primaryView({json.dumps(cts)})")
+    assert (p["label"], p["value"], p["main"], p["unit"]) == ("CAP À SUIVRE", "156°M", "156°", "M")
     down = {"helm": {"primary": "twa_down", "target": 158.9}, "wind": {"source": "LIVE"}}
     assert js(f"primaryView({json.dumps(down)})")["label"] == "TWA CIBLE ↓"
     none = {"helm": {"primary": None}, "wind": {"source": "NONE"}}
@@ -86,9 +84,109 @@ def test_fmt_countdown_and_durations() -> None:
 def test_source_badge_and_deviation_class() -> None:
     assert js("sourceBadge({source: 'LIVE_BG'})")["text"] == "LIVE B&G"
     assert js("sourceBadge({source: 'MANUEL'})") == {"text": "MANUEL", "cls": "warn"}
+    assert js("sourceBadge({source: 'MANUEL', manual_age_s: 720})")["text"] == "MANUEL 12 min"
     assert js("sourceBadge({source: 'LIVE', stale: true})")["text"] == "PÉRIMÉ"
     assert js("sourceBadge({source: 'NONE'})")["text"] == "PAS DE VENT"
     assert js("[2, -5, 12, null].map(deviationClass)") == ["good", "warn", "bad", ""]
+
+
+# -- 02-05 behaviour block (HELM-02) -------------------------------------------------------------
+DISP_M = {"heading_ref": "M", "variation": 4.7}
+
+
+def test_primary_view_by_point_of_sail() -> None:
+    up = {"helm": {"primary": "twa_up", "target": 37.7}, "wind": {"source": "LIVE"}}
+    assert js(f"primaryView({json.dumps(up)})")["label"] == "TWA CIBLE ↑"
+    assert js(f"primaryView({json.dumps(up)})")["value"] == "38°"
+    down = {"helm": {"primary": "twa_down", "target": 150.2}, "wind": {"source": "LIVE"}}
+    assert js(f"primaryView({json.dumps(down)})")["label"] == "TWA CIBLE ↓"
+    cts = {"helm": {"primary": "cts", "cts_t": 120.0}, "display": DISP_M, "wind": {}}
+    p = js(f"primaryView({json.dumps(cts)})")
+    assert (p["label"], p["value"]) == ("CAP À SUIVRE", "115°M")
+    assert js("primaryView({helm: null, wind: {source: 'LIVE'}})")["value"] == "—"
+
+
+def test_deviation_view() -> None:
+    def dv(primary: str, dev: float | None) -> dict:
+        return js(f"deviationView({json.dumps({'helm': {'primary': primary, 'deviation': dev}})})")
+
+    assert dv("twa_up", 4) == {"text": "+4°", "hint": "LOFER", "cls": "warn"}
+    assert dv("twa_up", -1.5) == {"text": "-2°", "hint": "ABATTRE", "cls": "good"}
+    assert dv("twa_down", 4)["hint"] == "LOFER"
+    assert dv("twa_down", -7)["cls"] == "bad"
+    assert dv("twa_up", 5.5)["cls"] == "bad"
+    assert dv("cts", 6)["hint"] == "◄ BÂBORD"
+    assert dv("cts", -6)["hint"] == "TRIBORD ►"
+    assert dv("cts", 0)["hint"] == ""
+    assert dv("twa_up", None) == {"text": "—", "hint": "", "cls": ""}
+    assert js("deviationView(null)") == {"text": "—", "hint": "", "cls": ""}
+
+
+def test_countdown_behaviour() -> None:
+    assert js("fmtCountdown({state: 'normal', countdown_s: 720}, 'beat')") == (
+        "Virement dans 12 min"
+    )
+    assert js("fmtCountdown({state: 'normal', countdown_s: 270}, 'run')") == (
+        "Empannage dans 4 min 30"
+    )
+    assert js("fmtCountdown({state: 'normal', countdown_s: 3900}, 'beat')") == (
+        "Virement dans 1 h 05"
+    )
+    assert js("fmtCountdown({state: 'overstood', overstood_s: 180}, 'beat')") == ("DÉPASSÉE +3 min")
+    assert js("fmtCountdown({state: 'fetching'}, 'beat')") == "ÇA PASSE"
+    assert js("fmtCountdown({state: 'normal', countdown_s: 300}, 'reach')") == ""
+    assert js("fmtCountdown(null, 'beat')") == ""
+    assert js("fmtCountdown(undefined)") == ""
+
+
+def test_source_badge_behaviour() -> None:
+    assert js("sourceBadge({source: 'LIVE'})")["text"] == "LIVE"
+    assert js("sourceBadge({source: 'LIVE_BG'})")["text"] == "LIVE B&G"
+    assert js("sourceBadge({source: 'MANUEL', stale: true, manual_age_s: 3600})")["text"] == (
+        "PÉRIMÉ"
+    )
+    assert js("sourceBadge({source: 'MANUEL', manual_age_s: 720})") == {
+        "text": "MANUEL 12 min",
+        "cls": "warn",
+    }
+    assert js("sourceBadge({source: 'NONE'})") == {"text": "PAS DE VENT", "cls": "bad"}
+    assert js("sourceBadge(null)")["text"] == "PAS DE VENT"
+
+
+def test_helm_flags() -> None:
+    nav = {
+        "wind": {"heading_trusted": False, "in_zone": True},
+        "layline": {"current": True, "src": "sailed"},
+    }
+    flags = js(f"helmFlags({json.dumps(nav)})")
+    texts = [f["text"] for f in flags]
+    assert "CAP NON FIABLE" in texts and "COURANT" in texts and "ANGLES RÉELS" in texts
+    assert all(f["cls"] in ("good", "warn", "bad") and f["key"] for f in flags)
+    ok = {"wind": {"heading_trusted": True}, "layline": {"current": False, "src": "polar"}}
+    assert js(f"helmFlags({json.dumps(ok)})") == []
+    assert js("helmFlags(null)") == []
+    assert js("helmFlags({})") == []
+
+
+def test_headings_and_other_tack() -> None:
+    assert js(f"fmtHeading(247.3, {json.dumps(DISP_M)})") == "243°M"
+    assert js("fmtHeading(247.3, {heading_ref: 'T', variation: 4.7})") == "247°T"
+    nav = {"layline": {"state": "normal", "other_tack_hdg_t": 247.3}, "display": DISP_M}
+    assert js(f"helmView({json.dumps(nav)})")["otherTack"] == "Autre bord 243°M"
+    assert js("helmView({layline: {other_tack_hdg_t: null}})")["otherTack"] == ""
+
+
+def test_helm_view_bands() -> None:
+    v = js(f"helmView({json.dumps(NAV)})")
+    assert v["speed"] == "4,5 / 6,0 nds"
+    assert v["pct"] == "72 %"
+    assert v["markLine"] == "Plić Sestre 2,0 nm · 25 min"
+    assert v["dev"] == {"text": "+7°", "hint": "LOFER", "cls": "bad"}
+    assert v["flags"] == []
+    # missing blocks never throw
+    empty = js("helmView({})")
+    assert empty["primary"]["value"] == "—" and empty["countdown"] == ""
+    assert js("helmView(null)")["speed"] == "— / — nds"
 
 
 def test_static_modules_parse(tmp_path: Path) -> None:

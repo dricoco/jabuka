@@ -9,6 +9,10 @@
 //   latest(type): the last detail emitted for a bus event type (a module mounted after the first
 //   "course"/"settings"/"nav" event starts from it), or null.
 // A module that fails to load or mount never stops the helm numbers.
+//
+// Night theme (HELM-03, 02-05): the toggle in #top-ctrls sets body.theme-night, persists
+// localStorage "jabuka.theme" and re-styles the map with map.js setTheme (overlays survive);
+// "jabuka.brightness" (0.4-1.0) scales the red of every night colour.
 
 import { linkState } from "./diag_logic.js";
 import { sourceBadge } from "./helm_logic.js";
@@ -81,6 +85,125 @@ export function badge(key, text, cls = "warn") {
   el.className = `badge ${cls}`;
 }
 
+// -- night theme (HELM-03) ----------------------------------------------------------------------
+const THEME_KEY = "jabuka.theme";
+const BRIGHT_KEY = "jabuka.brightness";
+
+function store(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode: per-session only */
+  }
+}
+
+function load(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export const storedTheme = () => (load(THEME_KEY) === "night" ? "night" : "day");
+
+export function storedBrightness() {
+  const v = Number.parseFloat(load(BRIGHT_KEY));
+  return Number.isFinite(v) ? Math.min(1, Math.max(0.4, v)) : 1;
+}
+
+// Every night colour is a pure red channel scaled by the brightness (no green/blue light).
+function applyBrightness() {
+  const s = document.body.style;
+  const names = ["--fg", "--dim", "--line", "--good", "--warn", "--bad", "--accent", "--map-k"];
+  if (!document.body.classList.contains("theme-night")) {
+    for (const n of names) s.removeProperty(n);
+    return;
+  }
+  const k = storedBrightness();
+  const red = (v) => `rgb(${Math.round(v * k)}, 0, 0)`;
+  s.setProperty("--fg", red(255));
+  s.setProperty("--good", red(255));
+  s.setProperty("--bad", red(255));
+  s.setProperty("--accent", red(255));
+  s.setProperty("--warn", red(192));
+  s.setProperty("--dim", red(128));
+  s.setProperty("--line", red(64));
+  s.setProperty("--map-k", String(k));
+}
+
+function applyThemeClass(theme) {
+  const night = theme === "night";
+  document.body.classList.toggle("theme-night", night);
+  document.body.classList.toggle("theme-day", !night);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", night ? "#000000" : "#ffffff");
+  const btn = $("night-toggle");
+  if (btn) {
+    btn.textContent = night ? "Jour" : "☾ Nuit";
+    btn.setAttribute("aria-pressed", night ? "true" : "false");
+  }
+  const slider = $("night-brightness");
+  if (slider) slider.hidden = !night;
+  applyBrightness();
+}
+
+export async function setAppTheme(theme) {
+  const t = theme === "night" ? "night" : "day";
+  store(THEME_KEY, t);
+  applyThemeClass(t);
+  emit("theme", t);
+  try {
+    const m = await import("./map.js");
+    await m.setTheme(t);
+  } catch (e) {
+    console.warn("map theme", e);
+  }
+}
+
+function buildTopControls() {
+  let box = $("top-ctrls");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "top-ctrls";
+    $("topbar").append(box);
+  }
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.id = "night-brightness";
+  slider.min = "40";
+  slider.max = "100";
+  slider.step = "10";
+  slider.value = String(Math.round(storedBrightness() * 100));
+  slider.setAttribute("aria-label", "Luminosité nuit");
+  slider.addEventListener("input", () => {
+    store(BRIGHT_KEY, String(Number(slider.value) / 100));
+    applyBrightness();
+  });
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "night-toggle";
+  btn.className = "ctrl";
+  btn.setAttribute("aria-label", "Mode nuit");
+  btn.addEventListener("click", () => {
+    const night = !document.body.classList.contains("theme-night");
+    setAppTheme(night ? "night" : "day");
+    // fullscreen hides the Android status bar (white icons) at night (Pitfall 4)
+    if (night && document.fullscreenEnabled && !document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.({ navigationUI: "hide" })?.catch?.(() => {});
+    }
+  });
+  box.append(slider, btn);
+}
+
+// main/banner follow the real top bar height (the badges may wrap on a portrait tablet)
+function trackTopbar() {
+  const bar = $("topbar");
+  const set = () => document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+  set();
+  if (typeof ResizeObserver === "function") new ResizeObserver(set).observe(bar);
+}
+
 // -- tabs ---------------------------------------------------------------------------------------
 let currentTab = "barre";
 function showTab(name) {
@@ -121,6 +244,7 @@ async function refetch(kind) {
 function onNav(nav) {
   if (nav.course_version !== fetched.course) refetch("course");
   if (nav.settings_version !== fetched.settings) refetch("settings");
+  if (window.jabuka) window.jabuka.lastNav = nav;
   const b = sourceBadge(nav.wind);
   badge("wind", b.text, b.cls);
   emit("nav", nav);
@@ -200,14 +324,41 @@ const MODULES = [
   ["carte", "./carte.js", "tab-carte"],
   ["reglages", "./reglages.js", "tab-reglages"],
   ["overlays", "./overlays.js", null],
+  ["lock", "./lock.js", null],
 ];
+
+// Screen awake (HELM-04): Wake Lock / NoSleep video from a user gesture (the first tap anywhere,
+// retried on later taps until something holds the screen), shown as "ÉCRAN: verrou|vidéo|aucun"
+// ("aucun" is an alert). Capture phase on window, so the lock overlay cannot swallow it.
+const WAKE_CLS = { verrou: "good", vidéo: "warn", aucun: "bad" };
+
+async function setupWake() {
+  const show = (state) => badge("wake", `ÉCRAN: ${state}`, WAKE_CLS[state] ?? "bad");
+  try {
+    const w = await import("./wakelock.js");
+    show(w.wakeState());
+    w.onWakeChange(show);
+    const onGesture = () => {
+      if (w.wakeState() === "aucun") w.keepAwake();
+    };
+    for (const type of ["pointerdown", "pointerup", "keydown"]) {
+      window.addEventListener(type, onGesture, { capture: true });
+    }
+  } catch (e) {
+    console.error("wake lock module", e);
+    show("aucun");
+  }
+}
 
 // The map is optional for the helm: without WebGL (or MapLibre) the numbers keep updating and a
 // badge says so (the Leaflet fallback stays deferred).
 async function loadMap() {
   try {
     const m = await import("./map.js");
-    await m.ensureMap($("map"), { theme: m.storedTheme() });
+    const theme = storedTheme();
+    await m.ensureMap($("map"), { theme });
+    // the theme may have been toggled while the map was loading
+    if (storedTheme() !== theme) await m.setTheme(storedTheme());
     badge("map", null);
   } catch (e) {
     console.error("map unavailable", e);
@@ -226,10 +377,14 @@ async function loadModule(name, path, sectionId) {
 }
 
 function init() {
+  applyThemeClass(storedTheme());
+  buildTopControls();
+  applyThemeClass(storedTheme());
+  trackTopbar();
   for (const btn of document.querySelectorAll("#topbar [data-tab]")) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
   }
-  window.jabuka = Object.assign(window.jabuka ?? {}, { bus, api });
+  window.jabuka = Object.assign(window.jabuka ?? {}, { bus, api, setAppTheme });
   badge("link", "PERTE DONNÉES", "bad");
   document.body.classList.add("link-stale");
   // helm first and awaited: the numbers must show even if a later module fails
@@ -240,6 +395,7 @@ function init() {
     for (const m of MODULES.slice(1)) loadModule(...m);
   });
   showTab(currentTab);
+  setupWake();
 }
 
 init();
