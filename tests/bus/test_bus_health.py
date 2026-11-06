@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from jabuka.ingest.bus_health import STATES, WindowStats, classify
-
 from jabuka.ingest.fastnet_framing import FramerStats
 
 

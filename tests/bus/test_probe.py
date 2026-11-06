@@ -13,11 +13,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from jabuka.tools.probe import run_probe
 
 from jabuka.ingest.fastnet_framing import load_capture
 from jabuka.sim.pty_replay import PtyFeeder, build_arg_parser, replay_bytes
 from jabuka.tools import probe as probe_mod
+from jabuka.tools.probe import run_probe
 
 FIX = Path(__file__).resolve().parent.parent / "fixtures" / "fastnet"
 EXAMPLE2 = FIX / "example2_fastnet_data.txt"
@@ -95,7 +95,7 @@ def test_probe_live_example2_ok(running_replay, probe_out_dir: Path) -> None:
 def test_probe_live_inverted_says_swap_wires(running_replay, probe_out_dir: Path) -> None:
     data = load_capture(EXAMPLE2)
     with running_replay(data, speed=20, invert=True) as rr:
-        report = run_probe(rr.feeder.slave_path, seconds=3, out_dir=probe_out_dir, on_open=rr.start)
+        report = run_probe(rr.feeder.slave_path, seconds=2, out_dir=probe_out_dir, on_open=rr.start)
     assert report.state == "no_frames"
     assert report.exit_code == 3
     assert "BYTES BUT NO VALID FRAMES: swap White/Green (A/B)" in report.hint
@@ -112,7 +112,7 @@ def test_probe_live_silent(running_replay, probe_out_dir: Path) -> None:
 def test_probe_live_garbage_is_noisy(running_replay, probe_out_dir: Path) -> None:
     data = load_capture(EXAMPLE2)
     with running_replay(data, speed=20, garbage_rate=0.5, rng=random.Random(7)) as rr:
-        report = run_probe(rr.feeder.slave_path, seconds=3, out_dir=probe_out_dir, on_open=rr.start)
+        report = run_probe(rr.feeder.slave_path, seconds=2, out_dir=probe_out_dir, on_open=rr.start)
     assert report.state == "noisy", report.inventory["stats"]
     assert report.exit_code == 4
     assert "Black" in report.hint

@@ -12,9 +12,9 @@ from pathlib import Path
 import fastnet_decoder
 import pytest
 from fastnet_decoder import interpreter as interp
-from jabuka.ingest.fastnet_records import iter_records, layout_code, record_hex
 
 from jabuka.ingest.fastnet_framing import BROADCAST, CountingFramer, chunks_from_capture
+from jabuka.ingest.fastnet_records import iter_records, layout_code, record_hex
 
 FIX = Path(__file__).resolve().parent.parent / "fixtures" / "fastnet"
 CAPTURES = sorted(p.name for p in FIX.glob("*.txt"))
