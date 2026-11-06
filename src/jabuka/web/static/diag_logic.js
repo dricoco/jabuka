@@ -58,6 +58,7 @@ const CORE_ERRORS = {
   events_errors: "event log write failed",
   flush_errors: "log flush failed",
   handler_errors: "message handler failed",
+  nav_errors: "nav computation failed",
 };
 const SOURCE_ERRORS = {
   raw_errors: "raw log write failed",

@@ -15,7 +15,7 @@
 // "jabuka.brightness" (0.4-1.0) scales the red of every night colour.
 
 import { linkState } from "./diag_logic.js";
-import { sourceBadge } from "./helm_logic.js";
+import { windBadge } from "./helm_logic.js";
 
 const $ = (id) => document.getElementById(id);
 export const bus = new EventTarget();
@@ -245,7 +245,7 @@ function onNav(nav) {
   if (nav.course_version !== fetched.course) refetch("course");
   if (nav.settings_version !== fetched.settings) refetch("settings");
   if (window.jabuka) window.jabuka.lastNav = nav;
-  const b = sourceBadge(nav.wind);
+  const b = windBadge(nav); // a nav computation failure is not "PAS DE VENT" (CR-01)
   badge("wind", b.text, b.cls);
   emit("nav", nav);
 }

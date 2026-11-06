@@ -77,6 +77,31 @@ export function sourceBadge(wind) {
   }
 }
 
+// The server's alert when the whole nav computation raised (nav_service.update): every number is
+// then null, which must never read as "no wind" (CR-01).
+export const NAV_FAILED = "Erreur de calcul nav";
+const NO_WIND = "PAS DE VENT";
+
+export const navFailed = (nav) => Array.isArray(nav?.alerts) && nav.alerts.map(String).includes(NAV_FAILED);
+
+// Wind badge of the top bar: a failed nav computation is shown as such, not as "PAS DE VENT".
+export function windBadge(nav) {
+  if (navFailed(nav)) return { text: "ERREUR CALCUL", cls: "bad" };
+  return sourceBadge(nav?.wind);
+}
+
+// Alert badges (CR-01): every nav alert, de-duplicated, in server order. "PAS DE VENT" is left
+// out because the wind badge already says it.
+export function navAlerts(nav) {
+  if (!Array.isArray(nav?.alerts)) return [];
+  const out = [];
+  for (const a of nav.alerts) {
+    const text = String(a);
+    if (text && text !== NO_WIND && !out.includes(text)) out.push(text);
+  }
+  return out;
+}
+
 // Colour class of the deviation (actual - target): within 2 deg good, within 5 deg warn, else bad.
 export function deviationClass(deviation) {
   if (!isNum(deviation)) return "";
@@ -123,6 +148,7 @@ export function helmFlags(nav) {
 export function primaryView(nav) {
   const helm = nav?.helm;
   const plain = (label, value) => ({ label, value, main: value, unit: "" });
+  if (navFailed(nav)) return plain("ERREUR CALCUL", "—");
   if (!nav || !helm || !helm.primary) {
     const noWind = !nav?.wind || nav.wind.source === "NONE";
     return plain(noWind ? "PAS DE VENT" : "—", "—");
@@ -163,8 +189,8 @@ export function helmView(nav) {
     btw: fmtHeading(mark?.btw_t, nav?.display),
     countdown: fmtCountdown(lay, nav?.leg),
     otherTack: other === "—" ? "" : `Autre bord ${other}`,
-    badge: sourceBadge(nav?.wind),
+    badge: windBadge(nav),
     flags: helmFlags(nav),
-    alerts: Array.isArray(nav?.alerts) ? nav.alerts.map(String) : [],
+    alerts: navAlerts(nav),
   };
 }
