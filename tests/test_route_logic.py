@@ -119,6 +119,15 @@ def test_countdown_now_missed_and_land_release() -> None:
         stay={"active": True, "tack": "stbd", "released_land": True, "release_in_s": 95},
     )
     assert cd(land)["text"] == "Virement imposé (terre) dans 01:35"
+    # 03-REVIEW LO-08: once the release time has passed, the land-forced tack is VIREZ (red),
+    # never "dans 00:00"
+    for left, cdn in ((0, 0), (-30, -30)):
+        due = route(
+            kind="stay",
+            countdown_s=cdn,
+            stay={"active": True, "tack": "stbd", "released_land": True, "release_in_s": left},
+        )
+        assert (cd(due)["text"], cd(due)["cls"]) == ("VIREZ", "alert")
 
 
 def test_countdown_falls_back_to_the_laylines() -> None:
@@ -219,6 +228,55 @@ def test_route_geojson_split_and_layers() -> None:
     assert colors and all(c[3:] == "0000" for c in colors), colors
     day = js("routeLayers('day')")
     assert {ly["source"] for ly in day} == {"route", "route-tack", "route-next"}
+
+
+def test_withdrawn_route_falls_back_to_the_laylines() -> None:
+    # 03-REVIEW CR-02: an "outdated" route is not steerable: layline countdown, a clear reason
+    out = route(
+        state="outdated",
+        reason="parcours modifié : recalcul en cours",
+        target_twa=None,
+        target=None,
+        countdown_s=None,
+        updating=False,
+    )
+    assert cd(out) == {"text": "Virement dans 12 min", "cls": "", "source": "layline"}
+    b = js(f"routeBand({json.dumps(nav(out))})")
+    assert b["visible"] is True and b["cls"] == "warn"
+    assert b["lines"]["status"] == "Route retirée : parcours modifié : recalcul en cours"
+    assert b["lines"]["cost"] is None and b["lines"]["countdown"] is None
+    assert js(f"stayButton({json.dumps(out)})")["disabled"] is True
+    assert js(f"routeVisible({json.dumps(out)})") is True
+    assert js(f"routeVisible({json.dumps(route(state='failed'))})") is False
+    # a still steerable route whose last recompute failed says so, in amber
+    stale = route(stale=True, last_fail="timeout: no result after 60 s")
+    sb = js(f"routeBand({json.dumps(nav(stale))})")
+    assert sb["cls"] == "warn"
+    assert sb["lines"]["status"] == "Recalcul en échec : timeout: no result after 60 s"
+    assert sb["lines"]["countdown"] == "Virement dans 08:30"
+
+
+def test_withdrawn_route_line_is_greyed() -> None:
+    line = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[15.8, 43.7], [15.9, 43.6]]},
+                "properties": {"role": "route", "version": 2},
+            }
+        ],
+    }
+    grey = js(f"staleLine({json.dumps(line)}, true)")
+    assert grey["features"][0]["properties"] == {"role": "route", "version": 2, "stale": True}
+    assert (
+        js(f"staleLine({json.dumps(line)}, false)")["features"][0]["properties"]["stale"] is False
+    )
+    assert js("staleLine(null, true).features.length") == 0
+    day = js("routeLayers('day')")[0]["paint"]["line-color"]
+    assert day[0] == "case" and day[-2:] == ["#9e9e9e", "#8b008b"]
+    night = js("routeLayers('night')")[0]["paint"]["line-color"]
+    assert night[-2:] == ["#550000", "#ff0000"]
 
 
 # -- Task 2: On reste, bias ----------------------------------------------------------------------

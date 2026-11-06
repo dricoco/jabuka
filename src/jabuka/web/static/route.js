@@ -2,7 +2,8 @@
 // block and route message, 03-05):
 //   - map: overlay "route" on the shared map (map.js registerOverlay, so day/night style swaps
 //     keep it): the route line, its tack points and the next tack point (followed from
-//     nav.route.tack_lat/lon every second). Hidden while the route is not valid.
+//     nav.route.tack_lat/lon every second). Greyed out without tack points while the core
+//     says the route is withdrawn ("outdated"), hidden in every other non-ok state.
 //   - Barre tab: #route-band under the helm countdown with the route state, the cost of not
 //     tacking, the route age, the complementary target and the GRIB bias, and the big
 //     "ON RESTE" button (POST /api/route/stay {active}). The button does nothing while the
@@ -12,7 +13,16 @@
 // nav.route.version differs from the drawn one, GET /api/route heals a missed message.
 // Every string goes through textContent (T-03-06-01).
 import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
-import { STR, nextTackData, routeBand, routeData, routeLayers, stayButton } from "./route_logic.js";
+import {
+  STR,
+  nextTackData,
+  routeBand,
+  routeData,
+  routeLayers,
+  routeVisible,
+  stayButton,
+  staleLine,
+} from "./route_logic.js";
 
 const $ = (id) => document.getElementById(id);
 const EMPTY = { type: "FeatureCollection", features: [] };
@@ -130,6 +140,8 @@ export function mount(ctx) {
   let shown = null; // overlay visibility applied
   let nextKey = "";
   const data = { route: EMPTY, "route-tack": EMPTY, "route-next": EMPTY };
+  let raw = { line: EMPTY, tacks: EMPTY }; // the drawn route message, before the stale styling
+  let stale = false; // drawn greyed out (route withdrawn by the core)
   let inflight = false;
   let tried = { version: 0, t: 0 };
 
@@ -141,8 +153,9 @@ export function mount(ctx) {
   const draw = (msg) => {
     if (!msg || msg.type !== "route" || !msg.geojson) return;
     const d = routeData(msg);
-    put("route", d.line);
-    put("route-tack", d.tacks);
+    raw = { line: d.line, tacks: d.tacks };
+    put("route", staleLine(raw.line, stale));
+    put("route-tack", stale ? EMPTY : raw.tacks);
     if (!nav?.route) put("route-next", d.next); // until the first nav message says where it is
     drawn = Number(msg.version) || 0;
     globalThis.jabuka = Object.assign(globalThis.jabuka ?? {}, { routeVersion: drawn });
@@ -165,10 +178,16 @@ export function mount(ctx) {
 
   const sync = () => {
     const r = nav?.route;
-    const ok = r?.state === "ok";
-    if (ready && ok !== shown) {
-      setOverlayVisible("route", ok);
-      shown = ok;
+    const visible = routeVisible(r);
+    if (ready && visible !== shown) {
+      setOverlayVisible("route", visible);
+      shown = visible;
+    }
+    const out = r?.state === "outdated";
+    if (out !== stale) {
+      stale = out;
+      put("route", staleLine(raw.line, stale));
+      put("route-tack", stale ? EMPTY : raw.tacks);
     }
     if (!r) return;
     // the next tack point follows the boat's progress along the route (nav every second)
@@ -178,7 +197,7 @@ export function mount(ctx) {
       put("route-next", nextTackData(r));
     }
     const v = Number(r.version) || 0;
-    if (ok && v > 0 && v !== drawn) refetch(v);
+    if (visible && v > 0 && v !== drawn) refetch(v);
   };
 
   ctx.bus.addEventListener("nav", (ev) => {

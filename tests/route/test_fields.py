@@ -106,3 +106,14 @@ def test_sample_wind_is_real(sample_wind) -> None:
     wf = WindField(sample_wind, DEFAULT_FRAME)
     twd, tws = wf.at(float(sample_wind.t[3]), 43.6, 15.6)
     assert 0.0 <= twd < 2 * math.pi and 0.0 <= tws < 40.0
+
+
+def test_nan_stencil_is_no_wind_not_a_calm() -> None:
+    """03-REVIEW MD-01: a wind cell without a value never becomes 0 kn from 180."""
+    g = _two_step_grid()
+    g.arrays["u"][:, :, 0] = np.nan  # west column without a value
+    wf = WindField(g, DEFAULT_FRAME)
+    twd, tws = wf.at(T0, 43.5, 15.2)  # stencil touches the NaN column
+    assert math.isnan(twd) and math.isnan(tws)
+    twd, tws = wf.at(T0, 43.5, 15.75)  # clear of it
+    assert math.isfinite(twd) and tws > 0.0

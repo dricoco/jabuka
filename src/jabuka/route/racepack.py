@@ -29,6 +29,8 @@ from typing import Any
 
 import numpy as np
 
+from jabuka.route.frame import RACE_BBOX
+
 log = logging.getLogger(__name__)
 
 WIND_FILE = "wind.npz"
@@ -72,6 +74,48 @@ class RacePack:
     polar_path: Path | None = None
     meta: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    # sidecar sha256 of every file the router uses, read at load (pack_fingerprint)
+    fingerprint: tuple[tuple[str, str | None], ...] = ()
+
+
+FINGERPRINT_STEMS = ("wind", "waves", "current", "landmask")
+
+
+def pack_fingerprint(pack_dir: str | Path) -> tuple[tuple[str, str | None], ...]:
+    """((stem, sidecar sha256 | None when the npz is absent | "?" when the sidecar is
+    unreadable), ...) for wind, waves, current and the land mask: cheap (small JSON reads), so
+    the core and the worker can tell whether they route on the same pack (03-REVIEW MD-05)."""
+    pack_dir = Path(pack_dir)
+    out: list[tuple[str, str | None]] = []
+    for stem in FINGERPRINT_STEMS:
+        if not (pack_dir / f"{stem}.npz").exists():
+            out.append((stem, None))
+            continue
+        try:
+            sha = str(json.loads((pack_dir / f"{stem}.json").read_text(encoding="utf-8"))["sha256"])
+        except (OSError, ValueError, KeyError, TypeError):
+            sha = "?"
+        out.append((stem, sha))
+    return tuple(out)
+
+
+def verify_landmask(path: str | Path) -> None:
+    """The land mask must match the sha256 of its landmask.json sidecar (written by the prep);
+    ValueError (French) otherwise (03-REVIEW MD-05: it was opened without any check)."""
+    path = Path(path)
+    side = path.with_suffix(".json")
+    try:
+        expected = str(json.loads(side.read_text(encoding="utf-8"))["sha256"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"{path.name} : fiche {side.name} absente ou illisible") from exc
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ValueError(f"{path.name} : lecture impossible ({exc})") from exc
+    if digest != expected:
+        raise ValueError(
+            f"{path.name} : empreinte sha256 différente de {side.name} (fichier altéré)"
+        )
 
 
 @dataclass(frozen=True)
@@ -198,6 +242,7 @@ def load_pack(pack_dir: str | Path) -> RacePack:
     """Load and validate the race pack in ``pack_dir`` (fixed file names only)."""
     pack_dir = Path(pack_dir)
     pack = RacePack(dir=pack_dir)
+    pack.fingerprint = pack_fingerprint(pack_dir)
     for comp in ("wind", "waves", "current"):
         grid, meta, err = _load_component(pack_dir, comp)
         setattr(pack, comp, grid)
@@ -388,6 +433,23 @@ def _grid_checks(
     return problems, step_warnings
 
 
+def _area_holes(grid: Grid, window: RaceWindow) -> int:
+    """Wind cells without a value (u or v) that a bilinear stencil inside RACE_BBOX can touch
+    (the bbox widened by one grid cell), at the time steps bracketing the race window."""
+    lon_min, lat_min, lon_max, lat_max = RACE_BBOX
+    iy = np.flatnonzero((grid.lat >= lat_min) & (grid.lat <= lat_max))
+    ix = np.flatnonzero((grid.lon >= lon_min) & (grid.lon <= lon_max))
+    if iy.size == 0 or ix.size == 0:
+        return 0
+    y0, y1 = max(0, int(iy[0]) - 1), min(grid.lat.size, int(iy[-1]) + 2)
+    x0, x1 = max(0, int(ix[0]) - 1), min(grid.lon.size, int(ix[-1]) + 2)
+    tsl = _window_slice(grid.t, window)
+    bad = np.zeros(grid.arrays["u"][tsl, y0:y1, x0:x1].shape, dtype=bool)
+    for key in ("u", "v"):
+        bad |= ~np.isfinite(grid.arrays[key][tsl, y0:y1, x0:x1])
+    return int(np.count_nonzero(bad.any(axis=0)))
+
+
 def coverage(
     pack: RacePack,
     points: list[tuple[str, float, float]],
@@ -416,6 +478,12 @@ def coverage(
         problems, steps = _grid_checks(w, "vent", points, legs, window)
         rep.alerts.extend(ALERT_PREFIX + p for p in problems)
         rep.warnings.extend(steps)
+        holes = _area_holes(w, window)  # 03-REVIEW MD-01: the router would see calms there
+        if holes:
+            rep.alerts.append(
+                f"{ALERT_PREFIX}vent sans valeur sur {holes} cellules de la zone de course "
+                "(le routeur y verrait du calme : refaire le pack)"
+            )
     for comp, label, absent, factor in (
         (
             "waves",

@@ -27,13 +27,17 @@ from jabuka.route.evaluate import evaluate_path
 from jabuka.route.fields import fields_from_pack
 from jabuka.route.isochrone import RouterEnv, route
 from jabuka.route.landmask import LandMask, load_geofields
-from jabuka.route.racepack import load_pack
-from jabuka.route.types import CycleRequest, CycleResult, RouteResult
+from jabuka.route.racepack import RacePack, load_pack, verify_landmask
+from jabuka.route.types import FAIL_ENGINE, FAIL_PACK, CycleRequest, CycleResult, RouteResult
 
 _ENV: RouterEnv | None = None
 _INIT_ERROR: str | None = None
 _INIT_NOTES: list[str] = []
 _PACK_DIR: str | None = None
+_PACK_FP: tuple | None = None  # pack fingerprint this worker loaded (MD-05)
+
+# The core loaded another pack than this worker (replaced on disk without a core restart).
+PACK_CHANGED = "pack de course modifié depuis le démarrage du cœur"
 
 
 def rss_kb() -> int:
@@ -56,6 +60,10 @@ def rss_kb() -> int:
 def build_env(pack_dir: str | Path, notes: list[str] | None = None) -> RouterEnv:
     """RouterEnv from a race-pack directory (in-process use: tests, bench --inprocess).
     ValueError with a French reason when the pack cannot route."""
+    return _build(pack_dir, notes)[0]
+
+
+def _build(pack_dir: str | Path, notes: list[str] | None = None) -> tuple[RouterEnv, RacePack]:
     pack_dir = Path(pack_dir)
     pack = load_pack(pack_dir)
     if pack.wind is None:
@@ -63,6 +71,7 @@ def build_env(pack_dir: str | Path, notes: list[str] | None = None) -> RouterEnv
         raise ValueError(f"pack {pack_dir} sans vent utilisable ({why})")
     if pack.landmask_path is None:
         raise ValueError(f"landmask.npz absent du pack {pack_dir}")
+    verify_landmask(pack.landmask_path)  # MD-05: never route on an altered land mask
     mask = LandMask.load(pack.landmask_path)
     geofields = {}
     if pack.geofields_path is not None:
@@ -75,22 +84,28 @@ def build_env(pack_dir: str | Path, notes: list[str] | None = None) -> RouterEnv
         if notes is not None:
             notes.append(err)
     fields = fields_from_pack(pack, mask.frame)
-    return RouterEnv(mask, fields, geofields=geofields)
+    return RouterEnv(mask, fields, geofields=geofields), pack
 
 
 def init_worker(pack_dir: str) -> None:
     """Worker initializer: load everything once; never raises (errors kept as strings)."""
-    global _ENV, _INIT_ERROR, _INIT_NOTES, _PACK_DIR
-    _ENV, _INIT_ERROR, _INIT_NOTES, _PACK_DIR = None, None, [], str(pack_dir)
+    global _ENV, _INIT_ERROR, _INIT_NOTES, _PACK_DIR, _PACK_FP
+    _ENV, _INIT_ERROR, _INIT_NOTES, _PACK_DIR, _PACK_FP = None, None, [], str(pack_dir), None
     try:
-        _ENV = build_env(pack_dir, _INIT_NOTES)
+        _ENV, pack = _build(pack_dir, _INIT_NOTES)
+        _PACK_FP = pack.fingerprint
     except Exception as exc:  # noqa: BLE001 - any init failure becomes a reason string
         _INIT_ERROR = f"routeur non initialisé : {exc}"
 
 
-def _failed(req, reason: str) -> RouteResult:
+def _failed(req, reason: str, kind: str = FAIL_ENGINE) -> RouteResult:
     return RouteResult(
-        ok=False, reason=reason, request_id=req.request_id, t0=req.t0, level=req.settings.level
+        ok=False,
+        reason=reason,
+        request_id=req.request_id,
+        t0=req.t0,
+        level=req.settings.level,
+        fail_kind=kind,
     )
 
 
@@ -126,7 +141,15 @@ def cycle_with_env(env: RouterEnv, creq: CycleRequest) -> CycleResult:
         try:
             polar = env.polar_for(base.polar_curves, base.eff, base.eff_up, base.eff_down)
             eta_old, old_valid, old_reason = evaluate_path(
-                creq.old_path, base.lat, base.lon, base.t0, env, polar, base.bias, s
+                creq.old_path,
+                base.lat,
+                base.lon,
+                base.t0,
+                env,
+                polar,
+                base.bias,
+                s,
+                t_hint=creq.old_t_here,
             )
         except ValueError as exc:
             eta_old, old_valid, old_reason = None, False, str(exc)
@@ -148,6 +171,17 @@ def run_cycle(creq: CycleRequest) -> CycleResult:
         reason = _INIT_ERROR or "routeur non initialisé (init_worker non appelé)"
         return CycleResult(
             _failed(creq.base, reason),
+            None,
+            None,
+            None,
+            None,
+            None,
+            {"level": creq.base.settings.level, "rss_kb": rss_kb(), "pid": os.getpid()},
+        )
+    if creq.pack_fp is not None and _PACK_FP is not None and tuple(creq.pack_fp) != _PACK_FP:
+        # the core routes the helm on another pack than this (restarted) worker loaded
+        return CycleResult(
+            _failed(creq.base, f"{PACK_CHANGED} : redémarrer jabuka-core", FAIL_PACK),
             None,
             None,
             None,

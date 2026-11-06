@@ -113,3 +113,27 @@ def test_from_polar_json_round_trip(polar_curves) -> None:
     assert curves_from_json(obj) == polar_curves
     assert float(p.speed(12, 37.7)) == pytest.approx(6.5 * 0.92, abs=0.02)
     assert math.isfinite(float(p.vmg_up[12])) and float(p.vmg_up[12]) == pytest.approx(5.14, 0.01)
+
+
+def test_worker_caches_are_bounded(mask, env_factory, sample_wind, polar_curves) -> None:
+    """03-REVIEW LO-03: one polar grid per efficiency change and one geofield per moved mark
+    were kept for 36 h; both caches are now LRU (CACHE_MAX entries)."""
+    from collections import OrderedDict
+
+    from jabuka.route.isochrone import CACHE_MAX, RouterEnv, _lru_get, _lru_put
+
+    env = RouterEnv(mask, env_factory(sample_wind).fields)
+    assert isinstance(env.geo_cache, OrderedDict) and isinstance(env.polar_cache, OrderedDict)
+    first = env.polar_for(polar_curves, 0.80)
+    for k in range(1, 12):
+        env.polar_for(polar_curves, 0.80 + 0.01 * k)
+    assert len(env.polar_cache) == CACHE_MAX
+    assert env.polar_for(polar_curves, 0.80) is not first  # evicted, rebuilt
+    recent = env.polar_for(polar_curves, 0.80)
+    env.polar_for(polar_curves, 0.95)
+    assert env.polar_for(polar_curves, 0.80) is recent  # used recently: kept
+    lru: OrderedDict = OrderedDict()
+    for k in range(CACHE_MAX + 3):
+        _lru_put(lru, k, str(k))
+    assert list(lru) == list(range(3, CACHE_MAX + 3))
+    assert _lru_get(lru, 3) == "3" and list(lru)[-1] == 3

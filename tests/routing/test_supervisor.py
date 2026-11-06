@@ -173,7 +173,11 @@ def test_invalid_worker_route_is_discarded_with_an_alert(routing_core, fake_pool
         import dataclasses
 
         bad = RouteResult(
-            ok=False, reason="route invalide (terre)", request_id=b.request_id, t0=b.t0
+            ok=False,
+            reason="route invalide (terre)",
+            request_id=b.request_id,
+            t0=b.t0,
+            fail_kind="land",
         )
         return dataclasses.replace(res, optimal=bad)
 
@@ -215,10 +219,15 @@ def test_route_persists_across_a_restart(routing_core, fake_pool, rh, tmp_path) 
     core2.sail(*pos, 157.0)
     nav = core2.tick(1.0)
     r = nav["route"]
-    assert r["state"] == "ok" and r["version"] == 1
-    assert r["age_s"] >= 600
-    assert core2.client.get("/api/route").json()["version"] == 1
+    # 03-REVIEW MD-05: restored but not steerable until a worker cycle has re-checked it
+    assert r["state"] == "outdated" and r["version"] == 1
+    assert r["reason"] == "route sauvegardée : vérification en cours"
+    assert r["age_s"] >= 600 and r["target_twa"] is None
+    assert core2.client.get("/api/route").json()["version"] == 1  # drawn greyed on the map
     fake2.hold = False
+    core2.settle()
+    nav = core2.tick(0.0)
+    assert nav["route"]["state"] == "ok" and nav["route"]["version"] == 2
 
 
 def test_corrupt_route_file_is_ignored_with_an_alert(routing_core, fake_pool, rh, tmp_path):
@@ -233,3 +242,242 @@ def test_corrupt_route_file_is_ignored_with_an_alert(routing_core, fake_pool, rh
     assert nav["route"]["version"] == 0
     assert "Route sauvegardée illisible : ignorée" in nav["alerts"]
     fake_pool.hold = False
+
+
+def test_request_carries_the_follower_route_time(routing_core, fake_pool, rh) -> None:
+    # 03-REVIEW MD-03: the worker re-evaluates the old route from the helm's own projection
+    core, pos = _start(routing_core, fake_pool, rh)
+    assert fake_pool.requests[0].old_t_here is None  # no route yet
+    core.call(core.router.request, "timer", False)
+    _run(core, pos, 1)
+    creq = fake_pool.requests[-1]
+    assert creq.old_path is not None and creq.old_t_here is not None
+    assert creq.old_path[0].t <= creq.old_t_here <= creq.old_path[-1].t
+
+
+@pytest.mark.parametrize(
+    ("reason", "kind", "alert"),
+    [
+        ("réglages invalides : pas", "input", False),
+        ("départ dans la terre : aucune eau libre à 1 nm", "input", False),
+        ("marque invalide : X", "input", False),
+        ("aucune expansion valide (front bloqué par la terre)", "engine", False),
+        ("route invalide (terre)", "land", True),
+    ],
+)
+def test_route_invalide_alert_follows_the_worker_kind(
+    routing_core, fake_pool, rh, reason, kind, alert
+) -> None:
+    """03-REVIEW LO-04: "ROUTE INVALIDE" came from French substrings ("invalide", "terre"),
+    so a GPS glitch or a settings error raised the 5 min land alert."""
+    import dataclasses
+
+    from jabuka.route.types import RouteResult
+
+    core, pos = _start(routing_core, fake_pool, rh)
+
+    def failing(creq):
+        b = creq.base
+        bad = RouteResult(ok=False, reason=reason, request_id=b.request_id, t0=b.t0, fail_kind=kind)
+        return dataclasses.replace(fake_pool.default(creq), optimal=bad)
+
+    fake_pool.script = failing
+    core.call(core.router.request, "manuel", True)
+    nav = _run(core, pos, 1)
+    assert any(a.startswith("ROUTE INVALIDE") for a in nav["alerts"]) is alert
+    assert core.router.health()["last_fail"] == reason
+
+
+# -- detected tack / low-speed COG (03-REVIEW MD-02) ----------------------------------------------
+def test_an_early_tack_reroutes_as_outdated(routing_core, fake_pool, rh) -> None:
+    core = routing_core(pool_factory=lambda: fake_pool)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 5.0)  # starboard (TWA +40), as the route's first leg
+    core.tick(1.0)
+    core.settle()
+    assert core.tick(0.0)["route"]["version"] == 1
+    fake_pool.script = lambda creq: _with_old(fake_pool, creq, 0.0)  # identical: kept if soft
+    nav = _run(core, pos, 30, hdg=5.0)
+    assert nav["route"]["version"] == 1
+    nav = _run(core, pos, 40, hdg=85.0)  # tacks 25 min early, to port (TWA -40)
+    tack_reqs = [r for r in _reasons(core) if "tack" in r]
+    assert tack_reqs and "off_route" not in tack_reqs[0]  # before the 2 min off-route timer
+    assert nav["route"]["version"] == 2  # replaced although identical: outdated for this boat
+
+
+def test_tack_as_advised_does_not_reroute(routing_core, fake_pool, rh) -> None:
+    fake_pool.tack_at_s = None  # one starboard leg: tacking onto it is no reason to reroute
+    core = routing_core(pool_factory=lambda: fake_pool)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 85.0)  # port
+    core.tick(1.0)
+    core.settle()
+    core.tick(0.0)
+    nav = _run(core, pos, 40, hdg=5.0)  # tacks onto the route's starboard tack
+    assert not any("tack" in r for r in _reasons(core))
+    assert nav["route"]["version"] == 1
+
+
+def test_low_speed_cog_noise_never_fires_off_route(routing_core, fake_pool, rh) -> None:
+    core, pos = _start(routing_core, fake_pool, rh)
+    v = core.client.get("/api/settings").json()["version"]
+    core.client.put("/api/settings", json={"base_version": v, "patch": {"bias_enabled": False}})
+    for _ in range(200):  # 1 kn in light air, COG 90 deg off the route, on the route
+        core.sail(*pos, 247.0, bsp_kn=1.0)
+        nav = core.tick(1.0)
+        core.settle()
+    assert nav["route"]["off_route"] is False
+    assert not any("off_route" in r for r in _reasons(core))
+
+
+def test_manual_wind_without_gps_time_is_observed(routing_core, fake_pool, rh) -> None:
+    """03-REVIEW LO-01: entries made without trusted UTC (t_set_wall None) were never seen:
+    no manual reroute trigger, no bias observation."""
+    core, pos = _start(routing_core, fake_pool, rh)
+    store = core.ctx.nav.manual
+    seen = []
+    for action in ("set", "clear", "set", "set"):
+        if action == "set":
+            core.call(store.set, 40.0, 15.0, "T", 0.0, None)
+        else:
+            core.call(store.clear)
+        assert store.entry is None or store.entry.t_set_wall is None
+        _run(core, pos, 1)
+        seen.append(core.router.manual_version)
+    assert seen == [1, 2, 3, 4]
+    assert any("manual" in r for r in _reasons(core))
+
+
+def test_long_route_line_reaches_the_finish(routing_core, fake_pool, rh) -> None:
+    """03-REVIEW LO-02: a path of more than 300 points was cut at its 300th point on the map."""
+    import dataclasses
+
+    from jabuka.core.router_service import display_points
+    from jabuka.route.types import PathPoint
+
+    core, pos = _start(routing_core, fake_pool, rh)
+
+    def long_route(creq):
+        res = fake_pool.default(creq)
+        b = creq.base
+        pts = []
+        for k in range(701):  # a 700-segment zig-zag beat
+            tack = 1 if (k // 7) % 2 == 0 else -1
+            lat = b.lat + (rh.PLIC_SESTRE[0] - b.lat) * k / 700
+            lon = b.lon + (rh.PLIC_SESTRE[1] - b.lon) * k / 700 + 0.001 * tack
+            pts.append(PathPoint(b.t0 + 10.0 * k, lat, lon, 40.0 * tack, tack, 6.0, 45.0, 18.0))
+        opt = dataclasses.replace(res.optimal, path=tuple(pts), tacks=())
+        return dataclasses.replace(res, optimal=opt)
+
+    fake_pool.script = long_route
+    core.call(core.router.request, "manuel", True)
+    _run(core, pos, 1)
+    msg = core.client.get("/api/route").json()
+    line = next(f for f in msg["geojson"]["features"] if f["geometry"]["type"] == "LineString")
+    coords = line["geometry"]["coordinates"]
+    path = core.router.route.path
+    assert len(coords) <= 300
+    assert coords[-1] == [round(path[-1].lon, 6), round(path[-1].lat, 6)]  # to the finish
+    shown = display_points(path, 300)
+    vertices = [p for a, p in zip(path, path[1:], strict=False) if p.tack != a.tack]
+    assert all(v in shown for v in vertices)  # every tack vertex kept
+    assert display_points(path[:10], 300) == list(path[:10])
+    few = display_points(path, 20)  # more vertices than room: evenly spaced, ends kept
+    assert len(few) <= 20 and few[0] == path[0] and few[-1] == path[-1]
+
+
+# -- one pack for the core and the worker (03-REVIEW MD-05) ---------------------------------------
+def test_pack_replaced_on_disk_raises_a_restart_alert(routing_core, fake_pool, rh, route_pack):
+    core, pos = _start(routing_core, fake_pool, rh)
+    assert core.router.pack_fp == core.router.pack.fingerprint
+    assert fake_pool.requests[-1].pack_fp == core.router.pack_fp
+    rh.write_wind(route_pack, twd_deg=270.0)  # a new wind.npz + sidecar, core not restarted
+    nav = _run(core, pos, 61)
+    assert "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core" in nav["alerts"]
+
+
+def test_worker_pack_mismatch_raises_the_alert(routing_core, fake_pool, rh) -> None:
+    from jabuka.route import cycle
+    from jabuka.route.types import RouteResult
+
+    core, pos = _start(routing_core, fake_pool, rh)
+
+    def changed(creq):
+        import dataclasses
+
+        b = creq.base
+        bad = RouteResult(
+            ok=False,
+            reason=f"{cycle.PACK_CHANGED} : x",
+            request_id=b.request_id,
+            t0=b.t0,
+            fail_kind="pack",
+        )
+        return dataclasses.replace(fake_pool.default(creq), optimal=bad)
+
+    fake_pool.script = changed
+    core.call(core.router.request, "manuel", True)
+    nav = _run(core, pos, 1)
+    assert "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core" in nav["alerts"]
+
+
+# -- pool watchdog (03-REVIEW CR-01) --------------------------------------------------------------
+def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
+    pools = [rh.FakePool(), rh.FakePool()]
+    made: list = []
+
+    def factory():
+        made.append(pools[len(made)])
+        return made[-1]
+
+    pools[0].hold = True  # the first job never completes: a wedged pool
+    core = routing_core(pool_factory=factory)
+    pos = rh.boat_near_plic(2.0)
+    nav = None
+    for _ in range(int(2 * 60 + 5)):
+        core.sail(*pos, 157.0)
+        nav = core.tick(1.0)
+        if len(made) > 1:
+            break
+    assert len(made) == 2, "the watchdog must replace a pool stuck on one job"
+    assert core.router.pool is pools[1]
+    assert core.router.health()["pool_recycled"] == 1
+    for _ in range(3):
+        core.sail(*pos, 157.0)
+        nav = core.tick(1.0)
+        core.settle()
+    nav = core.tick(0.0)
+    assert any(a.startswith("ROUTEUR RELANCÉ") for a in nav["alerts"]), nav["alerts"]
+    assert nav["route"]["state"] == "ok" and nav["route"]["version"] == 1
+    assert not core.router.busy()
+    pools[0].hold = False
+
+
+def test_watchdog_never_recreates_a_pool_after_shutdown(routing_core, fake_pool, rh) -> None:
+    made = []
+
+    def factory():
+        made.append(rh.FakePool())
+        return made[-1]
+
+    core = routing_core(pool_factory=factory)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 157.0)
+    core.tick(1.0)
+    assert len(made) == 1
+    core.call(core.router.shutdown)
+    for _ in range(40):  # past POOL_RETRY_S
+        core.sail(*pos, 157.0)
+        core.tick(1.0)
+    assert core.router.pool is None and len(made) == 1
+
+
+def test_pool_fault_raises_a_routing_health_alert(routing_core, fake_pool, rh) -> None:
+    core, pos = _start(routing_core, fake_pool, rh)
+    fake_pool.stats_d.update(faults=1, last_fault="OSError(12, 'Cannot allocate memory')")
+    nav = _run(core, pos, 1)
+    alerts = [a for a in nav["alerts"] if a.startswith("ROUTEUR RELANCÉ")]
+    assert alerts and "Cannot allocate memory" in alerts[0]
+    assert core.router.health()["pool"]["faults"] == 1
+    nav = _run(core, pos, 301)  # the alert lasts 5 minutes
+    assert not any(a.startswith("ROUTEUR RELANCÉ") for a in nav["alerts"])

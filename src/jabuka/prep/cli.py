@@ -160,9 +160,9 @@ def _grib_files(directory: str) -> list[Path]:
 def _opener() -> Any:
     if URL_OPENER is not None:
         return URL_OPENER
-    import urllib.request
+    from jabuka.prep import dwd
 
-    return urllib.request.urlopen
+    return dwd.safe_urlopen  # LO-07: redirects re-checked against the allowed hosts
 
 
 def _listings(

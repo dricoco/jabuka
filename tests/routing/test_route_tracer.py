@@ -60,7 +60,14 @@ def test_core_routes_course_a_and_every_nav_carries_the_advice(routing_core, rh)
     assert (r["target_twa"] > 0) == (r["target_tack"] == "stbd")
     twd = nav["wind"]["twd_t"]
     assert r["target_hdg_t"] == pytest.approx(_wrap360(twd - r["target_twa"]), abs=0.15)
-    assert r["countdown_s"] is None or r["countdown_s"] > 0
+    # a route that starts on the other tack (the boat sails starboard) announces its tack at t0
+    # now instead of skipping it (03-REVIEW HI-01)
+    starts_on_port = r["target_tack"] == "port"
+    assert r["countdown_s"] is None or r["countdown_s"] > 0 or starts_on_port
+    if starts_on_port:
+        assert r["countdown_s"] is not None and r["countdown_s"] <= 1.0
+        assert r["wrong_tack"] is True
+        assert r["primary"] == "hdg" or r["deviation"] is None  # no |TWA| difference
     assert r["age_s"] is not None and 0 <= r["age_s"] <= 2
     assert r["eta_utc"] and r["eta_utc"].endswith("Z")
     assert r["computed_utc"].endswith("Z")

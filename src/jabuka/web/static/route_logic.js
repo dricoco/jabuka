@@ -15,6 +15,7 @@ export const STR = {
   tackIn: "Virement dans",
   gybeIn: "Empannage dans",
   tackNow: "VIREZ",
+  wrongTack: "MAUVAIS BORD",
   gybeNow: "EMPANNEZ",
   updating: "Route mise à jour…",
   landTackIn: "Virement imposé (terre) dans",
@@ -36,6 +37,9 @@ export const STR = {
   failed: "Routage en échec : ",
   failedDefault: "erreur du routeur",
   disabled: "Routage désactivé (Réglages)",
+  outdated: "Route retirée : ",
+  outdatedDefault: "route périmée",
+  staleFail: "Recalcul en échec : ",
   routing: "Routage : ",
   stay: "ON RESTE",
   stayCancel: "ANNULER ON RESTE",
@@ -75,7 +79,8 @@ export function countdownView(nav) {
   const route = (text, cls = "") => ({ text, cls, source: "route" });
   if (r.updating) return route(STR.updating, "warn");
   const stay = r.stay ?? {};
-  if (stay.active && stay.released_land && isNum(stay.release_in_s)) {
+  // only before the release: afterwards the forced tack is due, VIREZ below (03-REVIEW LO-08)
+  if (stay.active && stay.released_land && isNum(stay.release_in_s) && stay.release_in_s > 0) {
     return route(`${STR.landTackIn} ${fmtClock(stay.release_in_s)}`, "warn");
   }
   const cd = r.countdown_s;
@@ -136,8 +141,12 @@ function statusText(r) {
       }
       if (r.off_route) parts.push(STR.offRoute);
       if (r.level && r.level !== "L0") parts.push(`${STR.level}${String(r.level)}`);
+      // the route is still steerable but its last recompute failed (03-REVIEW CR-02)
+      if (r.stale && r.last_fail) parts.push(`${STR.staleFail}${String(r.last_fail)}`);
       return parts.join(" · ");
     }
+    case "outdated":
+      return why(STR.outdated, STR.outdatedDefault);
     case "blocked_clock":
       return why(STR.blockedClock, STR.blockedClockDefault);
     case "no_pack":
@@ -153,7 +162,14 @@ function statusText(r) {
   }
 }
 
-const STATE_CLS = { ok: "", computing: "warn", disabled: "warn", no_course: "warn", no_position: "warn" };
+const STATE_CLS = {
+  ok: "",
+  computing: "warn",
+  disabled: "warn",
+  no_course: "warn",
+  no_position: "warn",
+  outdated: "warn",
+};
 
 // The route band of the Barre tab: {visible, lines: {status, countdown, cost, age, target, bias},
 // cls, ageCls}. Lines are strings, or null/"" when hidden.
@@ -178,7 +194,7 @@ export function routeBand(nav) {
       lines.target = `${STR.twaRouteLine}${Math.round(Math.abs(r.target_twa))}°${w ? ` ${w}` : ""}`;
     }
   }
-  const cls = ok ? (r.updating ? "warn" : "") : (STATE_CLS[r.state] ?? "bad");
+  const cls = ok ? (r.updating || r.stale ? "warn" : "") : (STATE_CLS[r.state] ?? "bad");
   return { visible: true, lines, cls, ageCls };
 }
 
@@ -195,6 +211,15 @@ export function routeData(msg) {
   return out;
 }
 
+// A withdrawn ("outdated", 03-REVIEW CR-02) route stays on the map, greyed out: the line
+// features get properties.stale, which the route-line paint turns grey (dark red at night).
+export const routeVisible = (route) => route?.state === "ok" || route?.state === "outdated";
+
+export function staleLine(line, stale) {
+  const feats = Array.isArray(line?.features) ? line.features : [];
+  return fc(feats.map((f) => ({ ...f, properties: { ...(f?.properties ?? {}), stale: Boolean(stale) } })));
+}
+
 // The next tack point from the nav route block (followed every second).
 export function nextTackData(route) {
   if (!route || !isNum(route.tack_lat) || !isNum(route.tack_lon)) return EMPTY;
@@ -208,8 +233,8 @@ export function nextTackData(route) {
 }
 
 const ROUTE_COLORS = {
-  day: { line: "#8b008b", tack: "#8b008b", next: "#8b008b", halo: "#ffffff" },
-  night: { line: "#ff0000", tack: "#aa0000", next: "#ff0000", halo: "#000000" },
+  day: { line: "#8b008b", stale: "#9e9e9e", tack: "#8b008b", next: "#8b008b", halo: "#ffffff" },
+  night: { line: "#ff0000", stale: "#550000", tack: "#aa0000", next: "#ff0000", halo: "#000000" },
 };
 
 // Layers of the "route" overlay (map.js registerOverlay): day a 4 px dark-magenta line with
@@ -223,7 +248,11 @@ export function routeLayers(theme) {
       type: "line",
       source: "route",
       layout: { "line-join": "round", "line-cap": "round" },
-      paint: { "line-color": c.line, "line-width": 4, ...(night ? { "line-dasharray": [3, 2] } : {}) },
+      paint: {
+        "line-color": ["case", ["boolean", ["get", "stale"], false], c.stale, c.line],
+        "line-width": 4,
+        ...(night ? { "line-dasharray": [3, 2] } : {}),
+      },
     },
     {
       id: "route-tack",

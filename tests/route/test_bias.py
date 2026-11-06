@@ -252,12 +252,84 @@ def test_json_round_trip() -> None:
     obj = json.loads(json.dumps(est.to_json()))
     back = BiasEstimator.from_json(obj)
     assert back.params(t + 60.0) == est.params(t + 60.0)
-    assert back.raw() == est.raw()
-    assert back.status(t + 60.0) == est.status(t + 60.0)
+    # the restored EMA is a decaying fallback, never the live EMA (03-REVIEW HI-02)
+    assert back.raw() is None and est.raw() is not None
+    st_back, st = back.status(t + 60.0), est.status(t + 60.0)
+    assert st_back["dir_deg"] == st["dir_deg"] and st_back["ratio"] == st["ratio"]
+    assert st_back["gated_s"] == 0.0 and st_back["state"] == "s'estompe"
+    again = BiasEstimator.from_json(json.loads(json.dumps(back.to_json())))
+    assert again.params(t + 60.0) == est.params(t + 60.0)
     est.reset()
     assert est.params(t) is None and est.status(t)["state"] == "aucun"
     with pytest.raises(ValueError):
         BiasEstimator.from_json({"version": 1, "S": "nope"})
+
+
+def test_old_bias_never_returns_at_full_weight_after_a_gap() -> None:
+    """03-REVIEW HI-02 (the reviewer's bias_stale.py): +30 deg x1.25 learned, gate closed 6 h,
+    then the measured wind equals the GRIB. The first gated sample must not bring the 6 h old
+    estimate back at full weight."""
+    est = BiasEstimator(tau_decay_s=9000.0)
+    kw = dict(twd_meas=R(230.0), twd_grib=R(200.0), tws_meas=kn_to_ms(15.0))
+    kw["tws_grib"] = kn_to_ms(12.0)
+    t = feed(est, T0, 1200, **kw)
+    st = est.status(t)
+    assert st["dir_deg"] == pytest.approx(30.0, abs=0.5) and st["state"] == "actif"
+    t += 6 * 3600.0  # gate closed (Jabuka zone, light air, MANUEL...)
+    decayed = est.status(t)["dir_deg"]
+    assert decayed == pytest.approx(30.0 * math.exp(-6 * 3600.0 / 9000.0), abs=0.5)  # ~2.7
+    same = dict(twd_meas=R(200.0), twd_grib=R(200.0), tws_meas=kn_to_ms(12.0))
+    same["tws_grib"] = kn_to_ms(12.0)
+    est.update(sample(t, dt=6 * 3600.0, **same))
+    st = est.status(t)
+    assert st["dir_deg"] == pytest.approx(decayed, abs=0.1)  # still the decaying old estimate
+    assert st["state"] == "s'estompe" and st["t_obs"] == pytest.approx(t - 6 * 3600.0)
+    t = feed(est, t + 1.0, 60, **same)
+    assert est.status(t)["dir_deg"] < decayed  # never back to 26.8 deg
+    t = feed(est, t + 1.0, 300, **same)  # re-learned: the new (zero) bias wins
+    st = est.status(t)
+    assert st["state"] == "actif" and abs(st["dir_deg"]) < 0.5
+    assert st["ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_short_gaps_keep_learning() -> None:
+    est, t = learned(400)
+    before = est.raw()
+    est.update(sample(t + 300.0, dt=300.0))  # < tau_ema_s: same episode
+    assert est.raw() == pytest.approx(before) and est.status(t + 300.0)["state"] == "actif"
+
+
+def test_restart_restores_a_decaying_fallback() -> None:
+    est, t = learned(600, twd_meas=R(230.0))
+    back = BiasEstimator.from_json(json.loads(json.dumps(est.to_json())))
+    t2 = t + 3 * 3600.0
+    p = back.params(t2)
+    assert p is not None and p.t_obs == t  # decays from the original observation time
+    same = dict(twd_meas=R(200.0), twd_grib=R(200.0))
+    back.update(sample(t2, **same))
+    assert back.params(t2) == p  # one new sample does not reset the decay
+    assert back.status(t2)["gated_s"] == pytest.approx(1.0)
+
+
+def test_bias_json_config_is_range_checked() -> None:
+    """03-REVIEW LO-06: tau_ema_s = 0 from bias.json made every update raise; NaN t_obs or
+    manual gave NaN weights."""
+    est, t = learned(400)
+    obj = json.loads(json.dumps(est.to_json()))
+    obj["config"].update(tau_ema_s=0.0, k_min=-1.0, clamp_deg="x", tau_decay_s=7200.0, bogus=1)
+    back = BiasEstimator.from_json(obj)
+    assert back.tau_ema_s == 600.0 and back.k_min == 0.6 and back.clamp_deg == 35.0
+    assert back.tau_decay_s == 7200.0  # in range: kept
+    back.update(sample(t + 1.0))  # no ZeroDivisionError
+    for key, bad in (("t_obs", float("nan")), ("manual", [0.1, float("nan"), T0])):
+        broken = json.loads(json.dumps(est.to_json()))
+        broken[key] = bad
+        with pytest.raises(ValueError, match="non-finite"):
+            BiasEstimator.from_json(broken)
+    fb = json.loads(json.dumps(est.to_json()))
+    fb["fallback"] = [0.1, 1.1, float("inf")]
+    with pytest.raises(ValueError):
+        BiasEstimator.from_json(fb)
 
 
 def test_bias_changed() -> None:

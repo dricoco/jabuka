@@ -240,3 +240,30 @@ def test_real_dwd_samples_load_without_errors(rp, tmp_path) -> None:
     # the 0.25 deg margin keeps the race bbox inside the interpolation margin of both grids
     for g in (pack.wind, pack.waves):
         assert g.lat[1] < 42.8 and g.lat[-2] > 44.0 and g.lon[1] < 15.0 and g.lon[-2] > 16.3
+
+
+def _holes(rp, tmp_path, where) -> list[str]:
+    t, lat, lon, u, v = rp.synthetic_grid()
+    u[where(t, lat, lon)] = np.nan
+    _write(tmp_path, grid=(t, lat, lon, u, v))
+    pack = load_pack(tmp_path)
+    assert pack.wind is not None  # the loader accepts partial NaN; coverage flags it
+    holes = "vent sans valeur sur"
+    return [a for a in coverage(pack, INSIDE, [], WINDOW).alerts if holes in a]
+
+
+def test_wind_holes_in_the_race_area_are_an_alert(rp, tmp_path) -> None:
+    """03-REVIEW MD-01: a pack whose wind is NaN west of 15.4 E (away from every mark and leg)
+    loaded without any alert, and the router saw calms there."""
+    alerts = _holes(rp, tmp_path, lambda t, lat, lon: np.s_[:, :, lon < 15.4])
+    assert len(alerts) == 1 and alerts[0].startswith("MÉTÉO INCOMPLÈTE")
+    assert "zone de course" in alerts[0]
+
+
+@pytest.mark.parametrize("case", ["outside_area", "outside_window"])
+def test_wind_holes_elsewhere_are_not_an_alert(rp, tmp_path, case) -> None:
+    if case == "outside_area":  # southernmost row: beyond the stencil of the race bbox
+        alerts = _holes(rp, tmp_path, lambda t, lat, lon: np.s_[:, 0, :])
+    else:  # 13 Nov 12Z, before the bracket of the race window (16Z..17Z)
+        alerts = _holes(rp, tmp_path, lambda t, lat, lon: np.s_[0, :, lon < 15.4])
+    assert alerts == []

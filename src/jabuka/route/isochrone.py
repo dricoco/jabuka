@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -35,6 +36,9 @@ from jabuka.route.landmask import GeoField, LandMask, compute_geofield
 from jabuka.route.polar_grid import PolarGrid, normalize_curves
 from jabuka.route.rounding import expand
 from jabuka.route.types import (
+    FAIL_ENGINE,
+    FAIL_INPUT,
+    FAIL_LAND,
     CourseMark,
     LegResult,
     PathPoint,
@@ -73,6 +77,26 @@ def _wrap_pi(a):
     return (np.asarray(a) + math.pi) % (2.0 * math.pi) - math.pi
 
 
+CACHE_MAX = 8  # on-demand geofields (~0.7 MB) and polar grids (~0.6 MB) kept per worker
+
+
+def _lru_get(cache: dict, key: Any) -> Any:
+    val = cache.get(key)
+    if val is not None and isinstance(cache, OrderedDict):
+        cache.move_to_end(key)
+    return val
+
+
+def _lru_put(cache: dict, key: Any, val: Any, cap: int = CACHE_MAX) -> None:
+    """Insert and evict the least recently used entries beyond ``cap`` (03-REVIEW LO-03: one
+    entry per moved mark or efficiency change, never evicted, over 36 h)."""
+    cache[key] = val
+    if isinstance(cache, OrderedDict):
+        cache.move_to_end(key)
+        while len(cache) > cap:
+            cache.popitem(last=False)
+
+
 @dataclass
 class RouterEnv:
     """Everything a routing call needs that does not change between requests."""
@@ -80,8 +104,8 @@ class RouterEnv:
     mask: LandMask
     fields: Fields
     geofields: dict[tuple[float, float, float], GeoField] = field(default_factory=dict)
-    geo_cache: dict[Any, GeoField] = field(default_factory=dict)
-    polar_cache: dict[Any, PolarGrid] = field(default_factory=dict)
+    geo_cache: dict[Any, GeoField] = field(default_factory=OrderedDict)  # LRU, CACHE_MAX
+    polar_cache: dict[Any, PolarGrid] = field(default_factory=OrderedDict)  # LRU, CACHE_MAX
     on_demand_gcell_nm: float = 400.0 / NM_M
     on_demand_mode: str = "any"
 
@@ -97,7 +121,7 @@ class RouterEnv:
         if pre is not None:
             return pre
         ckey = (key, round(self.on_demand_gcell_nm, 6), self.on_demand_mode)
-        geo = self.geo_cache.get(ckey)
+        geo = _lru_get(self.geo_cache, ckey)
         if geo is None:
             x, y = self.frame.to_xy(mark.lat, mark.lon)
             geo = compute_geofield(
@@ -107,21 +131,27 @@ class RouterEnv:
                 self.on_demand_mode,
                 seed_radius_nm=float(mark.radius_nm) + self.on_demand_gcell_nm,
             )
-            self.geo_cache[ckey] = geo
+            _lru_put(self.geo_cache, ckey, geo)
         return geo
 
     def polar_for(self, curves, eff: float, eff_up=None, eff_down=None) -> PolarGrid:
         cv = normalize_curves(curves)
         key = (cv, float(eff), eff_up, eff_down)
-        pg = self.polar_cache.get(key)
+        pg = _lru_get(self.polar_cache, key)
         if pg is None:
             pg = PolarGrid.from_curves(cv, eff, eff_up, eff_down)
-            self.polar_cache[key] = pg
+            _lru_put(self.polar_cache, key, pg)
         return pg
 
 
 class RouteFailure(Exception):
-    """A routing problem with a French reason (becomes RouteResult(ok=False))."""
+    """A routing problem with a French reason (becomes RouteResult(ok=False)) and a machine
+    kind (types.FAIL_*: land / input / engine), so the core never classifies failures by
+    French substrings (03-REVIEW LO-04)."""
+
+    def __init__(self, reason: str, kind: str = FAIL_INPUT) -> None:
+        super().__init__(reason)
+        self.kind = kind
 
 
 class _Seg(NamedTuple):
@@ -442,7 +472,7 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         if sel.size == 0:
             if best is not None:
                 return _arrival(start, hist, best, (tx, ty))
-            raise RouteFailure("aucune expansion valide (front bloqué par la terre)")
+            raise RouteFailure("aucune expansion valide (front bloqué par la terre)", FAIL_ENGINE)
         pi = par[sel]
         t = t + dt
         hist.append(
@@ -461,7 +491,7 @@ def _route_leg(ctx: _Ctx, start: _Pt, tack0: int, target: tuple[float, float], g
         fx, fy, ftack = cx[sel], cy[sel], tack_f[sel]
     if best is not None:
         return _arrival(start, hist, best, (tx, ty))
-    raise RouteFailure(f"trop d'étapes (> {s.max_steps}) sans atteindre la marque")
+    raise RouteFailure(f"trop d'étapes (> {s.max_steps}) sans atteindre la marque", FAIL_ENGINE)
 
 
 def _prune(ctx, fx, fy, cx, cy, par, origin, target, geo: GeoField, sector_rad: float, lazy_k=None):
@@ -709,6 +739,7 @@ def route(req: RouteRequest, env: RouterEnv) -> RouteResult:
         return RouteResult(
             ok=False,
             reason=str(exc),
+            fail_kind=exc.kind,
             request_id=req.request_id,
             t0=req.t0,
             level=req.settings.level,
@@ -765,7 +796,7 @@ def _route(ctx: _Ctx, t_start: float) -> RouteResult:
     if start_in_margin:
         valid = valid and bool(env.mask.raw_segments_clear(xs[0], ys[0], xs[1], ys[1])[0])
     if not valid:
-        raise RouteFailure("route invalide (terre)")
+        raise RouteFailure("route invalide (terre)", FAIL_LAND)
     lat, lon = frame.to_ll(xs, ys)
     path = tuple(
         PathPoint(

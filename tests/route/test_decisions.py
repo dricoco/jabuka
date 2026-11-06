@@ -171,6 +171,21 @@ def test_off_route_course_deviation_sustained() -> None:
     assert not w2.update(T0 + 500.0, follow(dev=None))
 
 
+def test_off_route_ignores_cog_at_low_speed() -> None:
+    # 03-REVIEW MD-02: below 2 kn the GPS COG wanders; only the XTE counts there
+    w = OffRouteWatch()
+    for k in range(0, 600, 10):
+        assert not w.update(T0 + k, follow(dev=80.0), sog_kn=1.2)
+    assert not w.update(T0 + 600.0, follow(dev=80.0), sog_kn=2.5)
+    assert w.update(T0 + 721.0, follow(dev=80.0), sog_kn=2.5)
+    slow_off = OffRouteWatch()
+    assert not slow_off.update(T0, follow(xte=0.6, dev=80.0), sog_kn=0.5)
+    assert slow_off.update(T0 + 121.0, follow(xte=0.6, dev=80.0), sog_kn=0.5)
+    unknown = OffRouteWatch()
+    assert not unknown.update(T0, follow(dev=25.0), sog_kn=None)
+    assert unknown.update(T0 + 121.0, follow(dev=25.0), sog_kn=None)
+
+
 def test_off_route_return_resets_timer() -> None:
     w = OffRouteWatch()
     w.update(T0, follow(xte=0.6))

@@ -128,6 +128,105 @@ def test_rotated_grid_regridded_to_regular_0025(write_grib, tmp_path) -> None:
     assert np.isfinite(u[j, i])  # Jabuka is covered
 
 
+def _grid_relative(msg: bytes, flag: int = 1) -> bytes:
+    g = pygrib.fromstring(msg)
+    g["uvRelativeToGrid"] = flag
+    return g.tostring()
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    p1, p2, dl = math.radians(lat1), math.radians(lat2), math.radians(lon2 - lon1)
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return math.degrees(math.atan2(y, x))
+
+
+def test_grid_relative_rotated_wind_is_turned_to_true_north(write_grib, tmp_path) -> None:
+    """03-REVIEW HI-03: wind blowing FROM grid north on a rotated grid (south pole -40N 10E) must
+    come out FROM the bearing of the rotated north pole (40N 170W), about 4 deg at the race area,
+    not FROM 000."""
+    msgs = [_grid_relative(_rotated("10u", 0.0)), _grid_relative(_rotated("10v", -10.0))]
+    f = write_grib(tmp_path / "rot_rel.grib2", msgs)
+    assert pygrib.open(str(f)).message(1)["uvRelativeToGrid"] == 1
+    cube = import_generic(f, default_crop())
+    u, v = cube.fields["u"][0], cube.fields["v"][0]
+    for la, lo in ((43.09, 15.46), (43.68, 15.81), (43.0, 16.25)):
+        j = int(np.argmin(np.abs(cube.lat - la)))
+        i = int(np.argmin(np.abs(cube.lon - lo)))
+        twd, tws = wind_from_uv(float(u[j, i]), float(v[j, i]))
+        want = _bearing_deg(float(cube.lat[j]), float(cube.lon[i]), 40.0, -170.0)
+        assert abs(want) > 3.0  # the error this fixes
+        got = math.degrees(twd)
+        got = got - 360.0 if got > 180.0 else got
+        assert got == pytest.approx(want, abs=0.3), (la, lo)
+        assert tws == pytest.approx(10.0, abs=0.05)
+    # the same components flagged earth-relative are taken as they are (FROM 000)
+    plain = import_generic(
+        write_grib(tmp_path / "rot_abs.grib2", [_rotated("10u", 0.0), _rotated("10v", -10.0)]),
+        default_crop(),
+    )
+    fu, fv = plain.fields["u"][0], plain.fields["v"][0]
+    ok = np.isfinite(fu)
+    assert np.allclose(fu[ok], 0.0, atol=1e-4) and np.allclose(fv[ok], -10.0, atol=1e-4)
+
+
+def test_mixed_grid_relative_components_are_refused(write_grib, tmp_path) -> None:
+    msgs = [_grid_relative(_rotated("10u", 1.0)), _rotated("10v", -10.0)]
+    with pytest.raises(ValueError, match="relative à la grille"):
+        import_generic(write_grib(tmp_path / "mixed.grib2", msgs), default_crop())
+
+
+def _lambert(lat0: float, lon0: float, lat1: float, step_m: float, n_xy: int):
+    """lat/lon of a regular Lambert conformal (tangent at lat1, LoV lon0, origin latitude lat0)
+    grid centred on the race area (43.4 N 15.6 E), from the spherical inverse projection."""
+    r_earth = 6_371_229.0
+    p1, p0 = math.radians(lat1), math.radians(lat0)
+    n = math.sin(p1)
+    big_f = math.cos(p1) * math.tan(math.pi / 4 + p1 / 2) ** n / n
+    rho0 = r_earth * big_f / math.tan(math.pi / 4 + p0 / 2) ** n
+    rho_c = r_earth * big_f / math.tan(math.pi / 4 + math.radians(43.4) / 2) ** n
+    th_c = n * math.radians(15.6 - lon0)
+    xc, yc = rho_c * math.sin(th_c), rho0 - rho_c * math.cos(th_c)
+    half = (n_xy - 1) / 2.0
+    x = (np.arange(n_xy) - half) * step_m + xc
+    y = (np.arange(n_xy) - half) * step_m + yc
+    xx, yy = np.meshgrid(x, y)
+    rho = np.hypot(xx, rho0 - yy)
+    theta = np.arctan2(xx, rho0 - yy)
+    lat = np.degrees(2.0 * np.arctan((r_earth * big_f / rho) ** (1.0 / n)) - math.pi / 2)
+    lon = lon0 + np.degrees(theta / n)
+    return lat, lon, n
+
+
+@pytest.mark.parametrize("lov", [10.0, 0.0])
+def test_lambert_grid_orientation_is_the_meridian_convergence(lov: float) -> None:
+    lat, lon, n = _lambert(43.4, lov, 45.0, 10_000.0, 21)
+    alpha = np.degrees(gribmod.grid_x_bearing(lat, lon))
+    want = 90.0 + n * (lon - lov)  # x axis = east turned by the convergence angle
+    assert np.allclose(alpha, want, atol=0.1)
+    if lov == 0.0:
+        assert np.abs(alpha - 90.0).max() > 8.0  # about 11 deg at the race area
+    # stored westwards / southwards: same axes
+    flipped = np.degrees(gribmod.grid_x_bearing(lat[::-1, ::-1], lon[::-1, ::-1]))
+    assert np.allclose(flipped, want[::-1, ::-1], atol=0.1)
+    # grid-north wind turned back to true north
+    u, v = gribmod.rotate_grid_uv(0.0, -10.0, np.radians(alpha))
+    twd = np.degrees(np.arctan2(-u, -v))
+    assert np.allclose(twd, alpha - 90.0, atol=1e-6)
+
+
+def test_unreliable_grid_orientation_is_refused() -> None:
+    lat, lon, _n = _lambert(43.4, 10.0, 45.0, 10_000.0, 11)
+    skew_lon = lon + 0.3 * np.arange(11)[:, None] * 0.09  # rows sheared: axes not perpendicular
+    with pytest.raises(ValueError, match="non perpendiculaires"):
+        gribmod.grid_x_bearing(lat, skew_lon)
+    with pytest.raises(ValueError, match="orientation"):
+        gribmod.grid_x_bearing(lat.ravel(), lon.ravel())
+    north = np.repeat(np.linspace(43.0, 44.0, 5)[:, None], 5, axis=1).T  # x axis along a meridian
+    with pytest.raises(ValueError, match="est-ouest"):
+        gribmod.grid_x_bearing(north, np.full((5, 5), 15.0) + np.arange(5)[:, None] * 0.01)
+
+
 def test_idw_regrid_interpolates_between_source_points() -> None:
     src_lat = np.array([43.0, 43.0, 43.1, 43.1])
     src_lon = np.array([15.0, 15.1, 15.0, 15.1])
@@ -193,3 +292,84 @@ def test_custom_name_writes_alternate_wind_file(rp, tmp_path) -> None:
     assert rc in (0, 3)
     assert (out / "wind_organiser.npz").is_file() and (out / "wind_organiser.json").is_file()
     assert _grib_cli(rp.fixtures / "grib" / "sample_grib1.grb", out, "--name", "../evil") == 2
+
+
+def test_fill_wind_fills_u_and_v_together(capsys) -> None:
+    """03-REVIEW MD-01: masked / IDW-edge wind cells are filled from the nearest valid cell (u and
+    v from the same one) and the filled fraction is reported."""
+    from jabuka.prep.wxpack import Cube
+
+    u = np.full((1, 3, 4), 2.0, np.float32)
+    v = np.full((1, 3, 4), -3.0, np.float32)
+    u[0, :, 0] = np.nan  # west column masked in u only
+    v[0, 2, 3] = np.nan  # one cell masked in v only
+    u[0, 1, 1], v[0, 1, 1] = 5.0, -7.0  # the nearest valid cell for (1, 0)
+    cube = Cube(
+        t=np.array([0], np.int64),
+        lat=np.array([43.0, 43.1, 43.2]),
+        lon=np.array([15.0, 15.1, 15.2, 15.3]),
+        fields={"u": u, "v": v},
+    )
+    frac = gribmod.fill_wind(cube)
+    assert frac == pytest.approx(4 / 12)
+    fu, fv = cube.fields["u"][0], cube.fields["v"][0]
+    assert np.isfinite(fu).all() and np.isfinite(fv).all()
+    assert (fu[1, 0], fv[1, 0]) == (5.0, -7.0)  # both components from the same cell
+    assert fu.dtype == np.float32
+    assert "33.3%" in capsys.readouterr().out
+
+
+def test_rotated_grid_edges_are_filled(write_grib, tmp_path) -> None:
+    f = write_grib(tmp_path / "rot.grib2", [_rotated("10u", 6.0), _rotated("10v", -2.0)])
+    cube = import_generic(f, default_crop())
+    assert np.isfinite(cube.fields["u"]).all() and np.isfinite(cube.fields["v"]).all()
+
+
+# -- duplicate messages (03-REVIEW LO-05) ---------------------------------------------------------
+def _member(msg: bytes, number: int) -> bytes:
+    g = pygrib.fromstring(msg)
+    g["productDefinitionTemplateNumber"] = 1  # individual ensemble forecast
+    g = pygrib.fromstring(g.tostring())
+    g["perturbationNumber"] = number
+    return g.tostring()
+
+
+def _pair(rp, h: int = 0, u: float = 0.0, **kw) -> list[bytes]:
+    return [
+        rp.grib_message(short_name="10u", forecast=h * 60, values=u, **kw),
+        rp.grib_message(short_name="10v", forecast=h * 60, values=-5.0, **kw),
+    ]
+
+
+def test_two_runs_for_the_same_valid_time_are_refused(rp, write_grib, tmp_path) -> None:
+    other_run = datetime(2026, 11, 13, 6, tzinfo=UTC)
+    msgs = _pair(rp, h=6, u=1.0) + _pair(rp, h=12, u=2.0, run=other_run)  # both 13 Nov 18Z
+    with pytest.raises(ValueError, match="runs 2026-11-13T12:00:00Z et 2026-11-13T06:00:00Z"):
+        import_generic(write_grib(tmp_path / "two.grib2", msgs), default_crop())
+
+
+def test_runs_are_never_mixed_across_valid_times(rp, write_grib, tmp_path) -> None:
+    other_run = datetime(2026, 11, 13, 6, tzinfo=UTC)
+    msgs = _pair(rp, h=0) + _pair(rp, h=12, run=other_run)  # 12Z and 18Z: no overlap
+    with pytest.raises(ValueError, match="plusieurs runs"):
+        import_generic(write_grib(tmp_path / "mix.grib2", msgs), default_crop())
+    files = []
+    for i, m in enumerate(msgs):  # same through the ICON-EU decoder (--from-files cache)
+        files.append(write_grib(tmp_path / "cache" / f"m{i}.grib2", [m]))
+    with pytest.raises(ValueError, match="plusieurs runs"):
+        gribmod.decode_wind_files(files, default_crop())
+
+
+def test_ensemble_members_are_refused(rp, write_grib, tmp_path) -> None:
+    a = [_member(m, 0) for m in _pair(rp, u=1.0)]
+    b = [_member(m, 1) for m in _pair(rp, u=9.0)]
+    with pytest.raises(ValueError, match="membres d'ensemble 0 et 1"):
+        import_generic(write_grib(tmp_path / "ens.grib2", a + b), default_crop())
+
+
+def test_exact_duplicates_are_ignored_and_the_run_is_printed(rp, write_grib, tmp_path, capsys):
+    msgs = _pair(rp, u=3.0)
+    cube = import_generic(write_grib(tmp_path / "dup.grib2", msgs + msgs), default_crop())
+    assert cube.t.size == 1 and np.allclose(cube.fields["u"], 3.0)
+    out = capsys.readouterr().out
+    assert "run gardé 2026-11-13T12:00:00Z" in out and "2 message(s) en double" in out

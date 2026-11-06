@@ -53,8 +53,16 @@ from jabuka.route.fields import Fields, fields_from_pack
 from jabuka.route.frame import DEFAULT_FRAME
 from jabuka.route.polar_grid import normalize_curves
 from jabuka.route.pool import PoolOutcome, RouterPool
-from jabuka.route.racepack import RacePack, coverage, load_pack, window_from_local
+from jabuka.route.racepack import (
+    RacePack,
+    coverage,
+    load_pack,
+    pack_fingerprint,
+    window_from_local,
+)
 from jabuka.route.types import (
+    FAIL_LAND,
+    FAIL_PACK,
     LEVELS,
     CourseMark,
     CycleRequest,
@@ -70,10 +78,20 @@ log = logging.getLogger("jabuka.router")
 ROUTE_MSG_VERSION = 1
 POOL_TIMEOUT_S = 60.0
 POOL_NICE = 10
+POOL_STUCK_S = 2.0 * POOL_TIMEOUT_S  # one job "running" longer than this: the pool is wedged
+POOL_RETRY_S = 30.0  # no pool (creation failed): try again after this
 MAX_ROUTE_POINTS = 300
 RETRY_NO_ROUTE_S = 60.0  # no route yet and the last request failed: retry after this
+# Route expiry (03-REVIEW CR-02): a displayed route goes stale, then is withdrawn ("outdated":
+# no target, no countdown, so the helm falls back to the Phase 2 laylines).
+ROUTE_STALE_S = 2.0 * ROUTE_MAX_AGE_S  # not confirmed by any routing cycle this long: withdrawn
+FAIL_WITHDRAW_N = 2  # this many consecutive failed cycles ...
+ROUTE_FAIL_AGE_S = 600.0  # ... and the route unconfirmed this long: withdrawn
+MISSED_MAX_S = 180.0  # "Route mise à jour…" (missed-tack reroute) at most this long
+ROUNDING_TOL_S = 600.0  # course advanced by a rounding: the boat is this close to the leg's end
 PRIMARY_TWA_UP_DEG = 70.0  # |target TWA| below: steer the TWA (upwind)
 PRIMARY_TWA_DOWN_DEG = 110.0  # above: steer the TWA (downwind); between: the heading
+WRONG_TACK_MIN_DEG = 15.0  # |TWA| below: head to wind / mid-tack, the side is not meaningful
 
 REASON_DISABLED = "routage désactivé (Réglages)"
 REASON_CLOCK = "heure GPS non valide"
@@ -81,6 +99,11 @@ REASON_NO_COURSE = "plus de marque à rejoindre"
 REASON_NO_POSITION = "pas de position GPS"
 REASON_NOT_LOADED = "pack de course non chargé"
 REASON_STAY_NO_TACK = "amure inconnue : On reste impossible"
+REASON_OUT_COURSE = "parcours modifié : recalcul en cours"
+REASON_OUT_MISSED = "virement manqué : nouvelle route impossible"
+REASON_OUT_AGE = "route périmée"
+REASON_OUT_FAIL = "le routeur échoue"
+REASON_OUT_RESTORED = "route sauvegardée : vérification en cours"
 
 ROUTE_FILE = "route.json"
 BIAS_FILE = "bias.json"
@@ -90,7 +113,10 @@ ROUTE_FILE_VERSION = 1
 INVALID_ALERT_S = 300.0  # "ROUTE INVALIDE" stays in the alerts this long
 ALERT_INVALID = "ROUTE INVALIDE : "
 ALERT_RESTORE = "Route sauvegardée illisible : ignorée"
-MASK_WORDS = ("terre", "invalide", "masque")
+ALERT_POOL = "ROUTEUR RELANCÉ : "
+ALERT_PACK_CHANGED = "PACK DE COURSE MODIFIÉ : redémarrer jabuka-core"
+PACK_CHECK_S = 60.0  # the pack's sidecars are re-read this often (MD-05)
+POOL_ALERT_S = 300.0  # the router-restart alert stays this long
 
 
 def iso_utc(t: float | None) -> str | None:
@@ -119,6 +145,31 @@ def _wrap180(a: float) -> float:
     return r
 
 
+def display_points(path: Any, limit: int) -> list:
+    """At most ``limit`` points of ``path`` for the map line, always ending at the finish
+    (03-REVIEW LO-02: truncating to the first ``limit`` points cut the line short). The ends
+    and the tack/gybe vertices are kept first, the other points evenly spaced."""
+    n = len(path)
+    if n <= limit:
+        return list(path)
+    limit = max(2, limit)
+
+    def even(idx: list[int], k: int) -> list[int]:
+        if k <= 0 or not idx:
+            return []
+        if k >= len(idx):
+            return idx
+        return [idx[round(j * (len(idx) - 1) / max(1, k - 1))] for j in range(k)]
+
+    vertices = [i for i in range(1, n - 1) if int(path[i][4]) != int(path[i - 1][4])]
+    if len(vertices) + 2 > limit:
+        keep = {0, n - 1, *even(vertices, limit - 2)}
+    else:
+        others = [i for i in range(1, n - 1) if i not in set(vertices)]
+        keep = {0, n - 1, *vertices, *even(others, limit - 2 - len(vertices))}
+    return [path[i] for i in sorted(keep)]
+
+
 def _tack_name(tack: int | None) -> str | None:
     if tack is None or tack == 0:
         return None
@@ -142,6 +193,12 @@ class Adopted:
     start_in_margin: bool = False
     force_released_at: float | None = None
     course_version: int = 0
+    # the marks it was computed for: (mark_id, lat, lon, side, radius_nm), see _course_changed
+    marks: tuple[tuple[str, float, float, str, float], ...] = ()
+
+
+def _mark_key(m: CourseMark) -> tuple[str, float, float, str, float]:
+    return (m.mark_id, round(m.lat, 6), round(m.lon, 6), m.side, round(float(m.radius_nm), 4))
 
 
 class RouterService:
@@ -169,6 +226,10 @@ class RouterService:
         self.pack_ok = False
         self.pack_reason: str | None = REASON_NOT_LOADED
         self.pack_version = 0
+        self.pack_fp: tuple | None = None  # fingerprint of the loaded pack (MD-05)
+        self._pack_changed = False
+        self._pack_check_mono: float | None = None
+        self._restored_unverified = False  # a route.json route not yet re-checked by a cycle
         self.fields: Fields | None = None
         # routing state
         self.version = 0
@@ -193,7 +254,14 @@ class RouterService:
             "invalid": 0,
             "failed": 0,
             "superseded": 0,
+            "pool_recycled": 0,
         }
+        # pool watchdog (03-REVIEW CR-01): never let routing stop silently
+        self._pool_wanted = False  # startup created a pool: keep one alive
+        self._pool_watch: tuple[Any, float] | None = None  # (running job key, since t_mono)
+        self._pool_faults_seen = 0
+        self._pool_alert: tuple[str, float] | None = None  # (text, until t_mono)
+        self._pool_retry_mono: float | None = None
         self.last_block: dict | None = None
         self._missed_edge = False
         # tack advice (ROUT-06..10)
@@ -202,6 +270,13 @@ class RouterService:
         self.missed_watch = MissedTackWatch()
         self.stay = StayOnTack()
         self.missed = False  # a missed tack asked for a reroute: "Route mise à jour…"
+        self._last_follow: Follow | None = None  # the previous tick's projection
+        self._missed_t: float | None = None  # UTC s when the missed tack was flagged
+        self._missed_req: str | None = None  # request id of the reroute it asked for
+        self._missed_failed = False  # ... and that reroute failed
+        self._fail_streak = 0  # consecutive failed routing cycles
+        self._route_conf_t: float | None = None  # UTC t0 of the last cycle confirming the route
+        self.withdrawn: str | None = None  # why the displayed route is withdrawn (CR-02)
         self.cost_s: float | None = None
         self._cycle_n = 0
         self._force_carry = False
@@ -234,6 +309,8 @@ class RouterService:
             return
         pack = load_pack(self.racepack_dir)
         self.pack = pack
+        self.pack_fp = pack.fingerprint
+        self._pack_changed = False
         reasons = []
         if pack.wind is None:
             reasons.append("; ".join(e for e in pack.errors if "wind" in e) or "vent absent")
@@ -268,12 +345,14 @@ class RouterService:
         self.restore()
         self.restore_bias()
         if self.pack_ok and self.pool is None:
+            self._pool_wanted = True
             self.pool = self._make_pool()
             self.pool.start()
         self.record_health()
 
     async def shutdown(self) -> None:
         self.save_bias()
+        self._pool_wanted = False  # the watchdog must not recreate a pool after shutdown
         pool, self.pool = self.pool, None
         if pool is not None:
             try:
@@ -339,6 +418,8 @@ class RouterService:
     def _tick(self, msg: dict) -> None:
         now = self.now()
         s = self.nav.settings
+        self._watch_pool()
+        self._watch_pack()
         self._observe(now, msg)
         block = self._block()
         msg["route"] = block
@@ -356,12 +437,17 @@ class RouterService:
             self._set_state(block, "no_position", REASON_NO_POSITION)
         else:
             f = self._follow(now, msg)
-            off = self.offroute.update(now, f) if f is not None else False
+            self._last_follow = f
+            sog = (msg.get("boat") or {}).get("sog_kn")
+            off = self.offroute.update(now, f, sog) if f is not None else False
             if f is not None and self.missed_watch.update(
                 now, f.countdown_s, self.detector.last_tack_t
             ):
                 self.missed = True
                 self._missed_edge = True
+                self._missed_t = now
+                self._missed_failed = False
+            self.withdrawn = self._withdrawal(now, f)
             self._maybe_request(now, msg, off)
             self._missed_edge = False
             block["off_route"] = bool(off)
@@ -380,12 +466,21 @@ class RouterService:
             ev = self.detector.update(now, twa)
             if ev is not None and self.stay.active:
                 self.stay.on_tack(ev)  # a detected tack ends "On reste" (stay trigger)
-        entry = getattr(self.nav.manual, "entry", None)
-        key = entry.t_set_wall if entry is not None else None
+            elif ev is not None and self.route is not None:
+                f = self._last_follow
+                if f is not None and ev.new_side != f.target_tack:
+                    # tacked away from the route (e.g. early): it is outdated for this boat
+                    # (03-REVIEW MD-02), rerouted with the off-route treatment
+                    self.request("tack", forced=False)
+        store = self.nav.manual
+        entry = getattr(store, "entry", None)
+        # LO-01: key on the store's set/clear counter and the entry object, never on
+        # t_set_wall (None for every entry made without trusted GPS time)
+        key = (getattr(store, "version", None), id(entry) if entry is not None else None)
         if key != self._manual_key:
             if self._manual_key is _UNSET:
                 pass  # first tick: an entry restored from disk is not a new observation
-            elif self._manual_key is not None or key is not None:
+            else:
                 self.manual_version += 1
                 if entry is not None:
                     self._observe_manual(now, msg, entry)
@@ -480,7 +575,7 @@ class RouterService:
             trigs.append(Trigger(self._soft, False))
         if (
             not trigs
-            and self.route is None
+            and (self.route is None or self._fail_streak > 0 or self.withdrawn is not None)
             and self._inflight == 0
             and self._last_req_t is not None
             and now - self._last_req_t >= RETRY_NO_ROUTE_S
@@ -498,6 +593,8 @@ class RouterService:
         reasons = tuple(t.reason for t in trigs)
         self.request_log.append((now, reasons))
         self.last_request = req
+        if self.missed:  # this request (or a newer one) is the missed-tack reroute
+            self._missed_req = req.base.request_id
         self._submit(req, forced, reasons)
 
     def _build_request(self, now: float, msg: dict, rs: Any) -> CycleRequest | None:
@@ -528,7 +625,15 @@ class RouterService:
             settings=rs,
         )
         old = self.route.path if self.route is not None else None
-        return CycleRequest(base=base, want_forced=want_forced, stay_active=stay, old_path=old)
+        f = self._last_follow
+        return CycleRequest(
+            base=base,
+            want_forced=want_forced,
+            stay_active=stay,
+            old_path=old,
+            old_t_here=f.t_route_here if old is not None and f is not None else None,
+            pack_fp=self.pack_fp,
+        )
 
     def _bias_params(self, now: float | None) -> BiasParams | None:
         """Bias applied to the GRIB now (None when switched off or nothing learned)."""
@@ -680,6 +785,90 @@ class RouterService:
         self.bias = est
 
     # -- worker ------------------------------------------------------------------------------
+    def _pool_alarm(self, why: str) -> None:
+        """Routing-health alert (5 min) and Diag reason for a pool failure or restart."""
+        self._pool_alert = (ALERT_POOL + why, self.clock.monotonic() + POOL_ALERT_S)
+        self._last_fail = f"routeur relancé : {why}"
+        log.warning("router pool: %s", why)
+
+    def _watch_pack(self) -> None:
+        """Every PACK_CHECK_S: the pack on disk must still be the one loaded at startup (the
+        worker reloads it on every restart, MD-05)."""
+        if self.racepack_dir is None or self.pack_fp is None:
+            return
+        mono = self.clock.monotonic()
+        if self._pack_check_mono is not None and mono - self._pack_check_mono < PACK_CHECK_S:
+            return
+        self._pack_check_mono = mono
+        try:
+            fp = pack_fingerprint(self.racepack_dir)
+        except Exception:  # noqa: BLE001 - diagnostics only
+            return
+        if fp != self.pack_fp and not self._pack_changed:
+            log.warning("race pack changed on disk since startup: restart needed")
+            self._pack_changed = True
+
+    def _watch_pool(self) -> None:
+        """1 Hz pool watchdog (03-REVIEW CR-01): alert on pool faults, recycle a pool whose job
+        has been running for more than POOL_STUCK_S, recreate a missing pool."""
+        mono = self.clock.monotonic()
+        pool = self.pool
+        if pool is None:
+            self._pool_watch = None
+            if (
+                self._pool_wanted
+                and self.pack_ok
+                and (self._pool_retry_mono is None or mono - self._pool_retry_mono >= POOL_RETRY_S)
+            ):
+                self._pool_retry_mono = mono
+                self.pool = self._new_pool()
+            return
+        try:
+            st = dict(pool.stats)
+        except Exception:  # noqa: BLE001 - a pool that cannot even report is treated as stuck
+            st = {"running": 1, "jobs": None}
+        faults = int(st.get("faults") or 0)
+        if faults > self._pool_faults_seen:
+            self._pool_faults_seen = faults
+            self._pool_alarm(f"erreur du moteur ({st.get('last_fault') or 'inconnue'})")
+        if not int(st.get("running") or 0):
+            self._pool_watch = None
+            return
+        key = st.get("jobs")  # the same job keeps running while the job counter is unchanged
+        if self._pool_watch is None or self._pool_watch[0] != key:
+            self._pool_watch = (key, mono)
+        elif mono - self._pool_watch[1] > POOL_STUCK_S:
+            self._recycle_pool(f"calcul bloqué depuis plus de {POOL_STUCK_S:.0f} s")
+
+    def _new_pool(self) -> Any | None:
+        try:
+            pool = self._make_pool()
+            pool.start()
+            return pool
+        except Exception as exc:  # noqa: BLE001 - retried by the watchdog
+            log.exception("router pool creation failed")
+            self._pool_alarm(f"création du moteur impossible ({exc!r})")
+            return None
+
+    def _recycle_pool(self, why: str) -> None:
+        """Replace a wedged pool: close it, cancel the jobs waiting on it, start a fresh one."""
+        old = self.pool
+        self._counts["pool_recycled"] += 1
+        self._pool_watch = None
+        self._pool_faults_seen = 0
+        self._pool_alarm(why)
+        self.pool = None
+        new = self._new_pool()
+        self.pool = new
+        self._pool_retry_mono = self.clock.monotonic()
+        if old is not None and old is not new:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001
+                log.exception("router pool close failed")
+        for t in list(self._tasks):
+            t.cancel()  # their run_latest may never resolve on a wedged pool
+
     def _submit(self, req: CycleRequest, forced: bool, reasons: tuple[str, ...]) -> None:
         self._counts["jobs_submitted"] += 1
         self._spawn(lambda: self._run(req, forced, reasons, self.nav.course.version))
@@ -715,8 +904,14 @@ class RouterService:
             return
         try:
             out: PoolOutcome = await pool.run_latest(cycle.run_cycle, req)
-        except RuntimeError:  # pool closed
-            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - closed pool, or a pool bug: never silent
+            if self.pool is not pool:
+                return  # closed or replaced meanwhile
+            self.errors += 1
+            log.exception("router pool job failed")
+            out = PoolOutcome("error", None, 0.0, f"pool: {exc!r}")
         try:
             self._on_outcome(req, out, forced, reasons, course_version)
         except Exception:
@@ -737,27 +932,28 @@ class RouterService:
             return
         if out.status != "ok" or not isinstance(out.value, CycleResult):
             self._counts["failed"] += 1
-            self._last_fail = f"{out.status}: {out.error}" if out.error else out.status
+            self._failed(req, f"{out.status}: {out.error}" if out.error else out.status)
             return
         res: CycleResult = out.value
-        if req.want_forced:  # cost of not tacking: every forced routing (kept between, L5)
-            self.cost_s = None if res.cost_s is None else max(0.0, float(res.cost_s))
         opt = res.optimal
         if not opt.ok:
             reason = opt.reason or "échec du routage"
-            if any(w in reason.lower() for w in MASK_WORDS):
-                self._invalid(reason)
+            if opt.fail_kind == FAIL_PACK:
+                self._pack_changed = True
+            if opt.fail_kind == FAIL_LAND:  # LO-04: the worker's kind, never French words
+                self._invalid(reason, req)
             else:
                 self._counts["failed"] += 1
-                self._last_fail = reason
+                self._failed(req, reason)
             return
         if not opt.valid or not opt.path:
-            self._invalid(opt.reason or "route non validée")
+            self._invalid(opt.reason or "route non validée", req)
             return
         if course_version != self.nav.course.version:  # the course changed meanwhile
             self._counts["superseded"] += 1
             return
         self._last_fail = None
+        self._fail_streak = 0
         shown, kind = opt, "optimal"
         f = res.forced
         if req.stay_active and self.stay.active:
@@ -766,11 +962,13 @@ class RouterService:
         forced_eff = forced or self._force_carry
         if self.route is not None and self.route.kind != kind:
             forced_eff = True
+        if self.withdrawn is not None:  # the displayed route is withdrawn: anything valid wins
+            forced_eff = True
         now = float(req.base.t0)
         replace, why = True, "no_route"
         if self.route is not None:
             age = now - self.route.t0
-            if "off_route" in reasons:  # the current route is outdated for this boat
+            if "off_route" in reasons or "tack" in reasons:  # outdated for this boat
                 age = max(age, ROUTE_MAX_AGE_S + 1.0)
             replace, why = should_replace(
                 float(shown.eta if shown.eta is not None else math.inf),
@@ -782,17 +980,78 @@ class RouterService:
             )
         if not replace:
             self._counts["kept"] += 1
+            if res.old_valid is not False:  # the cycle re-checked the displayed route: still good
+                self._route_conf_t = max(self._route_conf_t or 0.0, now)
             return
-        self._adopt(req, shown, kind, course_version)
+        self._adopt(req, shown, kind, course_version, res)
 
-    def _invalid(self, reason: str) -> None:
+    def _failed(self, req: CycleRequest, reason: str) -> None:
+        """A routing cycle that produced no usable route (CR-02 bookkeeping)."""
+        self._last_fail = reason
+        self._fail_streak += 1
+        if self.missed and req.base.request_id == self._missed_req:
+            self._missed_failed = True  # the missed-tack reroute failed: stop "mise à jour…"
+
+    def _invalid(self, reason: str, req: CycleRequest | None = None) -> None:
         """A worker route that failed validation: discarded, alert for 5 min (ROUT-11)."""
         self._counts["invalid"] += 1
-        self._last_fail = reason
+        if req is not None:
+            self._failed(req, reason)
+        else:
+            self._last_fail = reason
         self._invalid_alert = (ALERT_INVALID + reason, self.clock.monotonic() + INVALID_ALERT_S)
         log.warning("worker route discarded: %s", reason)
 
-    def _adopt(self, req: CycleRequest, shown: RouteResult, kind: str, course_version: int):
+    # -- route expiry (03-REVIEW CR-02) ------------------------------------------------------
+    def _course_changed(self, r: Adopted, f: Follow | None) -> bool:
+        """True when the displayed route was computed for other marks than the ones left to
+        sail. A course advanced by rounding (the route's first marks dropped while the boat is
+        at the end of those legs) keeps the route; a skipped, moved or added mark does not."""
+        if r.course_version == self.nav.course.version:
+            return False
+        if not r.marks:
+            return True  # restored from an older route.json: no mark snapshot
+        cur = tuple(_mark_key(m) for m in self._remaining_marks())
+        n = len(r.marks) - len(cur)
+        if n < 0 or r.marks[n:] != cur:
+            return True
+        if n == 0:
+            return False  # same marks: an unrelated course edit
+        if n > len(r.legs) or f is None:
+            return True
+        return f.t_route_here < r.legs[n - 1][1] - ROUNDING_TOL_S
+
+    def _withdrawal(self, now: float, f: Follow | None) -> str | None:
+        """Why the displayed route must not be steered any more (None = still good)."""
+        r = self.route
+        if r is None:
+            return None
+        if self._restored_unverified:
+            return REASON_OUT_RESTORED
+        if self._course_changed(r, f):
+            return REASON_OUT_COURSE
+        if self.missed and (
+            self._missed_failed
+            or (self._missed_t is not None and now - self._missed_t > MISSED_MAX_S)
+        ):
+            return REASON_OUT_MISSED + (f" ({self._last_fail})" if self._last_fail else "")
+        conf = max(r.t0, self._route_conf_t or r.t0)
+        age = now - conf
+        if age > ROUTE_STALE_S:
+            why = self._last_fail or "recalcul en cours"
+            return f"{REASON_OUT_AGE} ({int(age // 60)} min) : {why}"
+        if self._fail_streak >= FAIL_WITHDRAW_N and age > ROUTE_FAIL_AGE_S:
+            return f"{REASON_OUT_FAIL} : {self._last_fail}"
+        return None
+
+    def _adopt(
+        self,
+        req: CycleRequest,
+        shown: RouteResult,
+        kind: str,
+        course_version: int,
+        res: CycleResult | None = None,
+    ):
         now = self.now()
         self.version += 1
         self._counts["adopted"] += 1
@@ -810,10 +1069,22 @@ class RouterService:
             start_in_margin=bool(shown.start_in_margin),
             force_released_at=shown.force_released_at,
             course_version=course_version,
+            marks=tuple(_mark_key(m) for m in req.base.marks),
         )
+        if res is not None and req.want_forced:
+            # cost of not tacking, from the cycle that produced the displayed route only
+            # (03-REVIEW MD-04: a kept or superseded cycle's cost belongs to another route);
+            # a non-forced adoption (L5 alternate cycles) keeps the last forced cost
+            self.cost_s = None if res.cost_s is None else max(0.0, float(res.cost_s))
         self._on_new_route()
         self._force_carry = False
+        self._fail_streak = 0
+        self._route_conf_t = float(req.base.t0)
+        self.withdrawn = None
+        self._restored_unverified = False
         self.missed = False
+        self._missed_failed = False
+        self._missed_t = None
         self._restore_alert = False
         self.save()
         text = self.route_text()
@@ -822,7 +1093,10 @@ class RouterService:
 
     def _on_new_route(self) -> None:
         assert self.route is not None
-        self.follower = RouteFollower(self.route.path, self.route.tacks)
+        self._last_follow = None
+        self.follower = RouteFollower(
+            self.route.path, self.route.tacks, legs=[eta for _mid, eta in self.route.legs]
+        )
         self.offroute.reset()  # 03-04: the off-route timer follows the displayed route
 
     @staticmethod
@@ -850,7 +1124,21 @@ class RouterService:
             else:
                 self._set_state(block, "computing", None)
             return
+        if self.withdrawn is not None:
+            # withdrawn (CR-02): what it was, but nothing to steer -> Phase 2 laylines
+            self._set_state(block, "outdated", self.withdrawn)
+            block.update(
+                version=r.version,
+                kind=r.kind,
+                age_s=_r(max(0.0, now - r.t0), 0),
+                computed_utc=iso_utc(r.t0),
+                level=r.level,
+            )
+            return
         self._set_state(block, "ok", None)
+        if self._fail_streak > 0:  # still steerable, but the last recompute failed
+            block["stale"] = True
+            block["last_fail"] = self._last_fail
         if r.kind == "stay" and r.force_released_at is not None:
             block["stay"]["released_land"] = True
             block["stay"]["release_in_s"] = _r(r.force_released_at - now, 0)
@@ -877,11 +1165,19 @@ class RouterService:
         twa_abs = abs(f.target_twa)
         wind = msg.get("wind") or {}
         boat = msg.get("boat") or {}
+        twa_now = wind.get("twa")
+        # on the other tack than the route's (HI-01): |TWA| - |target| would read ~0, green
+        wrong = (
+            twa_now is not None
+            and abs(twa_now) >= WRONG_TACK_MIN_DEG
+            and (1 if twa_now > 0 else -1) != int(f.target_tack)
+        )
+        block["wrong_tack"] = bool(wrong)
         if twa_abs < PRIMARY_TWA_UP_DEG or twa_abs > PRIMARY_TWA_DOWN_DEG:
             block["primary"] = "twa"
             block["target"] = _r(twa_abs, 1)
-            twa_now = wind.get("twa")
-            block["deviation"] = _r(abs(twa_now) - twa_abs, 1) if twa_now is not None else None
+            if twa_now is not None and not wrong:
+                block["deviation"] = _r(abs(twa_now) - twa_abs, 1)
         else:
             block["primary"] = "hdg"
             block["target"] = block["target_hdg_t"]
@@ -904,7 +1200,7 @@ class RouterService:
             block["stay"]["released_land"] = False
             block["stay"]["release_in_s"] = None
         block["missed"] = self.missed
-        block["updating"] = self.missed
+        block["updating"] = self.missed and block.get("state") == "ok"
         if self.route is not None and block.get("state") == "ok":
             block["cost_s"] = _r(self.cost_s, 0)
             block["cost_text"] = cost_text(self.cost_s)
@@ -919,6 +1215,14 @@ class RouterService:
                 self._invalid_alert = None
         if self._restore_alert:
             out.append(ALERT_RESTORE)
+        if self._pack_changed:
+            out.append(ALERT_PACK_CHANGED)
+        if self._pool_alert is not None:
+            text, until = self._pool_alert
+            if self.clock.monotonic() < until:
+                out.append(text)
+            else:
+                self._pool_alert = None
         return out
 
     def _alerts(self, msg: dict) -> None:
@@ -990,6 +1294,7 @@ class RouterService:
             "start_in_margin": r.start_in_margin,
             "force_released_at": r.force_released_at,
             "course_version": r.course_version,
+            "marks": [list(m) for m in r.marks],
             "message": self.route_message(),
         }
         try:
@@ -1014,6 +1319,9 @@ class RouterService:
         if r.course_version != self.nav.course.version:
             return  # computed for another course
         self.route = r
+        # computed against a pack / mask that may have changed: shown (greyed, withdrawn)
+        # until the first worker cycle replaces it (MD-05)
+        self._restored_unverified = True
         self.version = max(self.version, r.version)
         self._on_new_route()
 
@@ -1045,6 +1353,14 @@ class RouterService:
         kind = raw["kind"]
         if kind not in ("optimal", "stay"):
             raise ValueError("type de route invalide")
+        raw_marks = raw.get("marks") or []
+        marks = tuple(
+            (str(m[0]), num(m[1]), num(m[2]), str(m[3]), num(m[4]))
+            for m in raw_marks
+            if len(m) == 5
+        )
+        if len(marks) != len(raw_marks):
+            raise ValueError("marques invalides")
         version = raw["version"]
         cv = raw["course_version"]
         if not isinstance(version, int) or not isinstance(cv, int):
@@ -1063,6 +1379,7 @@ class RouterService:
             start_in_margin=bool(raw["start_in_margin"]),
             force_released_at=opt_num(raw["force_released_at"]),
             course_version=cv,
+            marks=marks,
         )
 
     # -- message pieces ----------------------------------------------------------------------
@@ -1085,6 +1402,7 @@ class RouterService:
             "target_tack": None,
             "target_hdg_t": None,
             "xte_nm": None,
+            "wrong_tack": False,
             "off_route": False,
             "countdown_s": None,
             "tack_kind": None,
@@ -1092,6 +1410,8 @@ class RouterService:
             "tack_lon": None,
             "missed": False,
             "updating": False,
+            "stale": False,
+            "last_fail": None,
             "cost_s": None,
             "cost_text": None,
             "stay": {"active": False, "tack": None, "released_land": False, "release_in_s": None},
@@ -1143,6 +1463,7 @@ class RouterService:
             "last_ms": _r(st.get("last_ms"), 0),
             "running": int(st.get("running", 0)),
             "pending": int(st.get("pending", 0)),
+            "faults": int(st.get("faults", 0) or 0),
         }
 
     def health(self) -> dict:
@@ -1189,7 +1510,8 @@ class RouterService:
         r = self.route
         if r is None:
             return None
-        coords = [[round(p.lon, 6), round(p.lat, 6)] for p in r.path[:MAX_ROUTE_POINTS]]
+        shown = display_points(r.path, MAX_ROUTE_POINTS)
+        coords = [[round(p.lon, 6), round(p.lat, 6)] for p in shown]
         features: list[dict] = [
             {
                 "type": "Feature",
@@ -1213,7 +1535,8 @@ class RouterService:
                     },
                 }
             )
-        nxt = next((tk for tk in r.tacks if tk.t > r.adopted_t), None)
+        # route time of the boat at adoption is t0: a tack at t0 is the next one (HI-01)
+        nxt = next((tk for tk in r.tacks if tk.t >= r.t0 - 1.0), None)
         if nxt is not None:
             features.append(
                 {

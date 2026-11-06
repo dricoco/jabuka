@@ -149,6 +149,7 @@
   "target_tack": null,
   "target_hdg_t": null,
   "xte_nm": null,
+  "wrong_tack": false,
   "off_route": false,
   "countdown_s": null,
   "tack_kind": null,
@@ -156,6 +157,8 @@
   "tack_lon": null,
   "missed": false,
   "updating": false,
+  "stale": false,
+  "last_fail": null,
   "cost_s": null,
   "cost_text": null,
   "stay": {
@@ -188,7 +191,8 @@
    "crashes": 0,
    "last_ms": null,
    "running": 0,
-   "pending": 0
+   "pending": 0,
+   "faults": 0
   }
  }
 }

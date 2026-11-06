@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-from jabuka.prep.wxpack import Crop, Cube, default_crop
+from jabuka.prep.wxpack import Crop, Cube, default_crop, iso_utc
 
 MAX_INPUT_BYTES = 200 * 1024 * 1024
 MAX_BZ2_OUTPUT = 100 * 1024 * 1024
@@ -143,6 +143,73 @@ def crop_regular(g: Any, crop: Crop) -> tuple[np.ndarray, np.ndarray, np.ndarray
     return np.ascontiguousarray(arr), la.copy(), lo.copy()
 
 
+def message_ident(g: Any) -> tuple[Any, ...]:
+    """(run, ensemble member, level type, level, short name) of a message."""
+    pn = _key(g, "perturbationNumber")
+    return (
+        run_epoch(g),
+        None if pn is None else int(pn),
+        str(_key(g, "typeOfLevel", "")),
+        _key(g, "level"),
+        str(_key(g, "shortName", "")),
+    )
+
+
+def _fmt_run(run: int | None) -> str:
+    return iso_utc(run) if run is not None else "inconnu"
+
+
+class _Dedup:
+    """One message per (valid time, component), from one run and one ensemble member
+    (03-REVIEW LO-05: a later message silently replaced an earlier one, so u could come from
+    one member or run and v from another)."""
+
+    def __init__(self) -> None:
+        self.seen: dict[tuple[int, str], tuple[Any, ...]] = {}
+        self.runs: set[int | None] = set()
+        self.members: set[int | None] = set()
+        self.dups = 0
+
+    def accept(self, t: int, kind: str, g: Any) -> bool:
+        """True for a new (t, kind); False for an exact duplicate (ignored); ValueError when
+        two different messages give the same component at the same valid time."""
+        ident = message_ident(g)
+        self.runs.add(ident[0])
+        self.members.add(ident[1])
+        prev = self.seen.get((t, kind))
+        if prev is None:
+            self.seen[(t, kind)] = ident
+            return True
+        if prev == ident:
+            self.dups += 1
+            return False
+        if prev[0] != ident[0]:
+            why = f"runs {_fmt_run(prev[0])} et {_fmt_run(ident[0])}"
+        elif prev[1] != ident[1]:
+            why = f"membres d'ensemble {prev[1]} et {ident[1]}"
+        else:
+            why = f"{prev[4]} ({prev[2]} {prev[3]}) et {ident[4]} ({ident[2]} {ident[3]})"
+        raise ValueError(
+            f"échéance {iso_utc(t)} : deux messages {kind} différents ({why}) : "
+            "ne garder qu'un run et un membre"
+        )
+
+    def finish(self) -> int | None:
+        """The single run kept (printed); ValueError for several runs or members."""
+        if len(self.runs) > 1:
+            runs = ", ".join(sorted(_fmt_run(r) for r in self.runs))
+            raise ValueError(f"plusieurs runs dans les fichiers ({runs}) : n'en garder qu'un")
+        if len(self.members) > 1:
+            members = ", ".join(str(m) for m in sorted(self.members, key=lambda m: (m is None, m)))
+            raise ValueError(
+                f"plusieurs membres d'ensemble (perturbationNumber {members}) : n'en garder qu'un"
+            )
+        run = next(iter(self.runs)) if self.runs else None
+        extra = f", {self.dups} message(s) en double ignoré(s)" if self.dups else ""
+        print(f"GRIB : run gardé {_fmt_run(run)}{extra}")
+        return run
+
+
 class _Stack:
     """Collect 2-D fields per valid time on one common grid."""
 
@@ -196,7 +263,9 @@ def decode_wind_files(
         return k
 
     st = _decode_regular(paths, crop or default_crop(), tmp_dir, kind)
-    return st.cube(("u", "v"))
+    cube = st.cube(("u", "v"))
+    fill_wind(cube)
+    return cube
 
 
 def _decode_regular(
@@ -204,6 +273,7 @@ def _decode_regular(
 ) -> _Stack:
     pygrib = _pygrib()
     st = _Stack()
+    dedup = _Dedup()
     for p in sorted(paths, key=str):
         with open_grib_path(p, tmp_dir) as gp:
             grbs = pygrib.open(gp)
@@ -213,6 +283,8 @@ def _decode_regular(
                     k = kind(g)
                     if k is None:
                         continue
+                    if not dedup.accept(valid_epoch(g), k, g):
+                        continue
                     res = crop_regular(g, crop)
                     if res is None:
                         raise ValueError(
@@ -221,9 +293,10 @@ def _decode_regular(
                         )
                     arr, la, lo = res
                     st.add(valid_epoch(g), k, arr, la, lo)
-                    st.run = st.run if st.run is not None else run_epoch(g)
             finally:
                 grbs.close()
+    if dedup.seen:
+        st.run = dedup.finish()
     return st
 
 
@@ -260,6 +333,28 @@ def fill_nearest(a: np.ndarray, max_iter: int | None = None) -> np.ndarray:
             break
         out[fill] = cand[fill]
     return out
+
+
+def fill_wind(cube: Cube) -> float:
+    """Fill wind cells without a value (bitmap / land-masked cells, IDW edges) from the nearest
+    valid cell, u and v together so a cell takes both components from the same source
+    (03-REVIEW MD-01: a NaN cell used to become a calm at runtime). Returns the filled
+    fraction (printed when > 0); ValueError when a time step has no valid cell at all."""
+    u = np.asarray(cube.fields["u"], dtype=np.float64)
+    v = np.asarray(cube.fields["v"], dtype=np.float64)
+    bad = ~(np.isfinite(u) & np.isfinite(v))
+    if not bad.any():
+        return 0.0
+    u = np.where(bad, np.nan, u)
+    v = np.where(bad, np.nan, v)
+    fu, fv = fill_nearest(u), fill_nearest(v)
+    if np.isnan(fu).any() or np.isnan(fv).any():
+        raise ValueError("vent : une échéance sans aucune cellule valide sur la zone")
+    cube.fields["u"] = fu.astype(np.float32)
+    cube.fields["v"] = fv.astype(np.float32)
+    frac = float(bad.mean())
+    print(f"vent : {frac:.1%} des cellules sans valeur, complétées par la cellule voisine")
+    return frac
 
 
 _WAVE_NAMES = {"swh": "hs", "mwd": "mwd"}
@@ -405,6 +500,73 @@ def idw_regrid(
     return out.reshape(vals.shape[0], lat.size, lon.size)
 
 
+UV_RELATIVE_FLAG = 0x08  # resolutionAndComponentFlags: u/v relative to the grid (GRIB1 + GRIB2)
+ORTHO_TOL_DEG = 5.0  # grid axes farther than this from perpendicular: orientation not trusted
+
+
+def uv_relative_to_grid(g: Any) -> bool | None:
+    """True when the message's u/v (or direction) are relative to the grid axes, False when
+    earth-relative (east/north), None when the file does not say."""
+    v = _key(g, "uvRelativeToGrid")
+    if v is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return bool(int(v))
+    flags = _key(g, "resolutionAndComponentFlags")
+    if flags is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return bool(int(flags) & UV_RELATIVE_FLAG)
+    return None
+
+
+def _axis_bearing(lat_r: np.ndarray, lon_r: np.ndarray, axis: int) -> np.ndarray:
+    """Bearing (rad, clockwise from true north) of increasing index along ``axis``."""
+    dlat = np.gradient(lat_r, axis=axis)
+    dlon = np.gradient(lon_r, axis=axis)
+    return np.arctan2(dlon * np.cos(lat_r), dlat)
+
+
+def grid_x_bearing(lats2d: Any, lons2d: Any) -> np.ndarray:
+    """Bearing (rad, clockwise from TRUE north) of the grid's x axis at every grid point, from the
+    grid's own coordinates (03-REVIEW HI-03). The x axis is the column direction that points
+    east-ish; the y axis must be the x axis turned 90 deg counter-clockwise (every conformal
+    grid: rotated lat/lon, Lambert, polar stereographic, Mercator). ValueError (French) when the
+    orientation cannot be computed reliably."""
+    la = np.asarray(lats2d, dtype=np.float64)
+    lo = np.asarray(lons2d, dtype=np.float64)
+    if la.ndim != 2 or la.shape != lo.shape or min(la.shape) < 2:
+        raise ValueError("vent relatif à la grille : grille non 2-D, orientation impossible")
+    lat_r = np.radians(la)
+    lon_r = np.unwrap(np.radians(lo), axis=1)
+    lon_r = np.unwrap(lon_r, axis=0)
+    alpha = _axis_bearing(lat_r, lon_r, axis=1)
+    beta = _axis_bearing(lat_r, lon_r, axis=0)
+    if not (np.all(np.isfinite(alpha)) and np.all(np.isfinite(beta))):
+        raise ValueError("vent relatif à la grille : coordonnées invalides, orientation impossible")
+    east = float(np.mean(np.sin(alpha)))
+    if abs(east) < 0.5:
+        raise ValueError("vent relatif à la grille : axe x de la grille non orienté est-ouest")
+    if east < 0.0:  # columns stored westwards (iScansNegatively)
+        alpha = alpha + np.pi
+    if float(np.mean(np.cos(beta))) < 0.0:  # rows stored southwards (jScansPositively = 0)
+        beta = beta + np.pi
+    ortho = np.degrees(np.angle(np.exp(1j * (beta - (alpha - np.pi / 2.0)))))
+    if float(np.max(np.abs(ortho))) > ORTHO_TOL_DEG:
+        raise ValueError(
+            "vent relatif à la grille : axes de la grille non perpendiculaires "
+            f"({float(np.max(np.abs(ortho))):.0f}°), orientation non fiable"
+        )
+    return alpha
+
+
+def rotate_grid_uv(u: Any, v: Any, alpha: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Grid-relative (u along x, v along y) -> earth-relative (east, north), with ``alpha`` the
+    bearing of the grid's x axis (y = x turned 90 deg counter-clockwise)."""
+    s, c = np.sin(alpha), np.cos(alpha)
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    return u * s - v * c, u * c + v * s
+
+
 def _target_axes(crop: Crop, lats: np.ndarray, lons: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     lat_lo, lat_hi = max(crop.lat1, float(lats.min())), min(crop.lat2, float(lats.max()))
     lon_lo, lon_hi = max(crop.lon1, float(lons.min())), min(crop.lon2, float(lons.max()))
@@ -417,7 +579,13 @@ def _target_axes(crop: Crop, lats: np.ndarray, lons: np.ndarray) -> tuple[np.nda
 
 def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
     """Any GRIB1/GRIB2 file with 10 m wind (u/v or speed/direction; regular, rotated or projected
-    grid) -> wind Cube (u, v). ValueError (French) when unusable."""
+    grid) -> wind Cube (u, v). ValueError (French) when unusable.
+
+    Wind components (or directions) flagged relative to the grid (``uvRelativeToGrid``, usual on
+    rotated and Lambert grids: WRF, ALADIN, COSMO) are rotated to east/north before the regrid,
+    with the local grid orientation taken from the grid's coordinates (03-REVIEW HI-03). A
+    projected grid whose orientation cannot be computed, or that does not say whether its wind is
+    grid-relative, is refused."""
     pygrib = _pygrib()
     crop = crop or default_crop()
     path = Path(path)
@@ -425,9 +593,11 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
         raise ValueError(f"fichier introuvable : {path}")
     check_size(path)
     found: list[str] = []
-    # t -> kind -> ("reg", arr2d, lat, lon) | ("pts", vals1d, lats1d, lons1d)
+    # t -> kind -> ("reg", arr2d, lat, lon, None) | ("pts", vals1d, lats1d, lons1d, alpha1d|None)
+    # (alpha: bearing of the grid x axis when the wind is grid-relative, see grid_x_bearing)
     recs: dict[int, dict[str, tuple[Any, ...]]] = {}
     run: int | None = None
+    dedup = _Dedup()
     sel = 0.3  # deg kept around the crop for projected grids (IDW neighbours at the edges)
     with open_grib_path(path) as gp:
         try:
@@ -441,18 +611,33 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
                 if kind is None:
                     continue
                 t = valid_epoch(g)
-                run = run if run is not None else run_epoch(g)
+                if not dedup.accept(t, kind, g):
+                    continue
                 gtype = str(_key(g, "gridType", ""))
                 if gtype in ("regular_ll", "regular_gg"):
                     arr, la, lo = crop_regular(g, crop) or (None, None, None)
                     if arr is None:
                         raise ValueError(f"grille {gtype} illisible")
-                    recs.setdefault(t, {})[kind] = ("reg", arr, la, lo)
+                    # on a lat/lon grid, grid-relative components are east/north already
+                    recs.setdefault(t, {})[kind] = ("reg", arr, la, lo, None)
                     continue
                 try:
                     lats, lons = g.latlons()
                 except Exception as exc:  # noqa: BLE001
                     raise ValueError(f"type de grille non pris en charge : {gtype}") from exc
+                alpha = None
+                if kind != "ws":  # a speed has no direction to rotate
+                    rel = uv_relative_to_grid(g)
+                    if rel is None:
+                        raise ValueError(
+                            f"grille {gtype} : le fichier ne dit pas si le vent est relatif à la "
+                            "grille ou au nord vrai (uvRelativeToGrid) : fichier refusé"
+                        )
+                    if rel:
+                        try:
+                            alpha = grid_x_bearing(lats, lons).ravel()
+                        except ValueError as exc:
+                            raise ValueError(f"grille {gtype} : {exc} : fichier refusé") from exc
                 lats = np.asarray(lats, dtype=np.float64).ravel()
                 lons = _wrap_lon(np.asarray(lons, dtype=np.float64).ravel())
                 vals = np.ma.filled(np.ma.asarray(g.values, dtype=np.float64), np.nan).ravel()
@@ -464,10 +649,19 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
                 )
                 if not keep.any():
                     raise ValueError("la grille du fichier ne recouvre pas la zone de course")
-                recs.setdefault(t, {})[kind] = ("pts", vals[keep], lats[keep], lons[keep])
+                rec = (
+                    "pts",
+                    vals[keep],
+                    lats[keep],
+                    lons[keep],
+                    None if alpha is None else alpha[keep],
+                )
+                recs.setdefault(t, {})[kind] = rec
         finally:
             grbs.close()
     print(f"GRIB {path.name} : champs trouvés : {', '.join(dict.fromkeys(found)) or 'aucun'}")
+    if dedup.seen:
+        run = dedup.finish()
     st = _Stack()
     st.run = run
     st.found = found
@@ -483,7 +677,14 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
             raise ValueError("composantes du vent sur des grilles différentes")
         a, b = ru[1], rv[1]
         if from_sd:
-            a, b = uv_from_speed_dir(a, b)
+            a, b = uv_from_speed_dir(a, b)  # grid-relative when the direction is
+            alpha = rv[4]
+        else:
+            if (ru[4] is None) != (rv[4] is None):
+                raise ValueError("composantes du vent : l'une relative à la grille, l'autre non")
+            alpha = ru[4]
+        if alpha is not None:
+            a, b = rotate_grid_uv(a, b, alpha)
         if ru[0] == "reg":
             st.add(t, "u", a, ru[2], ru[3])
             st.add(t, "v", b, ru[2], ru[3])
@@ -495,4 +696,6 @@ def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
     if not st.by_t:
         present = ", ".join(dict.fromkeys(found)) or "aucun"
         raise ValueError(f"aucun champ de vent 10 m trouvé ; champs présents : {present}")
-    return st.cube(("u", "v"))
+    cube = st.cube(("u", "v"))
+    fill_wind(cube)
+    return cube
