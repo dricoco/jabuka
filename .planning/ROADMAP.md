@@ -104,7 +104,16 @@ Plans:
   4. The helm sees a countdown to the next recommended tack or gybe from the route (from the laylines when there is no route) and the cost in minutes of not tacking now. Pressing "Stay on this tack" shows the earliest next tack and an updated countdown. If the advised tack time passes by 2 minutes with no tack detected, the display stops saying "tack" and the route recomputes.
   5. On the Pi 3B (benchmarked by 2026-11-09), the optimal route and the forced-current-tack route both finish within the rerun cadence, using either full settings or the documented degraded settings. Laylines and the helm view keep updating at about 1 Hz while routing runs.
 
-**Plans**: TBD
+**Plans:** 6 plans (wave 1: 01 ‖ 02 ‖ 04, pure core, can start before Phase 2 merges; wave 2: 03; wave 3: 05 after Phase 2 02-01/02-03/02-04; wave 4: 06 after 02-05)
+
+Plans:
+
+- [ ] 03-01-PLAN.md — Never cross land: OSM coastline + hazards (Plić Sestre built in) → 25 m mask with 100/200 m margins (`python -m jabuka.prep.land build/check`), runtime LandMask (segment checks, snap, polyline validation), geodesic fields, run-based flood fill, committed mask fixture, island-crossing + channel connectivity suites, route purity scan, docs/ROUTING.md
+- [ ] 03-02-PLAN.md — Weather race pack: `jabuka-prep` wind (ICON-EU run selection + download), waves (EWAM), grib (any GRIB1/GRIB2), current (Copernicus NetCDF), check; Pi-side `route.racepack` loader (no pickle, sha256) + GRIB-02 coverage rules; real DWD samples; docs/WEATHER-PACK.md
+- [ ] 03-03-PLAN.md — Isochrone engine: polar grid, fields (bias, waves, current), rounding waypoints, multi-leg routing with geodesic sector ranking, 8-scenario course A/B island suite, forced-tack routing + cost, old-route re-evaluation, worker cycle, `jabuka-route-bench` + degraded ladder L0–L5 (Pi gate 2026-11-09)
+- [ ] 03-04-PLAN.md — Pure tack advice + bias + pool: route follower (target TWA/heading, route-time countdown), tack detector, missed-tack watch, triggers, hysteresis, stay-on-tack state, gated bias estimator, forkserver RouterPool (nice, timeout kill/recreate on 3.13/3.14, coalescing)
+- [ ] 03-05-PLAN.md — Core integration (after Phase 2): numpy in the Pi lock + prep extra + console scripts, RouterService (clock gate, pack alerts, triggers, hysteresis, On reste, cost, missed tack, persistence, invalid-route discard), nav `route` block + route WS/REST, GPS + GRIB-only wind source, bias wiring, tick-latency test
+- [ ] 03-06-PLAN.md — Helm & map (after 02-05): route overlay, route-first countdown/target with layline fallback, ON RESTE (lock-aware), cost, "Route mise à jour…", GRIB badge, bias display, Diag row; real-data dry run script + e2e test; operator and Friday-pack docs
 **UI hint**: yes
 **Notes**: Plan GRIB pack + GPS+GRIB mode + bias first, because they don't depend on the router passing its benchmark. If the 2026-11-09 benchmark fails, degrade in this order: 10° headings and 30-min steps, then next mark +1 only, then a 10-min cadence. After that, compute the cost of not tacking only on demand and let the countdown fall back to laylines. libweatherrouting is the test oracle and the emergency engine. Research flags: forced-tack semantics and "tacked" detection (sustained TWA sign change >30 s), bias decay constants, organiser GRIB format.
 
