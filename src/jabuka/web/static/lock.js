@@ -77,7 +77,16 @@ function padlock(open, ring) {
 
 let mapQueue = Promise.resolve();
 
+function toggleHandlers(map, enabled) {
+  for (const name of MAP_HANDLERS) {
+    const h = map[name];
+    if (h && typeof h.enable === "function") enabled ? h.enable() : h.disable();
+  }
+}
+
 function setMapInteractions(enabled) {
+  const ready = globalThis.jabuka?.map;
+  if (ready) toggleHandlers(ready, enabled); // map already up: at once, no async gap
   mapQueue = mapQueue.then(() => applyMap(enabled));
   return mapQueue;
 }
@@ -86,11 +95,7 @@ async function applyMap(enabled) {
   try {
     const m = await import("./map.js");
     // idempotent: the same map app.js loads (also when the lock is restored before it is ready)
-    const map = await m.ensureMap(document.getElementById("map"));
-    for (const name of MAP_HANDLERS) {
-      const h = map[name];
-      if (h && typeof h.enable === "function") enabled ? h.enable() : h.disable();
-    }
+    toggleHandlers(await m.ensureMap(document.getElementById("map")), enabled);
   } catch {
     /* no map on this tablet: nothing to disable */
   }

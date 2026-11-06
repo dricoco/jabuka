@@ -60,7 +60,7 @@ def test_lock_swallows_everything_and_unlocks_on_a_long_press(page, feeder) -> N
     assert _locked(pg)
     ub = pg.locator("#unlock-btn").bounding_box()
     assert ub and ub["width"] >= 64 and ub["height"] >= 64
-    assert pg.evaluate("() => window.jabuka.map.dragPan.isEnabled()") is False
+    pg.wait_for_function("() => window.jabuka.map.dragPan.isEnabled() === false", timeout=2000)
 
     # a tap on the Carte tab button lands on the overlay: no tab switch
     x, y = _centre(pg, "button[data-tab=carte]")
