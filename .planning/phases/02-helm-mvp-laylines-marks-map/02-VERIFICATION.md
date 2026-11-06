@@ -6,7 +6,12 @@ score: 28/34 must-haves verified (2 FAILED, one of them with an override suggest
 covered_files: [".planning/REQUIREMENTS.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-01-PLAN.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-01-SUMMARY.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-02-PLAN.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-02-SUMMARY.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-03-PLAN.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-03-SUMMARY.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-04-PLAN.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-04-SUMMARY.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-05-PLAN.md", ".planning/phases/02-helm-mvp-laylines-marks-map/02-05-SUMMARY.md", "deploy/requirements.in", "deploy/requirements.lock", "docs/RACE-PACK.md", "docs/TABLET-SETUP.md", "pyproject.toml", "scripts/bootstrap-dev.sh", "scripts/build-styles.mjs", "scripts/vendor-web.sh", "src/jabuka/common/clock.py", "src/jabuka/core/course_api.py", "src/jabuka/core/hardening.py", "src/jabuka/core/main.py", "src/jabuka/core/nav_api.py", "src/jabuka/core/nav_service.py", "src/jabuka/core/tiles.py", "src/jabuka/core/web.py", "src/jabuka/nav/__init__.py", "src/jabuka/nav/course.py", "src/jabuka/nav/data/marks.json", "src/jabuka/nav/data/x35-orc-od-2019.exp", "src/jabuka/nav/geo.py", "src/jabuka/nav/laylines.py", "src/jabuka/nav/polar.py", "src/jabuka/nav/settings.py", "src/jabuka/nav/tacks.py", "src/jabuka/nav/wind.py", "src/jabuka/prep/__init__.py", "src/jabuka/prep/map.py", "src/jabuka/prep/polar.py", "src/jabuka/sim/synth.py", "src/jabuka/web/static/app.css", "src/jabuka/web/static/app.js", "src/jabuka/web/static/carte.css", "src/jabuka/web/static/carte.js", "src/jabuka/web/static/diag.html", "src/jabuka/web/static/diag_logic.js", "src/jabuka/web/static/helm.js", "src/jabuka/web/static/helm_logic.js", "src/jabuka/web/static/index.html", "src/jabuka/web/static/lock-early.js", "src/jabuka/web/static/lock.js", "src/jabuka/web/static/lock_logic.js", "src/jabuka/web/static/map.js", "src/jabuka/web/static/overlays.js", "src/jabuka/web/static/reglages.css", "src/jabuka/web/static/reglages.js", "src/jabuka/web/static/style-day.json", "src/jabuka/web/static/style-night.json", "src/jabuka/web/static/wakelock.js"]
 covered_digest: "v1:sha256:89cf91caacbc33fb1606f49a2aacecb4f7046bcd5c04fbe439e7a5afe10481f2"
 behavior_unverified: 0
-overrides_applied: 0
+overrides_applied: 1
+overrides:
+  - must_have: "The user can select Course A or Course B in one action"
+    reason: "WR-05: a template change rebuilds the course, so it takes a 'Confirmer Parcours X' tap within 5 s; re-selecting the active course is a no-op. One deliberate action with confirmation."
+    accepted_by: "owner (AskUserQuestion: Garder 2 appuis)"
+    accepted_at: "2026-11-06T19:00:00Z"
 gaps:
   - truth: "ROADMAP SC2 / NAV-02: live laylines with distance/time to the layline, an overstood indicator and the heading on the other tack"
     status: partial
@@ -19,14 +24,6 @@ gaps:
     missing:
       - "Show the layline distance next to the countdown, e.g. 'Virement dans 12 min · 1,4 nm' through fmtDistance(layline.dist_nm), in helmView()"
       - "Add a node test in tests/test_helm_logic.py: a normal-state layline with dist_nm shows the distance; overstood/fetching/reach states do not"
-  - truth: "ROADMAP SC3 / CRSE-01: the user selects Course A or Course B in one action (also 02-01 truth 4 and 02-04 truth 2: 'in one tap')"
-    status: partial
-    reason: "The review fix WR-05 (23e861e) made changing the template take two taps. The first tap turns the button into 'Confirmer Parcours B' for 5 s, and a second tap selects (src/jabuka/web/static/carte.js:311-340). Re-selecting the active template is a no-op. This is intentional, because a template change rebuilds the course and drops custom marks. It still breaks the literal 'one action / one tap' wording."
-    artifacts:
-      - path: "src/jabuka/web/static/carte.js"
-        issue: "tplReset/confirm flow: a template change needs a confirming second tap within 5 s"
-    missing:
-      - "Owner decision: accept the confirm tap as one action (add the override suggested in the report body), or restore a single tap with a different safeguard (for example the Annuler banner pattern)"
 human_verification:
   - test: "Real tablet, airplane mode with Wi-Fi to the Pi AP, open http://10.42.0.1 (TABLET-SETUP 1, 5) with the race pack copied to /var/lib/jabuka/racepack"
     expected: "The MapLibre map renders Vodice to Jabuka at every zoom up to 14 with labels, seamarks, the course, marks with radius circles, laylines and the boat; zero network errors in chrome://inspect; the Barre bands sit over the map"
