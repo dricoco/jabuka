@@ -34,6 +34,7 @@ PI_SETUP = REPO / "deploy" / "PI-SETUP.md"
 TABLET = DOCS / "TABLET-SETUP.md"
 # created by plan 04-01 in the same wave: links to them are allowed before they exist
 LINK_ALLOW = {"docs/SOAK.md", "scripts/soak.sh"}
+LINK_ALLOW |= {"docs/FREEZE.md", "docs/SPARE-SD.md"}  # written by task 3 of this plan
 COMMAND_DOCS = [RUNBOOK]
 
 SECTIONS = [
@@ -48,13 +49,13 @@ SECTIONS = [
     (9, "Go / no-go et plans B"),
 ]
 KEYWORDS = {
-    1: ["SD de secours", "DTECH", "VK-162", "12 V", "USB", "fusibles", "outils", "3D",
+    1: ["SD de secours", "DTECH", "VK-162", "12 V", "USB", "Fusibles", "Outils", "3D",
         "Banc d'essai Pi", "route_level", "SOAK.md", "FREEZE.md", "SPARE-SD.md"],
     2: ["Blanc = Data+", "Vert = Data−", "terminaison", "Écoute seule", "Photos",
         "fastnet-probe", "croiser Blanc et Vert"],
     3: ["avant tout autre", "toutes les pages", "inventory.json", "archive"],
     4: ["variation_deg", "heading_offset_deg", "COG", "AWA", "BSP", "TWD", "true_wind_source",
-        "au moteur", "Pitfall 4"],
+        "Au moteur", "Pitfall 4"],
     5: ["mode avion", "unsafely-treat-insecure-origin-as-secure", "Stay awake", "luminosité",
         "verrou", "support 3D", "Pitfall 17"],
     6: ["ICON-EU", "EWAM", "Overpass", "organisateur", "racepack-dryrun.sh", "COUVERTURE",
@@ -69,7 +70,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "jabuka-replay": ("jabuka.sim.pty_replay", "build_arg_parser"),
     "jabuka-sim": ("jabuka.sim.synth", "build_arg_parser"),
     "jabuka-logcheck": ("jabuka.tools.logcheck", "build_arg_parser"),
-    "jabuka-prep": ("jabuka.prep.cli", "build_parser"),
+    "jabuka-prep": ("jabuka.prep.cli", ""),  # main(): build_parser(), or land.main for "land"
     "jabuka-route-bench": ("jabuka.route.bench", ""),  # parser built inside main()
     "jabuka-core": ("jabuka.core.main", "build_arg_parser"),
     "jabuka-ingest-fastnet": ("jabuka.ingest.fastnet_main", "build_arg_parser"),

@@ -20,7 +20,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import os
 import random
+import re
 import shutil
 import signal
 import socket
@@ -31,8 +34,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -415,6 +420,684 @@ def step_logcheck(ctx: Context) -> Result:
     )
 
 
+# -- §1 before leaving home --------------------------------------------------------------------
+def _norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def lock_pins(lock: Path) -> dict[str, str]:
+    """name (PEP 503 normalised) -> pinned version, from a uv-compiled requirements lock."""
+    pins: dict[str, str] = {}
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;]+)", line)
+        if m:
+            pins[_norm(m.group(1))] = m.group(2)
+    return pins
+
+
+def wheelhouse_problems(lock: Path, wheelhouse: Path) -> list[str]:
+    """Same rule as scripts/build-wheelhouse.sh: exactly one wheel per pin, at the pinned version,
+    plus one jabuka wheel."""
+    if not wheelhouse.is_dir():
+        return [f"{wheelhouse} absent"]
+    by_name: dict[str, list[str]] = {}
+    for w in sorted(wheelhouse.glob("*.whl")):
+        name, version = w.name.split("-")[:2]
+        by_name.setdefault(_norm(name), []).append(version)
+    bad = []
+    for name, version in sorted(lock_pins(lock).items()):
+        found = by_name.get(name, [])
+        if found != [version]:
+            bad.append(f"{name}=={version} : trouvé {found}")
+    if len(by_name.get("jabuka", [])) != 1:
+        bad.append("il faut exactement une roue jabuka-*.whl")
+    return bad
+
+
+def step_wheelhouse(ctx: Context) -> Result:
+    lock = REPO / "deploy" / "requirements.lock"
+    wh = REPO / "deploy" / "wheelhouse"
+    bad = wheelhouse_problems(lock, wh)
+    if bad:
+        return Result(FAIL, f"{'; '.join(bad[:4])} -> bash scripts/build-wheelhouse.sh")
+    return Result(PASS, f"{len(lock_pins(lock))} paquets verrouillés, une roue chacun + jabuka")
+
+
+def latest_soak_report(soak_dir: Path, scenario: str = "race-36h") -> tuple[Path, dict] | None:
+    best: tuple[str, Path, dict] | None = None
+    for path in soak_dir.glob("*/report.json"):
+        try:
+            rep = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rep, dict) or rep.get("scenario") != scenario:
+            continue
+        key = path.parent.name  # <UTC ts>-<scenario>: sorts by time
+        if best is None or key > best[0]:
+            best = (key, path, rep)
+    return None if best is None else (best[1], best[2])
+
+
+def step_soak(ctx: Context) -> Result:
+    found = latest_soak_report(REPO / "var" / "soak")
+    if found is None:
+        return Result(
+            HUMAN,
+            "aucun rapport race-36h dans var/soak : bash scripts/soak.sh "
+            "(docs/SOAK.md), puis le même essai sur le Pi",
+        )
+    path, rep = found
+    host = (rep.get("host") or {}).get("machine")
+    head = ((rep.get("git") or {}).get("head") or "?")[:10]
+    detail = f"{path.relative_to(REPO)} : {rep.get('verdict')} ({host}, code {head})"
+    return Result(PASS if rep.get("verdict") == "PASS" else FAIL, detail)
+
+
+# -- the synthetic boat (§4–§8) ----------------------------------------------------------------
+BOAT_START_UTC = datetime(2026, 11, 13, 18, 0, 0, tzinfo=UTC)
+BOAT_TWD, BOAT_TWS, BOAT_TWA = 161.0, 12.0, 45.0  # starboard tack, true heading 116
+BOAT_SPEED = 10.0  # sim seconds per real second
+PLIC = (43.684627, 15.811626)
+# bus-silent windows (sim seconds after the synth starts), placed after §6/§7 have run
+GRIB_WINDOW = (900.0, 200.0)
+MANUAL_WINDOW = (1300.0, 400.0)
+ROUTE_DEADLINE_S = 60.0
+DRILL_BUDGET_S = 30.0
+MASK = REPO / "tests" / "fixtures" / "route" / "landmask_race_25m"
+
+
+class StackError(Exception):
+    pass
+
+
+def angle_diff(a: float, b: float) -> float:
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def reset_pty_termios(link: Path) -> None:
+    """A pty silently drops PARENB, so a pty left at 28800 makes the restarted ingest's
+    tcsetattr fail (glibc >= 2.42); a real UART keeps PARENB. Put the pty back to its fresh
+    38400 state before restarting the ingest on the same pty (tests/deploy/test_crash_recovery)."""
+    import termios
+
+    fd = os.open(link, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        attrs = termios.tcgetattr(fd)
+        cbaud = termios.CBAUD | (termios.CBAUD << 16)
+        attrs[2] = (attrs[2] & ~cbaud) | termios.B38400
+        attrs[4] = attrs[5] = termios.B38400
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    finally:
+        os.close(fd)
+
+
+def write_boat_pack(pack: Path, start: datetime) -> Path:
+    """Rehearsal race pack: the committed 25 m land mask plus a uniform wind (the synth's wind)
+    covering start - 1 day .. start + 3 days, written with the race-pack writer."""
+    import numpy as np
+
+    from jabuka.common.units import kn_to_ms
+    from jabuka.prep.wxpack import write_npz
+
+    pack.mkdir(parents=True, exist_ok=True)
+    for suffix in (".npz", ".json"):
+        src = MASK.with_suffix(suffix)
+        if not src.is_file():
+            raise StackError(f"masque terre de test absent : {src}")
+        shutil.copyfile(src, pack / f"landmask{suffix}")
+    t0 = int(start.timestamp()) - 86400
+    t = np.arange(t0, t0 + 4 * 86400 + 1, 3600, dtype=np.int64)
+    lat = np.arange(42.5, 44.3, 0.25, dtype=np.float64)
+    lon = np.arange(14.75, 16.6, 0.25, dtype=np.float64)
+    ms = kn_to_ms(BOAT_TWS)
+    u = -ms * math.sin(math.radians(BOAT_TWD))
+    v = -ms * math.cos(math.radians(BOAT_TWD))
+    shape = (t.size, lat.size, lon.size)
+    arrays = {
+        "t": t,
+        "lat": lat,
+        "lon": lon,
+        "u": np.full(shape, u, np.float32),
+        "v": np.full(shape, v, np.float32),
+        "model": "uniform",
+        "run": start.strftime("%Y-%m-%dT%H:%MZ"),
+    }
+    return write_npz(
+        pack, "wind", arrays, {"source": "rehearsal", "model": "uniform", "run": "rehearsal"}
+    )
+
+
+class BoatStack:
+    """jabuka-sim (pty, fake gpsd) -> jabuka-ingest-fastnet -> jabuka-core (--clock sim, the
+    synth's gpsd, the rehearsal race pack). Started once, on the first step that needs it."""
+
+    def __init__(self, ctx: Context) -> None:
+        self.ctx = ctx
+        self.dir = ctx.out / "boat"
+        self.data = self.dir / "data"
+        self.pack = self.dir / "racepack"
+        self.link = self.dir / "fastnet-pty"
+        self.http = free_port()
+        self.udp = free_port(socket.SOCK_DGRAM)
+        self.gpsd = free_port()
+        self.base = f"http://127.0.0.1:{self.http}"
+        self.client = httpx.Client(base_url=self.base, timeout=5.0)
+        self.core: subprocess.Popen | None = None
+        self.ingest: subprocess.Popen | None = None
+        self.synth: subprocess.Popen | None = None
+        self.variation = 0.0
+        self.start_epoch = BOAT_START_UTC.timestamp()
+        self.restarts = 0
+
+    # -- processes ---------------------------------------------------------------------------
+    def _core_args(self) -> list[str]:
+        return [
+            "--http-host",
+            "127.0.0.1",
+            "--http-port",
+            str(self.http),
+            "--udp-port",
+            str(self.udp),
+            "--data-dir",
+            str(self.data),
+            "--racepack",
+            str(self.pack),
+            "--clock",
+            "sim",
+            "--gpsd",
+            f"127.0.0.1:{self.gpsd}",
+        ]
+
+    def _ingest_args(self) -> list[str]:
+        return [
+            "--device",
+            str(self.link),
+            "--udp",
+            f"127.0.0.1:{self.udp}",
+            "--data-dir",
+            str(self.data),
+        ]
+
+    def _spawn_core(self) -> None:
+        self.restarts += 1
+        self.core = self.ctx.spawn(
+            f"boat-core-{self.restarts}", "jabuka.core.main", *self._core_args()
+        )
+        if not wait_for(lambda: self.client.get("/api/course").status_code == 200, 30, 0.1):
+            raise StackError("jabuka-core ne répond pas sur /api/course")
+
+    def _spawn_ingest(self) -> None:
+        self.ingest = self.ctx.spawn(
+            f"boat-ingest-{self.restarts}", "jabuka.ingest.fastnet_main", *self._ingest_args()
+        )
+
+    def start(self) -> None:
+        from jabuka.nav import geo
+
+        self.dir.mkdir(parents=True, exist_ok=True)
+        write_boat_pack(self.pack, BOAT_START_UTC)
+        self._spawn_core()
+        self.variation = float(self.client.get("/api/settings").json()["settings"]["variation_deg"])
+        lat, lon = geo.offset(*PLIC, math.radians(341.0), 1.5)
+        faults = [
+            f"bus-silent@{GRIB_WINDOW[0]:g}+{GRIB_WINDOW[1]:g}",
+            f"bus-silent@{MANUAL_WINDOW[0]:g}+{MANUAL_WINDOW[1]:g}",
+        ]
+        self.synth = self.ctx.spawn(
+            "boat-synth",
+            "jabuka.sim.synth",
+            "--mode",
+            "pty",
+            "--link",
+            str(self.link),
+            "--speed",
+            f"{BOAT_SPEED:g}",
+            "--duration",
+            "36000",
+            "--twd",
+            f"{BOAT_TWD:g}",
+            "--tws",
+            f"{BOAT_TWS:g}",
+            "--twa",
+            f"{BOAT_TWA:g}",
+            "--start",
+            f"{lat:.6f},{lon:.6f}",
+            "--start-utc",
+            BOAT_START_UTC.isoformat(),
+            "--variation",
+            f"{self.variation:g}",
+            "--gpsd-port",
+            str(self.gpsd),
+            "--wait-reader",
+            "30",
+            "--seed",
+            "1",
+            *[x for f in faults for x in ("--fault", f)],
+        )
+        if not wait_for(self.link.is_symlink, 15):
+            raise StackError("jabuka-sim n'a pas créé le pty")
+        self._spawn_ingest()
+        if not self.wait_source("LIVE", 30):
+            raise StackError(f"pas de vent LIVE après 30 s : {self.nav().get('wind')}")
+
+    def stop(self) -> None:
+        for proc in (self.ingest, self.core, self.synth):
+            self.ctx.stop(proc)
+        self.client.close()
+
+    def power_pull(self) -> float:
+        """SIGKILL ingest + core (the Pi losing power), then restart both from the data dir.
+        Returns the seconds until the core answers again."""
+        self.ctx.stop(self.ingest, signal.SIGKILL)
+        self.ctx.stop(self.core, signal.SIGKILL)
+        t0 = time.monotonic()
+        reset_pty_termios(self.link)
+        self._spawn_core()
+        self._spawn_ingest()
+        return time.monotonic() - t0
+
+    # -- HTTP --------------------------------------------------------------------------------
+    def nav(self) -> dict:
+        return self.client.get("/api/nav").json()
+
+    def fastnet_rows(self) -> dict[str, dict]:
+        vals = self.client.get("/api/state").json()["values"]
+        return {v["path"]: v for v in vals if v.get("src") == "fastnet"}
+
+    def sim_t(self) -> float | None:
+        utc = self.nav().get("utc")
+        if not utc:
+            return None
+        return datetime.fromisoformat(utc.replace("Z", "+00:00")).timestamp() - self.start_epoch
+
+    def wait_sim(self, t: float) -> float | None:
+        """Wait until the synth's clock reaches t sim seconds (bounded by the real time left)."""
+        now = self.sim_t() or 0.0
+        timeout = max(0.0, t - now) / BOAT_SPEED + 30.0
+        return wait_for(lambda: (self.sim_t() or 0.0) >= t and (self.sim_t() or 0.0), timeout, 0.2)
+
+    def wait_source(self, source: str, timeout: float) -> dict | None:
+        def ok() -> dict | None:
+            nav = self.nav()
+            return nav if (nav.get("wind") or {}).get("source") == source else None
+
+        return wait_for(ok, timeout, 0.1)
+
+
+def boat(ctx: Context) -> BoatStack:
+    err = ctx.cache.get("boat_error")
+    if err is not None:
+        raise StackError(f"bateau de synthèse indisponible : {err}")
+    stack = ctx.cache.get("boat")
+    if stack is None:
+        stack = BoatStack(ctx)
+        ctx.cache["boat"] = stack
+        try:
+            stack.start()
+        except Exception as e:
+            ctx.cache["boat_error"] = str(e)
+            raise StackError(f"bateau de synthèse indisponible : {e}") from e
+    return stack
+
+
+def boat_step(fn: Callable[[Context, BoatStack], Result]) -> Callable[[Context], Result]:
+    def wrapped(ctx: Context) -> Result:
+        try:
+            return fn(ctx, boat(ctx))
+        except StackError as e:
+            return Result(FAIL, str(e))
+
+    return wrapped
+
+
+def _settled(b: BoatStack) -> tuple[dict, dict[str, dict]]:
+    nav = b.wait_source("LIVE", 30)
+    if nav is None:
+        raise StackError(f"vent pas LIVE : {b.nav().get('wind')}")
+    time.sleep(1.0)  # one more second of filtered values
+    return b.nav(), b.fastnet_rows()
+
+
+# -- §4 instrument checks ----------------------------------------------------------------------
+def step_variation(ctx: Context, b: BoatStack) -> Result:
+    nav, rows = _settled(b)
+    hdg_t = (nav.get("boat") or {}).get("hdg_t")
+    row = rows.get("navigation.heading")
+    if hdg_t is None or row is None:
+        return Result(FAIL, f"cap absent (nav {hdg_t}, bus {row})")
+    hdg_m = math.degrees(row["value"]) % 360.0
+    bus_t = (hdg_m + b.variation) % 360.0
+    exp_t = (BOAT_TWD - BOAT_TWA) % 360.0
+    d1, d2 = angle_diff(hdg_t, bus_t), angle_diff(hdg_t, exp_t)
+    detail = (
+        f"cap bus {hdg_m:.1f}°{row.get('ref')} + variation {b.variation:g}° = {bus_t:.1f}°T,"
+        f" nav {hdg_t:.1f}°T, bateau {exp_t:.1f}°T (écarts {d1:.1f}° / {d2:.1f}°)"
+    )
+    ok = row.get("ref") == "M" and d1 <= 1.0 and d2 <= 1.0
+    return Result(PASS if ok else FAIL, detail)
+
+
+def step_cog_hdg(ctx: Context, b: BoatStack) -> Result:
+    nav, _ = _settled(b)
+    bt = nav.get("boat") or {}
+    hdg, cog = bt.get("hdg_t"), bt.get("cog_t")
+    if hdg is None or cog is None:
+        return Result(FAIL, f"cap {hdg} / COG {cog} absent")
+    d = angle_diff(hdg, cog)
+    return Result(
+        PASS if d <= 3.0 else FAIL,
+        f"COG {cog:.1f}°T, cap vrai {hdg:.1f}°T : écart {d:.1f}° (≤ 3°, sans courant)",
+    )
+
+
+def step_awa_sign(ctx: Context, b: BoatStack) -> Result:
+    nav, rows = _settled(b)
+    awa = rows.get("environment.wind.angleApparent")
+    twa = (nav.get("wind") or {}).get("twa")
+    if awa is None or twa is None:
+        return Result(FAIL, f"AWA {awa} / TWA {twa} absent")
+    awa_deg = math.degrees(awa["value"])
+    ok = awa_deg > 0 and twa > 0
+    return Result(
+        PASS if ok else FAIL,
+        f"tribord amures (TWA +{BOAT_TWA:g}) → AWA {awa_deg:+.0f}°, "
+        f"TWA nav {twa:+.0f}° (convention : + = vent sur tribord)",
+    )
+
+
+def step_twd(ctx: Context, b: BoatStack) -> Result:
+    nav, rows = _settled(b)
+    twd = (nav.get("wind") or {}).get("twd_t")
+    if twd is None:
+        return Result(FAIL, "TWD calculé absent")
+    d = angle_diff(twd, BOAT_TWD)
+    parts = [f"TWD calculé {twd:.1f}°T contre {BOAT_TWD:g}°T scripté : écart {d:.1f}° (≤ 5°)"]
+    ok = d <= 5.0
+    inst = rows.get("environment.wind.direction")
+    if inst is None:
+        parts.append(
+            "moitié instrument SKIP : le bateau de synthèse n'émet pas le canal TWD "
+            "0x6D (à comparer à bord, R4.underway)"
+        )
+    else:
+        from jabuka.common.units import wrap_2pi
+
+        ref = inst.get("ref")
+        tw = math.degrees(inst["value"]) + (b.variation if ref != "T" else 0.0)
+        di = angle_diff(math.degrees(wrap_2pi(math.radians(tw))), twd)
+        parts.append(f"TWD instrument {tw % 360:.1f}°T : écart {di:.1f}°")
+        ok = ok and di <= 5.0
+    return Result(PASS if ok else FAIL, " ; ".join(parts))
+
+
+# -- §5 tablet ---------------------------------------------------------------------------------
+class _Assets(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        for key in ("src", "href"):
+            url = a.get(key)
+            if url and tag in ("script", "link", "img", "source", "iframe", "audio", "video"):
+                self.urls.append(url)
+
+
+def step_offline(ctx: Context, b: BoatStack) -> Result:
+    r = b.client.get("/")
+    if r.status_code != 200:
+        return Result(FAIL, f"GET / -> {r.status_code}")
+    parser = _Assets()
+    parser.feed(r.text)
+    external = []
+    broken = []
+    for url in parser.urls:
+        parts = urlsplit(url)
+        if parts.scheme in ("http", "https", "") and parts.netloc not in (
+            "",
+            f"127.0.0.1:{b.http}",
+        ):
+            external.append(url)
+            continue
+        if parts.scheme in ("data", "blob"):
+            continue
+        got = b.client.get(urljoin(b.base + "/", url))
+        if got.status_code != 200:
+            broken.append(f"{url} ({got.status_code})")
+    if external or broken:
+        return Result(FAIL, f"externes {external[:5]}, absents {broken[:5]}")
+    return Result(
+        PASS,
+        f"{len(parser.urls)} ressources de la page, toutes servies par le Pi (aucun hôte externe)",
+    )
+
+
+# -- §6 race pack ------------------------------------------------------------------------------
+def step_pack(ctx: Context, b: BoatStack) -> Result:
+    t0 = time.monotonic()
+
+    def adopted() -> dict | None:
+        route = b.nav().get("route") or {}
+        ok = (route.get("version") or 0) >= 1 and (route.get("pack") or {}).get("ok")
+        return route if ok else None
+
+    route = wait_for(adopted, ROUTE_DEADLINE_S, 0.25)
+    dt = time.monotonic() - t0
+    if route is None:
+        last = b.nav().get("route") or {}
+        return Result(
+            FAIL,
+            f"pas de route en {ROUTE_DEADLINE_S:.0f} s : état "
+            f"{last.get('state')}, {last.get('reason')}",
+        )
+    pack = route.get("pack") or {}
+    return Result(
+        PASS,
+        f"route version {route['version']} adoptée en {dt:.1f} s (état "
+        f"{route.get('state')}, pack {pack.get('model')} ok)",
+    )
+
+
+def step_dryrun(ctx: Context) -> Result:
+    if not ctx.online:
+        return Result(SKIP, "hors ligne (--online lance scripts/racepack-dryrun.sh)")
+    proc = subprocess.run(
+        ["bash", "scripts/racepack-dryrun.sh"],
+        cwd=REPO,
+        env={**os.environ, "PY": sys.executable},
+        capture_output=True,
+        text=True,
+        timeout=3600,
+    )
+    with open(ctx.log_path("racepack-dryrun"), "w", encoding="utf-8") as f:
+        f.write(proc.stdout + proc.stderr)
+    last = [x for x in (proc.stdout + proc.stderr).splitlines() if x.strip()]
+    return Result(
+        PASS if proc.returncode == 0 else FAIL,
+        f"racepack-dryrun code {proc.returncode} : {last[-1] if last else ''}",
+    )
+
+
+# -- §7 course ---------------------------------------------------------------------------------
+def step_drill(ctx: Context, b: BoatStack) -> Result:
+    """Course-change drill, as the tablet does it (each change carries base_version): switch to
+    the other template, "Finir ici" at the last mark, cancel it, "Côtés confirmés", back."""
+    course = b.client.get("/api/course").json()
+    first = course["template"]
+    other = "B" if first == "A" else "A"
+    v = course["version"]
+    done: list[str] = []
+    t0 = time.monotonic()
+
+    def call(label: str, path: str, body: dict) -> dict:
+        nonlocal v
+        r = b.client.post(path, json={**body, "base_version": v})
+        if r.status_code != 200:
+            raise StackError(f"{label} : HTTP {r.status_code} {r.text[:120]}")
+        new = r.json()
+        if new.get("version", -1) <= v:
+            raise StackError(f"{label} : version {new.get('version')} pas plus récente que {v}")
+        v = new["version"]
+        done.append(label)
+        return new
+
+    try:
+        c = call(f"parcours {other}", "/api/course/select", {"template": other})
+        last = len(c["seq"]) - 2  # the last mark before the finish
+        name = c["marks"][c["seq"][last]["mark_id"]]["name"]
+        call(f"Finir ici à {name}", "/api/course/finish", {"idx": last})
+        call("Finir ici annulé", "/api/course/finish", {"idx": None})
+        call("Côtés confirmés", "/api/course/confirm-sides", {})
+        call(f"parcours {first}", "/api/course/select", {"template": first})
+    except StackError as e:
+        return Result(FAIL, f"{e} (fait : {', '.join(done)})")
+    dt = time.monotonic() - t0
+    ok = dt < DRILL_BUDGET_S
+    return Result(
+        PASS if ok else FAIL,
+        f"{' → '.join(done)} en {dt:.2f} s (< {DRILL_BUDGET_S:.0f} s), version {v}",
+    )
+
+
+# -- §8 degraded-mode drills -------------------------------------------------------------------
+def _window_reachable(b: BoatStack, window: tuple[float, float]) -> str | None:
+    now = b.sim_t() or 0.0
+    if now > window[0] + window[1] - 30.0:
+        return (
+            f"fenêtre bus muet {window[0]:g}+{window[1]:g} s déjà passée (t = {now:.0f} s) : "
+            "les étapes précédentes ont été trop lentes"
+        )
+    return None
+
+
+def step_gribonly(ctx: Context, b: BoatStack) -> Result:
+    start, dur = GRIB_WINDOW
+    late = _window_reachable(b, GRIB_WINDOW)
+    if late:
+        return Result(FAIL, late)
+    b.wait_sim(start)
+    grib = wait_for(
+        lambda: b.sim_t() < start + dur and b.wait_source("GRIB", 0.1), dur / BOAT_SPEED
+    )
+    if not grib:
+        return Result(FAIL, f"pendant le bus muet la source reste {b.nav().get('wind')}")
+    w = grib.get("wind") or {}
+    alerts = [a for a in grib.get("alerts", []) if "GRIB" in a]
+    b.wait_sim(start + dur)
+    live = b.wait_source("LIVE", 30)
+    if live is None:
+        return Result(FAIL, f"après le bus muet, pas de retour LIVE : {b.nav().get('wind')}")
+    return Result(
+        PASS,
+        f"bus muet → GRIB (TWD {w.get('twd_t')}°T, {w.get('tws_kn')} nd, alerte "
+        f"{alerts[:1]}) → LIVE au retour du bus",
+    )
+
+
+def step_manual(ctx: Context, b: BoatStack) -> Result:
+    start, dur = MANUAL_WINDOW
+    late = _window_reachable(b, MANUAL_WINDOW)
+    if late:
+        return Result(FAIL, late)
+    b.wait_sim(start)
+    before = b.wait_source("GRIB", 30)
+    if before is None:
+        return Result(FAIL, f"bus muet sans source GRIB : {b.nav().get('wind')}")
+    prev = before["wind"]["source"]
+    twd_m, tws = 150.0, 14.0
+    r = b.client.post("/api/wind/manual", json={"twd": twd_m, "tws_kn": tws, "ref": "M"})
+    if r.status_code != 200:
+        return Result(FAIL, f"POST /api/wind/manual -> {r.status_code} {r.text[:120]}")
+    man = b.wait_source("MANUEL", 10)
+    if man is None:
+        return Result(FAIL, f"vent manuel saisi, source {b.nav().get('wind')}")
+    twd_t = man["wind"].get("twd_t")
+    exp = (twd_m + b.variation) % 360.0
+    if twd_t is None or angle_diff(twd_t, exp) > 1.0:
+        return Result(FAIL, f"MANUEL TWD {twd_t}°T, attendu {exp:.1f}°T ({twd_m:g}°M + var)")
+    r = b.client.delete("/api/wind/manual")
+    back = b.wait_source(prev, 10) if r.status_code == 200 else None
+    if back is None:
+        return Result(
+            FAIL,
+            f"vent manuel effacé (HTTP {r.status_code}), source "
+            f"{b.nav().get('wind')} au lieu de {prev}",
+        )
+    return Result(
+        PASS, f"{prev} → saisie {twd_m:g}°M {tws:g} nd → MANUEL {twd_t:.1f}°T → effacé → {prev}"
+    )
+
+
+def step_stay(ctx: Context, b: BoatStack) -> Result:
+    def stay(active: bool) -> dict | None:
+        r = b.client.post("/api/route/stay", json={"active": active})
+        if r.status_code != 200:
+            return None
+        nav = r.json()
+        got = ((nav.get("route") or {}).get("stay") or {}).get("active")
+        return nav if got is active else None
+
+    on = wait_for(lambda: stay(True), 30, 0.5)
+    if on is None:
+        r = b.client.post("/api/route/stay", json={"active": True})
+        return Result(FAIL, f"ON RESTE refusé : HTTP {r.status_code} {r.text[:120]}")
+    tack = on["route"]["stay"].get("tack")
+    off = stay(False)
+    if off is None:
+        return Result(FAIL, "ANNULER ON RESTE sans effet")
+    return Result(PASS, f"ON RESTE actif (bord {tack}) → ANNULER ON RESTE : inactif")
+
+
+def step_powerpull(ctx: Context, b: BoatStack) -> Result:
+    b.wait_sim(MANUAL_WINDOW[0] + MANUAL_WINDOW[1])  # the bus talks again
+    s = b.client.get("/api/settings").json()
+    r = b.client.put(
+        "/api/settings", json={"base_version": s["version"], "patch": {"efficiency": 0.9}}
+    )
+    if r.status_code != 200:
+        return Result(FAIL, f"PUT /api/settings -> {r.status_code}")
+    b.client.post("/api/wind/manual", json={"twd": 200.0, "tws_kn": 10.0, "ref": "T"})
+    snap = {k: b.client.get(f"/api/{k}").json() for k in ("course", "settings", "wind/manual")}
+    if not snap["wind/manual"].get("manual"):
+        return Result(FAIL, "vent manuel non enregistré avant la coupure")
+    dt = b.power_pull()
+    after = {k: b.client.get(f"/api/{k}").json() for k in snap}
+    diff = [k for k in snap if snap[k] != after[k]]
+    live = wait_for(lambda: "environment.wind.angleApparent" in b.fastnet_rows(), 30, 0.2)
+    b.client.delete("/api/wind/manual")
+    code, text = ctx.run("boat-logcheck", "jabuka.tools.logcheck", str(b.data / "logs"))
+    problems = []
+    if diff:
+        problems.append(f"différent après redémarrage : {diff}")
+    if not live:
+        problems.append("pas de données du bus après redémarrage")
+    if code != 0:
+        problems.append(f"jabuka-logcheck code {code}")
+    if problems:
+        return Result(FAIL, "; ".join(problems))
+    return Result(
+        PASS,
+        f"kill -9 ingest + cœur, redémarrage en {dt:.1f} s : parcours, réglages et "
+        "vent manuel identiques, bus de retour, jabuka-logcheck OK",
+    )
+
+
+# -- §9 go / no-go -----------------------------------------------------------------------------
+def step_summary(ctx: Context) -> Result:
+    counts = {
+        k: [sid for sid, r in ctx.results.items() if r.status == k]
+        for k in (PASS, FAIL, SKIP, HUMAN)
+    }
+    text = (
+        f"{len(counts[PASS])} PASS, {len(counts[FAIL])} FAIL, {len(counts[SKIP])} SKIP, "
+        f"{len(counts[HUMAN])} HUMAN"
+    )
+    if counts[FAIL]:
+        return Result(FAIL, f"{text} ; en échec : {', '.join(counts[FAIL])} -> pas de GO technique")
+    return Result(PASS, f"{text} ; répétition sans échec (les HUMAN se font à bord)")
+
+
 # -- the registry ------------------------------------------------------------------------------
 def _human(sid: str, section: int, title: str, expected: str, quick: bool = False) -> Step:
     return Step(sid, section, title, "human", quick, expected)
@@ -432,6 +1115,18 @@ def _auto(
 
 
 STEPS: tuple[Step, ...] = (
+    # §1 Avant de partir (maison)
+    _human(
+        "R1.packing",
+        1,
+        "Sac de bord",
+        "Liste de colisage du §1 cochée : Pi en boîtier, SD de secours étiquetée, DTECH et "
+        "faisceau, VK-162, câbles USB et alimentation, convertisseur 12 V→USB (≥ 3 A), fusibles, "
+        "outils, tablette + chargeur + support 3D, portable + chargeur, clé USB (pack, archive), "
+        "carte du parcours et runbook imprimés",
+    ),
+    _auto("R1.wheelhouse", 1, "Wheelhouse complète", step_wheelhouse, False),
+    _auto("R1.soak", 1, "Endurance race-36h", step_soak, False),
     # §2 Câblage du bus Fastnet
     _human(
         "R2.wiring",
@@ -463,6 +1158,84 @@ STEPS: tuple[Step, ...] = (
     _auto("R3.archive", 3, "Archive de la capture", step_archive, True),
     _auto("R3.replay", 3, "Rejeu propre dans la chaîne", step_replay, True),
     _auto("R3.logcheck", 3, "Journaux du rejeu intacts", step_logcheck, True),
+    # §4 Contrôles des instruments
+    _auto(
+        "R4.variation", 4, "Cap magnétique + variation = cap vrai", boat_step(step_variation), True
+    ),
+    _auto("R4.cog_hdg", 4, "COG contre cap vrai", boat_step(step_cog_hdg), True),
+    _auto("R4.awa_sign", 4, "Signe de l'AWA", boat_step(step_awa_sign), True),
+    _auto("R4.twd", 4, "TWD calculé contre scripté", boat_step(step_twd), True),
+    _human(
+        "R4.dock",
+        4,
+        "Contrôles au port / au moteur",
+        "Au moteur en eau calme, cap stable : Diag cap vrai (cap °M + variation_deg) contre COG "
+        "GPS, écart < 3° (sinon heading_offset_deg ou variation_deg) ; signe de l'AWA : vent sur "
+        "tribord = AWA positif (sinon --awa-sign -1 par drop-in) ; BSP contre SOG à l'étale",
+        quick=True,
+    ),
+    _human(
+        "R4.underway",
+        4,
+        "Contrôles sous voiles",
+        "Sur les deux bords : TWD Hercules contre TWD calculé (Diag, écart < 10°), symétrie "
+        "bâbord/tribord du TWD, laylines plausibles ; choisir true_wind_source (computed par "
+        "défaut, instrument si le TWD Hercules est plus stable) (02-UAT #8)",
+        quick=True,
+    ),
+    # §5 Tablette
+    _auto("R5.offline", 5, "Page de barre sans internet", boat_step(step_offline), True),
+    _human(
+        "R5.setup",
+        5,
+        "Réglage de la tablette",
+        "TABLET-SETUP §1–§8 faits : réseau jabuka, mode avion + Wi-Fi, drapeau Chrome "
+        "(ÉCRAN: verrou), Stay awake, plein écran, carte, mode nuit, verrouillage ; 02-UAT #1–#4 "
+        "cochés ; tablette fixée dans le support 3D à la barre",
+    ),
+    # §6 Pack de course
+    _auto("R6.pack", 6, "Route adoptée sur le pack", boat_step(step_pack), False),
+    _auto("R6.dryrun", 6, "Répétition du pack réel", step_dryrun, False),
+    _human(
+        "R6.friday",
+        6,
+        "Pack final du vendredi",
+        "WEATHER-PACK.md « Checklist vendredi 13 novembre » après ≈ 15:40 UTC : ICON-EU et EWAM du "
+        "run 12Z, COUVERTURE MÉTÉO : OK, copie au Pi, redémarrage de jabuka-core, route visible "
+        "sur la tablette en moins de 1 min",
+    ),
+    # §7 Parcours
+    _auto("R7.drill", 7, "Changement de parcours", boat_step(step_drill), True),
+    _human(
+        "R7.si",
+        7,
+        "Parcours d'après les IC",
+        "À l'inscription (13 nov. 12:00–18:00) : côtés de passage et ligne de départ/arrivée "
+        "d'après les IC, demande sur l'électronique autorisée ; sur la tablette : parcours, côtés, "
+        "« Côtés confirmés » ; exercice de changement de parcours en moins de 30 s (02-UAT #6)",
+    ),
+    # §8 Exercices en mode dégradé
+    _auto("R8.gribonly", 8, "Bus muet → GRIB", boat_step(step_gribonly), False),
+    _auto("R8.manual", 8, "Vent manuel", boat_step(step_manual), False),
+    _auto("R8.stay", 8, "ON RESTE", boat_step(step_stay), False),
+    _auto("R8.powerpull", 8, "Coupure d'alimentation", boat_step(step_powerpull), False),
+    _human(
+        "R8.boat",
+        8,
+        "Exercices à bord",
+        "DTECH débranché : badge GRIB puis saisie du TWD/TWS lus sur le B&G (°M) → MANUEL ; "
+        "ON RESTE puis ANNULER ON RESTE ; coupure d'alimentation du Pi : tout revient en ~2 min "
+        "avec le même parcours (01-UAT #7, 02-UAT #9)",
+    ),
+    _human(
+        "R8.sdswap",
+        8,
+        "Échange de carte SD",
+        "SPARE-SD.md « Échange de carte en mer » : éteindre, changer de carte, rallumer, la "
+        "tablette se reconnecte, recopier le pack, re-sélectionner le parcours, vérifier réglages",
+    ),
+    # §9 Go / no-go et plans B
+    _auto("R9.summary", 9, "Bilan go / no-go", step_summary, True),
 )
 
 
@@ -502,6 +1275,9 @@ def run_steps(ctx: Context, steps: list[Step], echo: Callable[[str], None] = pri
             ctx.cache.setdefault("durations", {})[step.id] = round(time.monotonic() - t0, 1)
             echo(format_line(step, res))
     finally:
+        stack = ctx.cache.get("boat")
+        if stack is not None:
+            stack.stop()
         ctx.stop_all()
     return 1 if any(r.status == FAIL for r in ctx.results.values()) else 0
 
