@@ -217,8 +217,11 @@ def test_static_modules_parse(tmp_path: Path) -> None:
         "lock-overlay",
         "primary",
         "primary-label",
-        "helm-top",
-        "helm-bottom",
+        "helm-col",  # quick 002: the helm column and its three blocks
+        "helm-steer",
+        "helm-route",
+        "helm-rest",
+        "helm-countdown",
     ):
         assert f'id="{dom_id}"' in html, dom_id
     for tab in ("barre", "carte", "reglages", "diag"):

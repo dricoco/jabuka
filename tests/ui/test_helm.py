@@ -1,7 +1,8 @@
 """The Barre view in a real browser (HELM-02): the primary number fills >= 20% of the screen in
-landscape and portrait, every control is >= 48 px, the bands carry every number and badge from a
-live feed, frozen data is never shown as live, and the map turns course-up / north-up and follows
-the boat (HELM-01)."""
+landscape (1280x800, 1024x600, in the left column of quick 002) and portrait, every control is
+>= 48 px, the helm blocks carry every number and badge from a live feed, frozen data is never
+shown as live, and the map turns course-up / north-up and follows the boat in the middle of its
+visible part (HELM-01; the map padding of quick 002)."""
 
 from __future__ import annotations
 
@@ -25,15 +26,19 @@ SIZES_JS = """() => {
           innerW: window.innerWidth, count: document.querySelectorAll(sel).length};
 }"""
 
+# the boat's offset from the centre of the visible map (the container minus the padding the
+# helm column covers), as a fraction of the visible size
 BOAT_OFFSET_JS = """() => {
   const m = window.jabuka.map;
   const nav = window.jabuka.lastNav;
   if (!nav || !nav.boat) return null;
   const p = m.project([nav.boat.lon, nav.boat.lat]);
   const c = m.getContainer();
-  return {dx: Math.abs(p.x - c.clientWidth / 2) / c.clientWidth,
-          dy: Math.abs(p.y - c.clientHeight / 2) / c.clientHeight,
-          lat: nav.boat.lat};
+  const pad = m.getPadding();
+  const w = c.clientWidth - pad.left - pad.right, h = c.clientHeight - pad.top - pad.bottom;
+  return {dx: Math.abs(p.x - (pad.left + w / 2)) / w,
+          dy: Math.abs(p.y - (pad.top + h / 2)) / h,
+          lat: nav.boat.lat, padLeft: pad.left};
 }"""
 
 
@@ -61,16 +66,17 @@ def test_bands_sizes_and_numbers(page, feeder) -> None:
         timeout=15000,
     )
     assert pg.locator("#primary-label").inner_text() == "TWA CIBLE ↑"
-    bottom = pg.locator("#helm-bottom").inner_text()
-    assert "nds" in bottom and "/" in bottom  # BSP / target BSP
-    assert "%" in bottom  # % polar
-    assert "Plić Sestre" in bottom and "nm" in bottom and "min" in bottom
-    assert "Autre bord" in bottom and "°M" in bottom
+    rest = pg.locator("#helm-rest").inner_text()  # block 3
+    assert "nds" in rest and "/" in rest  # BSP / target BSP
+    assert "%" in rest  # % polar
+    assert "Plić Sestre" in rest and "nm" in rest and "min" in rest
+    assert "Autre bord" in rest and "°M" in rest
+    assert "Virement dans" in pg.locator("#helm-route").inner_text()  # block 2
     hint = pg.locator("#helm-hint").inner_text()
     assert hint in ("LOFER", "ABATTRE", "")
     badges = pg.locator("#badges").inner_text()
     assert "LIVE" in badges
-    for w, h in ((1280, 800), (800, 1280)):
+    for w, h in ((1280, 800), (1024, 600), (800, 1280)):
         pg.set_viewport_size({"width": w, "height": h})
         pg.wait_for_timeout(300)
         res = pg.evaluate(SIZES_JS)
@@ -141,7 +147,7 @@ def test_course_up_north_up_and_centre(page, feeder) -> None:
     feeder.wait_nav(lambda n: abs(n["boat"]["lat"] - lat) < 1e-4)
     pg.wait_for_function(
         f"() => {{ const o = ({BOAT_OFFSET_JS})(); return o && Math.abs(o.lat - {lat}) < 1e-4 "
-        "&& o.dx < 0.05 && o.dy < 0.05 && !window.jabuka.map.isMoving(); }",
+        "&& o.padLeft > 0 && o.dx < 0.05 && o.dy < 0.05 && !window.jabuka.map.isMoving(); }",
         timeout=6000,
     )
 

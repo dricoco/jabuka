@@ -1,7 +1,8 @@
 """Tablet language switch in a real browser (quick 001): Réglages FR / EN / SL changes the helm,
 the tabs, the badges and the lock texts, the choice is kept on this device across reloads, the
-lock and night mode keep working, and the longer Slovenian words do not push the helm bands out
-of the screen at the tablet sizes of test_helm.py (1280x800 landscape, 800x1280 portrait)."""
+lock and night mode keep working, and the longer Slovenian words do not push the helm blocks out
+of the screen or out of the helm column (quick 002) at the tablet sizes of test_helm.py (1280x800
+and 1024x600 landscape, 800x1280 portrait)."""
 
 from __future__ import annotations
 
@@ -12,17 +13,19 @@ from jabuka.nav import geo
 
 PLIC_SESTRE = (43.684627, 15.811626)
 
-# every visible element of the helm bands inside the viewport, no band scrolling sideways, the
-# big number >= 20% of the height (as in test_helm.py)
+# every visible element of the helm blocks inside the viewport and inside its block, no block
+# scrolling sideways, blocks 1 and 2 fully on screen, the big number >= 20% of the height (as in
+# test_helm.py)
 FIT_JS = """() => {
-  const vw = window.innerWidth, out = [];
-  for (const id of ["helm-top", "helm-bottom"]) {
-    const band = document.getElementById(id);
-    if (band.scrollWidth > band.clientWidth + 1) out.push(`${id} scrolls ${band.scrollWidth}`);
-    for (const el of band.querySelectorAll("*")) {
+  const vw = window.innerWidth, vh = window.innerHeight, out = [];
+  for (const id of ["helm-steer", "helm-route", "helm-rest"]) {
+    const block = document.getElementById(id), b = block.getBoundingClientRect();
+    if (block.scrollWidth > block.clientWidth + 1) out.push(`${id} scrolls ${block.scrollWidth}`);
+    if (id !== "helm-rest" && b.bottom > vh + 1) out.push(`${id} below the screen ${b.bottom}`);
+    for (const el of block.querySelectorAll("*")) {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
-      if (r.right > vw + 1 || r.left < -1) {
+      if (r.right > Math.min(vw, b.right) + 1 || r.left < Math.max(0, b.left) - 1) {
         const name = el.id || el.className || el.tagName;
         out.push(`${name} [${Math.round(r.left)}, ${Math.round(r.right)}]`);
       }
@@ -75,7 +78,7 @@ def _hold(pg, ms: int) -> None:
 
 
 def _fits(pg) -> None:
-    for w, h in ((1280, 800), (800, 1280)):
+    for w, h in ((1280, 800), (1024, 600), (800, 1280)):
         pg.set_viewport_size({"width": w, "height": h})
         pg.wait_for_timeout(400)
         res = pg.evaluate(FIT_JS)
@@ -101,7 +104,7 @@ def test_switch_to_slovenian_then_english_persists_and_fits(page, feeder) -> Non
     _wait_text(pg, "helm-countdown", "Obrat čez")
     assert _text(pg, "button[data-tab=carte]") == "Karta"
     assert pg.evaluate("() => document.title") == "Jabuka — Krmilo"
-    bottom = _text(pg, "#helm-bottom")
+    bottom = _text(pg, "#helm-rest")
     assert re.search(r"\d,\d / \d,\d kn", bottom), bottom  # decimal comma, knots as "kn"
     assert "Po obratu" in bottom and "Plić Sestre" in bottom
     assert _text(pg, "#map-centre") == "Centriraj"
@@ -136,7 +139,7 @@ def test_switch_to_slovenian_then_english_persists_and_fits(page, feeder) -> Non
     pg.click("button[data-tab=barre]")
     _wait_text(pg, "primary-label", "TARGET TWA")
     _wait_text(pg, "helm-countdown", "Tack in")
-    bottom = _text(pg, "#helm-bottom")
+    bottom = _text(pg, "#helm-rest")
     assert re.search(r"\d\.\d / \d\.\d kn", bottom), bottom  # decimal point in English
     assert _text(pg, "#helm-hint") in ("HEAD UP", "BEAR AWAY", "")
     assert "LIVE" in _text(pg, "#badges")
