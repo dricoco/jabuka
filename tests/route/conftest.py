@@ -162,3 +162,99 @@ def point_mark(lat: float, lon: float, name: str = "cible", radius: float = 0.0)
 @pytest.fixture(scope="session")
 def mark_point() -> Callable[..., Any]:
     return point_mark
+
+
+# --------------------------------------------------------------------------- courses (Task 2)
+PLIC_BEACON = (43.684627, 15.811626)  # OSM node 498394251, isolated-danger beacon
+
+
+@pytest.fixture(scope="session")
+def marks_doc():
+    from jabuka.route.racepack import read_marks_file
+
+    return read_marks_file(MARKS_FILE)
+
+
+@pytest.fixture(scope="session")
+def course(marks_doc) -> Callable[..., Any]:
+    """factory(key) -> (start CourseMark, remaining marks tuple) for template A or B, the boat
+    at the start (the start mark is the previous mark of leg 1)."""
+    from jabuka.route.types import CourseMark
+
+    def make(key: str):
+        cms = []
+        for mid, side in marks_doc.templates[key]:
+            m = marks_doc.marks[mid]
+            cms.append(CourseMark(m.id, m.name, m.lat, m.lon, side, m.radius_nm))
+        return cms[0], tuple(cms[1:])
+
+    return make
+
+
+@pytest.fixture(scope="session")
+def course_geofields(mask, marks_doc) -> dict:
+    """200 m centre-mode fields for the five marks, keyed like load_geofields (prep output)."""
+    from jabuka.route.isochrone import mark_key
+    from jabuka.route.landmask import compute_geofield
+    from jabuka.route.types import CourseMark
+
+    g = 200.0 / 1852.0
+    out = {}
+    for m in marks_doc.marks.values():
+        x, y = mask.frame.to_xy(m.lat, m.lon)
+        cm = CourseMark(m.id, m.name, m.lat, m.lon, "none", m.radius_nm)
+        out[mark_key(cm)] = compute_geofield(
+            mask, [(x, y)], g, "centre", seed_radius_nm=m.radius_nm + g
+        )
+    return out
+
+
+def densify(path, mask, step_nm: float = 0.05):
+    """Path points -> dense (x, y) arrays in the mask frame (winding / distance checks)."""
+    import numpy as np
+
+    xs, ys = mask.frame.to_xy(np.array([p.lat for p in path]), np.array([p.lon for p in path]))
+    out_x, out_y = [xs[0]], [ys[0]]
+    for i in range(len(xs) - 1):
+        n = max(1, int(math.ceil(math.hypot(xs[i + 1] - xs[i], ys[i + 1] - ys[i]) / step_nm)))
+        f = np.arange(1, n + 1) / n
+        out_x.extend(xs[i] + f * (xs[i + 1] - xs[i]))
+        out_y.extend(ys[i] + f * (ys[i + 1] - ys[i]))
+    return np.array(out_x), np.array(out_y)
+
+
+def winding_deg(path, mask, lat: float, lon: float, within_nm: float) -> float:
+    """Signed winding (deg) of the path around (lat, lon), x east / y north, counter-clockwise
+    positive, over the contiguous stretch within ``within_nm`` around the closest approach."""
+    import numpy as np
+
+    x, y = densify(path, mask)
+    mx, my = mask.frame.to_xy(lat, lon)
+    d = np.hypot(x - mx, y - my)
+    i = int(np.argmin(d))
+    lo = i
+    while lo > 0 and d[lo - 1] <= within_nm:
+        lo -= 1
+    hi = i
+    while hi < len(d) - 1 and d[hi + 1] <= within_nm:
+        hi += 1
+    ang = np.unwrap(np.arctan2(y[lo : hi + 1] - my, x[lo : hi + 1] - mx))
+    return float(np.degrees(ang[-1] - ang[0]))
+
+
+def min_dist_m(path, mask, lat: float, lon: float) -> float:
+    import numpy as np
+
+    x, y = densify(path, mask, 0.005)
+    mx, my = mask.frame.to_xy(lat, lon)
+    return float(np.hypot(x - mx, y - my).min() * 1852.0)
+
+
+@pytest.fixture(scope="session")
+def path_tools() -> dict[str, Callable[..., Any]]:
+    return {"winding": winding_deg, "min_dist_m": min_dist_m, "densify": densify}
+
+
+@pytest.fixture(scope="session")
+def plic_beacon() -> tuple[float, float]:
+    return PLIC_BEACON
