@@ -130,13 +130,14 @@ class NavService:
         if pos is not None and isinstance(pos.get("value"), dict):
             lat = _r(pos["value"].get("latitude"), 7)
             lon = _r(pos["value"].get("longitude"), 7)
-        hdg_t = self.wind.heading(inputs)
+        # wind first: it owns the TRUE heading (compass, or COG inside the Jabuka zone)
+        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=self.clock.wall())
+        hdg_t = w.hdg
         cog = wind.num(inputs.get(wind.COG))
         sog_ms = wind.num(inputs.get(wind.SOG))
         bsp_ms = wind.num(inputs.get(wind.BSP))
         sog_kn = ms_to_kn(sog_ms) if sog_ms is not None else None
         bsp_kn = ms_to_kn(bsp_ms) if bsp_ms is not None else None
-        heading_src = "compass" if hdg_t is not None else ("cog" if cog is not None else None)
         msg["boat"] = {
             "lat": lat,
             "lon": lon,
@@ -144,11 +145,10 @@ class NavService:
             "cog_t": _deg(cog),
             "sog_kn": _r(sog_kn, 2),
             "bsp_kn": _r(bsp_kn, 2),
-            "heading_src": heading_src,
+            "heading_src": w.heading_src,
         }
 
         # -- wind --------------------------------------------------------------------------
-        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=self.clock.wall())
         msg["alerts"].extend(w.alerts)
         tws_kn = ms_to_kn(w.tws) if w.tws is not None else None
         msg["wind"] = {
@@ -251,12 +251,19 @@ class NavService:
     def _write_back(self, w, tws_kn, pct, msg: dict, t_mono: float) -> None:
         """Derived values into the StateStore (src "nav"): Diag page + 1 Hz derived log."""
         lay = msg.get("layline") or {}
+        check = w.check or {}
         self.state.update_values(
             "nav",
             [
                 {"path": "nav.wind.twd", "value": w.twd, "unit": "rad", "ref": "T"},
+                {"path": "nav.wind.twdLay", "value": w.twd_lay, "unit": "rad", "ref": "T"},
                 {"path": "nav.wind.tws", "value": w.tws, "unit": "m/s"},
                 {"path": "nav.wind.source", "value": w.source, "unit": None},
+                {"path": "nav.wind.dtwa", "value": check.get("dtwa"), "unit": "deg"},
+                {"path": "nav.wind.dtws", "value": check.get("dtws_kn"), "unit": "kn"},
+                {"path": "nav.wind.inZone", "value": w.in_zone, "unit": None},
+                {"path": "nav.heading.true", "value": w.hdg, "unit": "rad", "ref": "T"},
+                {"path": "nav.heading.src", "value": w.heading_src, "unit": None},
                 {"path": "nav.polar.pct", "value": _r(pct, 1), "unit": "%"},
                 {"path": "nav.layline.countdown", "value": lay.get("countdown_s"), "unit": "s"},
             ],

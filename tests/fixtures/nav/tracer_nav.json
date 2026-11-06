@@ -24,7 +24,11 @@
   "heading_trusted": true,
   "in_zone": false,
   "manual_age_s": null,
-  "check": null
+  "check": {
+   "dtwa": 0.0,
+   "dtws_kn": 0.0,
+   "alert": false
+  }
  },
  "polar": {
   "name": "X35 ORC OD 2019 (intérim)",
