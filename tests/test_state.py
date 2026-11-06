@@ -122,3 +122,22 @@ def test_rows_sorted_by_path_then_src(sim_clock) -> None:
         ("b.path", "a"),
         ("b.path", "z"),
     ]
+
+
+def test_latest_ignores_off_values_from_another_source(sim_clock) -> None:
+    """WR-08: a Fastnet "OFF" (value None) received after the gpsd TPV used to hide gpsd's SOG."""
+    clock = sim_clock()
+    st = StateStore(clock)
+    st.update_values("gpsd", [_v("navigation.speedOverGround", 3.2, "m/s")], clock.monotonic())
+    clock.advance(0.5)
+    st.update_values("fastnet", [_v("navigation.speedOverGround", None, "m/s")], clock.monotonic())
+    latest = st.latest("navigation.speedOverGround")
+    assert latest is not None
+    assert latest["src"] == "gpsd" and latest["value"] == 3.2
+    # the OFF row is still shown for diagnostics
+    rows = [r for r in st.snapshot()["values"] if r["path"] == "navigation.speedOverGround"]
+    assert {r["src"]: r["value"] for r in rows} == {"gpsd": 3.2, "fastnet": None}
+    # only OFF left: no value at all
+    st2 = StateStore(clock)
+    st2.update_values("fastnet", [_v("navigation.speedOverGround", None)], clock.monotonic())
+    assert st2.latest("navigation.speedOverGround") is None

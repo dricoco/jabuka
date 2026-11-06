@@ -89,12 +89,15 @@ class StateStore:
         return max(0.0, now - t_rx)
 
     def latest(self, path: str) -> dict | None:
-        """Freshest non-stale entry for path across all sources, or None."""
+        """Freshest non-stale entry for path across all sources that has a value, or None.
+
+        A None value (an instrument showing "OFF") is no data: it never hides a valid value from
+        another source. Those entries stay in rows() for the diagnostics page."""
         now = self.clock.monotonic()
         thr = self.threshold(path)
         best: dict | None = None
         for (p, _src), e in self._entries.items():
-            if p != path:
+            if p != path or e["value"] is None:
                 continue
             age = self._age(e["t_rx"], now)
             if age > thr:
