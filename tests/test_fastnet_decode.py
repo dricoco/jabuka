@@ -140,3 +140,87 @@ def test_unknown_channels_collected() -> None:
             vals_unknown.extend(decode_to_values(f).unknown_ch)
     for ch in vals_unknown:
         assert ch.startswith("0x")
+
+
+# -- WR-07: every channel whose layout carries M/T keeps its reference ------------------------
+MT_EXPECTED = {
+    0x49: "navigation.heading",
+    0x69: "bandg.navigation.courseThroughWater",
+    0x6D: "environment.wind.direction",
+    0x84: "environment.current.set",
+    0x9A: "performance.tack",
+    0xA6: "steering.autopilot.target.heading",
+    0xD3: "bandg.navigation.deadReckoning.course",
+}
+PYFASTNET_ASSUMED = {
+    "navigation.headingMagnetic",
+    "environment.wind.directionMagnetic",
+    "environment.current.setMagnetic",
+    "performance.tackMagnetic",
+    "steering.autopilot.target.headingMagnetic",
+}
+
+
+def test_mt_channel_table() -> None:
+    from jabuka.ingest.fastnet_decode import MT_CHANNELS
+
+    assert MT_CHANNELS == MT_EXPECTED
+    assert set(ROUTED_CHANNELS) == {0x49, 0x6D, 0x84}
+
+
+@pytest.mark.parametrize("ch", sorted(MT_EXPECTED))
+@pytest.mark.parametrize("code,ref", [(0x66, "M"), (0x00, "?"), (0x40, "?")])
+def test_mt_channels_get_ref_neutral_path_and_ref(ch: int, code: int, ref: str) -> None:
+    res = decode_to_values(_frame(_rec08(ch, 123, code)))
+    assert res.error is None
+    [v] = res.values
+    assert v["path"] == MT_EXPECTED[ch]
+    assert v["ref"] == ref  # never silently Magnetic (or True) when the layout does not say so
+    assert v["unit"] == "rad"
+    assert v["value"] == pytest.approx(math.radians(123))
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in FIX.glob("*.txt")))
+def test_fixtures_never_publish_assumed_reference_paths(name: str) -> None:
+    vals = _all_values(name)
+    assert not PYFASTNET_ASSUMED & {v["path"] for v in vals}
+    for v in vals:
+        if v["path"] in MT_EXPECTED.values():
+            assert v["ref"] in ("M", "T", "?"), v
+            if v.get("disp", "").endswith("°M"):
+                assert v["ref"] == "M", v
+
+
+def test_fixture_course_and_tack_carry_m() -> None:
+    vals = [v for f in FIX.glob("*.txt") for v in _all_values(f.name)]
+    refs: dict[str, set] = {}
+    for v in vals:
+        if v["path"] in MT_EXPECTED.values():
+            refs.setdefault(v["path"], set()).add(v["ref"])
+    for path in (
+        "bandg.navigation.courseThroughWater",
+        "performance.tack",
+        "steering.autopilot.target.heading",
+        "bandg.navigation.deadReckoning.course",
+    ):
+        assert "M" in refs.get(path, set()), (path, refs.get(path))
+
+
+def test_untraceable_assumed_path_is_published_ref_unknown(monkeypatch) -> None:
+    """IN-05: when no rich entry can be matched, pyfastnet's "...Magnetic" name is not used."""
+    from jabuka.ingest import fastnet_decode as fd
+
+    real = fd.fastnet_decoder.project
+
+    def project(decoded):
+        out = real(decoded)
+        if len(decoded.get("values", {})) > 1:  # frame-level call only
+            out["navigation.headingMagnetic"] = 1.0
+        return out
+
+    monkeypatch.setattr(fd.fastnet_decoder, "project", project)
+    body = _rec01(0x41, 4.77, 2) + _rec01(0x51, -35, 0)
+    by = {v["path"]: v for v in decode_to_values(_frame(body)).values}
+    assert "navigation.headingMagnetic" not in by
+    assert by["navigation.heading"]["ref"] == "?"
+    assert by["navigation.heading"]["value"] == 1.0

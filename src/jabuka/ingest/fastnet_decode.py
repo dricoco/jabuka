@@ -1,10 +1,17 @@
 """pyfastnet decode -> normalized value entries (SI units, Signal K-style paths, M/T ref kept).
 
-pyfastnet's projection routes Heading (0x49), True Wind Direction (0x6D) and Tidal Set (0x84) to
-"...Magnetic" whenever the layout byte is not "°T", and the "°T" code is unknown upstream. So this
-module uses the rich decode (which keeps ``layout``) and publishes those three channels under a
-ref-neutral path with an explicit ``ref``: "M" for layout "°M", "T" for "°T", "?" otherwise.
-The core never assumes True; conversion happens once, in Phase 2 (WIND-03).
+pyfastnet's projection names the heading-type channels "...Magnetic" (or drops the reference)
+whatever the layout byte says, and the "°T" layout code is unknown upstream. So this module uses
+the rich decode (which keeps ``layout``) and publishes every channel whose layout carries the
+M/T flag (MT_CHANNELS: Heading, Course, TWD, Tidal Set, Heading on Next Tack, Autopilot Compass
+Target, Dead Reckoning Course) under a ref-neutral path with an explicit ``ref``: "M" for layout
+"°M", "T" for "°T", "?" otherwise. Any other angle entry whose layout is "°M"/"°T" gets the same
+treatment, and a pyfastnet "...Magnetic"/"...True" path that cannot be traced back to its entry is
+published ref-neutral with ref "?". The core never assumes True; conversion happens once, in
+Phase 2 (WIND-03).
+
+Channels whose reference is fixed by the channel definition itself, not by a layout (0xE5 Bearing
+to Waypoint "G.C. True", 0xE9 COG True, 0xEA COG Mag), keep pyfastnet's path.
 """
 
 from __future__ import annotations
@@ -21,10 +28,22 @@ from jabuka.ingest.fastnet_framing import BROADCAST, LATLON
 # quiet and rely on our own counters (RESEARCH Pitfall 10).
 fastnet_decoder.set_log_level("WARNING")
 
-ROUTED_CHANNELS: dict[int, str] = {
+# channels whose layout byte carries the M/T flag -> ref-neutral path
+MT_CHANNELS: dict[int, str] = {
     0x49: "navigation.heading",
+    0x69: "bandg.navigation.courseThroughWater",
     0x6D: "environment.wind.direction",
     0x84: "environment.current.set",
+    0x9A: "performance.tack",
+    0xA6: "steering.autopilot.target.heading",
+    0xD3: "bandg.navigation.deadReckoning.course",
+}
+# the three whose unknown-ref raw records are published for the "°T" hunt (fastnet_main)
+ROUTED_CHANNELS: dict[int, str] = {ch: MT_CHANNELS[ch] for ch in (0x49, 0x6D, 0x84)}
+# pyfastnet's reference-bearing names for the ref-neutral paths (fallback when no entry matches)
+_MT_SUFFIXES = ("Magnetic", "True")
+_PYFASTNET_MT_PATHS: dict[str, str] = {
+    p + suffix: p for p in MT_CHANNELS.values() for suffix in _MT_SUFFIXES
 }
 
 SIGNED_WIND_ANGLES = ("environment.wind.angleApparent", "environment.wind.angleTrueWater")
@@ -44,6 +63,13 @@ def _ref_for_layout(layout: Any) -> str:
     if layout == "°T":
         return "T"
     return "?"
+
+
+def _strip_mt_suffix(path: str) -> str:
+    for suffix in _MT_SUFFIXES:
+        if path.endswith(suffix) and len(path) > len(suffix):
+            return path[: -len(suffix)]
+    return path
 
 
 def _same(a: Any, b: Any) -> bool:
@@ -119,13 +145,20 @@ def decode_to_values(frame: bytes, *, awa_sign: int = 1) -> DecodeResult:
         item: dict[str, Any] = {}
         if entry is not None:
             ch = _channel_int(entry)
-            if ch in ROUTED_CHANNELS:
-                out_path = ROUTED_CHANNELS[ch]
-                item["ref"] = _ref_for_layout(entry.get("layout"))
+            layout = entry.get("layout")
+            if ch in MT_CHANNELS:
+                out_path = MT_CHANNELS[ch]
+                item["ref"] = _ref_for_layout(layout)
+            elif layout in ("°M", "°T") and unit == "rad":  # an M/T channel not listed above
+                out_path = _strip_mt_suffix(path)
+                item["ref"] = _ref_for_layout(layout)
             if entry.get("channel_id"):
                 item["ch"] = str(entry["channel_id"])
             if entry.get("display_text") is not None:
                 item["disp"] = str(entry["display_text"])
+        elif path in _PYFASTNET_MT_PATHS:  # untraceable: never publish pyfastnet's assumption
+            out_path = _PYFASTNET_MT_PATHS[path]
+            item["ref"] = "?"
         if path.startswith("bandg.unknown."):
             unknown.append(path.rsplit(".", 1)[-1])
         if out_path in SIGNED_WIND_ANGLES and isinstance(value, (int, float)):
