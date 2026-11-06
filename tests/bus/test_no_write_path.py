@@ -111,6 +111,18 @@ def test_guard_allows_safe_constructs(snippet: str) -> None:
     assert violations(snippet) == []
 
 
+def test_open_fastnet_reopens_the_same_tty() -> None:
+    """Ingest restart / reconnect on a tty that was already set to 28800 8O2 (glibc 2.43 used to
+    reject the second open with EINVAL)."""
+    with PtyFeeder() as feeder:
+        for _ in range(3):
+            ser = open_fastnet(feeder.slave_path)
+            try:
+                assert fcntl.fcntl(ser.fileno(), fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY
+            finally:
+                ser.close()
+
+
 def test_open_fastnet_on_a_pty_is_read_only() -> None:
     with PtyFeeder() as feeder:
         ser = open_fastnet(feeder.slave_path)

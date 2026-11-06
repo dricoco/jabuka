@@ -9,11 +9,33 @@ from __future__ import annotations
 
 import fcntl
 import os
+import termios
 
 import serial
 from serial.serialutil import SerialException
 
 FASTNET_BAUD = 28800
+
+
+def _reset_to_standard_speed(fd: int) -> None:
+    """Put the tty back on a standard speed (38400, no parity) before pyserial configures it.
+
+    After a previous 28800 open, recent glibc (2.43) reports the custom speed as the literal
+    28800 from tcgetattr, and pyserial's tcsetattr of those attributes is then rejected (EINVAL),
+    so reopening the same tty (ingest restart, reconnect, pty replay) failed. Best effort: a
+    failure here is left for pyserial's own configuration to report.
+    """
+    try:
+        attrs = termios.tcgetattr(fd)
+        cflag = attrs[2]
+        cflag &= ~(termios.CBAUD | termios.PARENB | termios.PARODD)
+        cflag |= termios.B38400
+        attrs[2] = cflag
+        attrs[4] = termios.B38400
+        attrs[5] = termios.B38400
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except (termios.error, OSError, AttributeError):
+        pass
 
 
 class ReadOnlySerial(serial.Serial):
@@ -34,6 +56,7 @@ class ReadOnlySerial(serial.Serial):
         fcntl.fcntl(self.pipe_abort_read_r, fcntl.F_SETFL, os.O_NONBLOCK)
         fcntl.fcntl(self.pipe_abort_write_r, fcntl.F_SETFL, os.O_NONBLOCK)
         try:
+            _reset_to_standard_speed(self.fd)  # reopen-safe on glibc 2.43 (EINVAL otherwise)
             self._reconfigure_port(force_update=True)  # termios + BOTHER 28800 8O2
             self._reset_input_buffer()
         except BaseException:
