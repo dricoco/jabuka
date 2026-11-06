@@ -19,6 +19,8 @@ import math
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
+from jabuka.route.bias import bias_changed
+
 LAT0 = 43.4  # local equirectangular frame origin (same constants as route/frame.py)
 LON0 = 15.65
 NM_PER_DEG_LAT = 60.0
@@ -340,35 +342,85 @@ def cost_text(cost_s: float | None) -> str | None:
 
 
 # --------------------------------------------------------------------------------------------
-# Reroute decisions (RED skeleton)
+# Reroute decisions (CONTEXT §Supervisor, RESEARCH Pattern 9)
 # --------------------------------------------------------------------------------------------
+
+REPLACE_MIN_GAIN_S = 180.0
+REPLACE_GAIN_FRAC = 0.01
+ROUTE_MAX_AGE_S = 1200.0
 
 
 class TriggerInputs(NamedTuple):
-    course_version: int = 0
-    bias_eff: tuple[float, float] | None = None
-    manual_version: int = 0
-    off_route: bool = False
-    stay_version: int = 0
-    missed: bool = False
-    pack_version: int = 0
+    """Snapshot of what can ask for a reroute, built by the core at 1 Hz."""
+
+    course_version: int = 0  # bumps on every course / mark change
+    bias_eff: tuple[float, float] | None = None  # effective (dir_deg, ratio) now, None = off
+    manual_version: int = 0  # bumps on every manual wind entry
+    off_route: bool = False  # OffRouteWatch level
+    stay_version: int = 0  # StayOnTack.version
+    missed: bool = False  # MissedTackWatch edge
+    pack_version: int = 0  # race pack (re)load
     has_route: bool = False
 
 
 class Trigger(NamedTuple):
-    reason: str
-    forced: bool
+    reason: str  # first | timer | course | bias | manual | off_route | stay | missed | pack
+    forced: bool  # forced triggers replace the current route without hysteresis
 
 
 class Triggers:
+    """Explicit reroute triggers. Version counters and the bias are compared with the inputs
+    recorded at the last request; off_route and missed fire from their rising edge until the
+    next request; the timer runs from the last request."""
+
     def __init__(self, cadence_s: float = 300.0):
         self.cadence_s = cadence_s
+        self._req_t: float | None = None
+        self._req: TriggerInputs | None = None
+        self._prev_off = False
+        self._prev_missed = False
+        self._off_latched = False
+        self._missed_latched = False
 
     def check(self, now: float, inputs: TriggerInputs) -> list[Trigger]:
-        return []
+        if inputs.off_route and not self._prev_off:
+            self._off_latched = True
+        if inputs.missed and not self._prev_missed:
+            self._missed_latched = True
+        self._prev_off, self._prev_missed = bool(inputs.off_route), bool(inputs.missed)
+
+        req = self._req
+        out: list[Trigger] = []
+        if req is None or self._req_t is None:
+            out.append(Trigger("timer" if inputs.has_route else "first", False))
+            if self._missed_latched:
+                out.append(Trigger("missed", True))
+            return out
+        if now - self._req_t >= self.cadence_s:
+            out.append(Trigger("timer", False))
+        if inputs.course_version != req.course_version:
+            out.append(Trigger("course", True))
+        if bias_changed(req.bias_eff, inputs.bias_eff):
+            out.append(Trigger("bias", False))
+        if inputs.manual_version != req.manual_version:
+            out.append(Trigger("manual", False))
+        if self._off_latched:
+            out.append(Trigger("off_route", False))
+        if inputs.stay_version != req.stay_version:
+            out.append(Trigger("stay", True))
+        if self._missed_latched:
+            out.append(Trigger("missed", True))
+        if inputs.pack_version != req.pack_version:
+            out.append(Trigger("pack", True))
+        return out
 
     def mark_requested(self, now: float, inputs: TriggerInputs) -> None:
-        pass
+        """Record that a routing request was made with these inputs."""
+        self._req_t = now
+        self._req = inputs
+        self._prev_off, self._prev_missed = bool(inputs.off_route), bool(inputs.missed)
+        self._off_latched = False
+        self._missed_latched = False
 
 
 def should_replace(
@@ -379,21 +431,54 @@ def should_replace(
     cur_age_s: float | None,
     forced: bool,
 ) -> tuple[bool, str]:
+    """Hysteresis: replace the current route only when the new one gains more than
+    max(3 min, 1 % of its remaining time), or the current one is missing / invalid / older
+    than 20 min, or the trigger is forced. ``cur_eta_old_now`` is the current route's arrival
+    re-evaluated from the boat's projection now (None = no current route)."""
+    if cur_eta_old_now is None:
+        return True, "no_route"
+    if forced:
+        return True, "forced"
+    if not cur_valid:
+        return True, "invalid"
+    if cur_age_s is not None and cur_age_s > ROUTE_MAX_AGE_S:
+        return True, "outdated"
+    gain = cur_eta_old_now - new_eta
+    threshold = max(REPLACE_MIN_GAIN_S, REPLACE_GAIN_FRAC * (new_eta - now))
+    if gain > threshold:
+        return True, "gain"
     return False, "kept"
 
 
 class OffRouteWatch:
+    """True once the boat has been off the route (XTE > xte_nm, or COG more than dev_deg off
+    the segment course) continuously for sustain_s. Any sample back inside resets it."""
+
     def __init__(self, xte_nm: float = 0.5, dev_deg: float = 20.0, sustain_s: float = 120.0):
-        pass
+        self.xte_nm = xte_nm
+        self.dev_deg = dev_deg
+        self.sustain_s = sustain_s
+        self._since: float | None = None
 
     def update(self, t: float, follow: Follow) -> bool:
-        return False
+        dev = follow.course_dev_deg
+        off = follow.xte_nm > self.xte_nm or (dev is not None and dev > self.dev_deg)
+        if not off:
+            self._since = None
+            return False
+        if self._since is None:
+            self._since = t
+        return t - self._since >= self.sustain_s
 
     def reset(self) -> None:
-        pass
+        """Call when a new route replaces the followed one."""
+        self._since = None
 
 
 class StayOnTack:
+    """ "On reste" state (Pattern 7): hold the current tack until a tack is detected or the
+    helm cancels. ``version`` bumps on every change (TriggerInputs.stay_version)."""
+
     def __init__(self) -> None:
         self.active = False
         self.tack: int | None = None
@@ -401,13 +486,18 @@ class StayOnTack:
         self.version = 0
 
     def activate(self, t: float, tack: int) -> None:
-        pass
+        self.active, self.tack, self.since = True, int(tack), t
+        self.version += 1
 
     def cancel(self) -> None:
-        pass
+        if not self.active:
+            return
+        self.active, self.tack, self.since = False, None, None
+        self.version += 1
 
     def on_tack(self, event: TackEvent) -> None:
-        pass
+        """A detected tack ends the hold."""
+        self.cancel()
 
     def to_dict(self) -> dict[str, Any]:
-        return {}
+        return {"active": self.active, "tack": self.tack, "since": self.since}
