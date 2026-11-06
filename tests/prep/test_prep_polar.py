@@ -66,8 +66,8 @@ def test_grid_semicolon_with_decimal_commas() -> None:
     for (tws, twa), bsp in GRID_CELLS.items():
         assert p.speed(tws, twa) == pytest.approx(bsp, abs=1e-9), (tws, twa)
     # empty (6 kn) and zero (10 kn) cells at 170 are skipped, not read as 0 kn
-    assert [a for a, _ in dict(p.curves)[6]] == [40, 52, 90, 120, 150]
-    assert [a for a, _ in dict(p.curves)[10]] == [40, 52, 90, 120, 150]
+    assert [a for a, _ in dict(p.curves)[6]] == [0, 40, 52, 90, 120, 150]  # + implicit origin
+    assert [a for a, _ in dict(p.curves)[10]] == [0, 40, 52, 90, 120, 150]
 
 
 def test_grid_tab_separated_lowercase_header_gives_the_same_polar() -> None:

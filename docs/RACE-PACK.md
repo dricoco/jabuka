@@ -111,7 +111,34 @@ and Mulo (lights).
 
 ## Polar
 
-See the "Polar" section below (added by the polar converter).
+Without `polar.json` in the pack, the core uses the **interim polar**: "X35 ORC OD 2019
+(intérim)", derived from the ORC X-35 One Design certificate. The polar in use is shown in the nav
+message (`polar.name`, visible on Diag and the helm). Your own polar takes over as soon as it is
+in the pack:
+
+```bash
+.venv/bin/jabuka-prep-polar "polaire générique X35.pol" --name "X35 owner" --out var/racepack/polar.json
+```
+
+- **Formats** are detected by content:
+  - OpenCPN / qtVlm grids (first cell `TWA\TWS` or `twa/tws`; separator tab, `;`, `,` or spaces;
+    decimal commas with `;` or tab; empty and zero cells ignored; an optional boat-name line).
+  - Expedition files (`!` comments, `TWS TWA BSP TWA BSP …`).
+  - ORC certificate tables (`Beat Angles`, `Beat VMG`, `52°` … `150°`, `Run VMG`, `Gybe Angles`,
+    as CSV, `;` or pdftotext columns).
+  - The race-pack JSON itself.
+- **Checks:** every number must be finite, with TWS in (0, 60] kn, TWA in (0, 180]°, BSP in
+  [0, 30] kn, at least 2 TWS curves and at most 1 MB. A bad value is reported with its line number
+  (exit 2) and nothing is written.
+- **Sanity check:** the tool prints the VMG target table (TWS | up TWA / BSP | down TWA / BSP, for
+  6–20 kn). Compare it with what the boat really sails before you copy it. These speeds are raw
+  polar speeds; the efficiency setting (Réglages, default 0.92) scales them on board.
+- **Copy:** `polar.json` travels with the pack (same rsync as above). Restart `jabuka-core` and
+  check the polar name on Diag. If the core cannot validate `polar.json`, it falls back to the
+  interim polar.
+
+`polar.json` is not listed in `racepack.json`, so you can re-convert the polar without rebuilding
+the map, and `jabuka-prep-map --check` still passes.
 
 ## Licence and attribution
 

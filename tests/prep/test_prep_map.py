@@ -279,3 +279,10 @@ def test_cli_usage_errors_exit_2(capsys) -> None:
     assert pm.main(["--bbox", "16,42,15,44"]) == pm.EXIT_USAGE
     assert pm.main(["--date", "2026-11-06"]) == pm.EXIT_USAGE
     assert pm.main(["--help"]) == pm.EXIT_OK
+
+
+def test_check_pack_ignores_polar_and_later_weather_files(tmp_path: Path) -> None:
+    d = _pack(tmp_path)
+    (d / "polar.json").write_text('{"name": "x", "curves": []}')
+    (d / "wind_icon-eu_2026111100.npz").write_bytes(b"phase 3")
+    assert pm.check_pack(d) == []
