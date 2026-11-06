@@ -64,3 +64,18 @@ def test_diag_page_scripts_parse_as_modules(tmp_path: Path) -> None:
         proc = subprocess.run([NODE, "--check", str(copy)], capture_output=True, text=True)
         assert proc.returncode == 0, (name, proc.stderr)
     assert 'id="alerts"' in (LOGIC.parent / "index.html").read_text()
+
+
+def test_link_watchdog_thresholds() -> None:
+    """WR-05: frozen data turns stale after 3 s without a message; the socket is recycled at 6 s."""
+    assert js("[RX_STALE_MS, RX_CLOSE_MS]") == [3000, 6000]
+    states = js("[0, 1000, 3000, 3001, 6000, 6001, 60000].map(linkState)")
+    assert states == ["live", "live", "live", "stale", "stale", "reconnect", "reconnect"]
+    assert js("linkState(NaN)") == "stale"  # nothing received yet: never "live"
+    assert js("linkState(undefined)") == "stale"
+
+
+def test_page_wires_the_watchdog() -> None:
+    src = (LOGIC.parent / "diag.js").read_text()
+    assert "setInterval(watchdog" in src
+    assert "markAllStale" in src and "linkState(" in src

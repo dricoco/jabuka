@@ -1,7 +1,8 @@
 // Jabuka diagnostics page: renders the server's 1 Hz "diag" message from /ws.
-// Ages and staleness are computed by the server (injected clock); this file only formats.
+// Ages and staleness are computed by the server (injected clock); this file only formats, except
+// for the link watchdog: when no message arrives for RX_STALE_MS the whole page turns stale.
 
-import { alertsFor } from "./diag_logic.js";
+import { alertsFor, linkState } from "./diag_logic.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -189,27 +190,66 @@ $("event-label").addEventListener("keydown", (ev) => {
 });
 
 let backoff = 1000;
+let ws = null;
+let lastMsg = NaN; // performance.now() of the last message; NaN until the first one
+let connectStarted = 0;
+
+// Frozen data must never look fresh: mark every value row stale and every source silent.
+function markAllStale() {
+  for (const tr of document.querySelectorAll("#values-body tr")) tr.className = "stale";
+  for (const el of document.querySelectorAll("#health [class^='alive-']")) {
+    el.className = "alive-false";
+    el.textContent = "no data";
+  }
+}
+
+function watchdog() {
+  if (ws === null) return; // onclose already scheduled the reconnect
+  if (ws.readyState === WebSocket.CONNECTING) {
+    // a connect attempt over a half-open link can hang: give up and retry
+    if (linkState(performance.now() - connectStarted) === "reconnect") ws.close();
+    return;
+  }
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const since = performance.now() - lastMsg;
+  const state = linkState(since);
+  if (state === "live") return;
+  const secs = Number.isFinite(since) ? Math.round(since / 1000) : "?";
+  setConn(false, `no data for ${secs}s`);
+  markAllStale();
+  if (state === "reconnect") ws.close();
+}
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
-  ws.onopen = () => {
+  const sock = new WebSocket(`${proto}//${location.host}/ws`);
+  ws = sock;
+  lastMsg = NaN;
+  connectStarted = performance.now();
+  sock.onopen = () => {
     backoff = 1000;
-    setConn(true, "live");
+    lastMsg = performance.now(); // the server sends a snapshot right away
+    setConn(true, "connected");
   };
-  ws.onmessage = (ev) => {
+  sock.onmessage = (ev) => {
+    lastMsg = performance.now();
     try {
       render(JSON.parse(ev.data));
+      setConn(true, "live");
     } catch (e) {
       console.error("bad message", e);
     }
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    if (ws !== sock) return; // an older socket closing late
+    ws = null;
+    markAllStale();
     setConn(false, `reconnecting in ${backoff / 1000}s`);
     setTimeout(connect, backoff);
     backoff = Math.min(backoff * 2, 5000);
   };
-  ws.onerror = () => ws.close();
+  sock.onerror = () => sock.close();
 }
 
+setInterval(watchdog, 1000);
 connect();

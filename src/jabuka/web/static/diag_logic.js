@@ -30,3 +30,19 @@ export function alertsFor(msg) {
   }
   return out;
 }
+
+// -- link watchdog (WR-05) ------------------------------------------------------------------------
+// The server pushes a diag message every second. A half-open Wi-Fi link (tablet at the edge of the
+// AP, AP restart, core hung with the socket open) may not fire onclose for minutes, so the client
+// times out on its own: after RX_STALE_MS without a message every value is shown stale, after
+// RX_CLOSE_MS the socket is closed to force a reconnect.
+export const RX_STALE_MS = 3000;
+export const RX_CLOSE_MS = 6000;
+
+// "live" | "stale" | "reconnect" for the time since the last message (ms).
+export function linkState(sinceLastMs) {
+  if (!(sinceLastMs >= 0)) return "stale"; // never received anything (NaN/undefined)
+  if (sinceLastMs > RX_CLOSE_MS) return "reconnect";
+  if (sinceLastMs > RX_STALE_MS) return "stale";
+  return "live";
+}
