@@ -314,6 +314,14 @@ def test_deviation_and_countdown_prefer_the_route() -> None:
     assert (now["countdown"], now["countdownCls"]) == ("VIREZ", "alert")
 
 
+def test_grib_badge_and_alert() -> None:
+    """GPS + GRIB only (bus silent): the wind badge says GRIB (warn) and the core's alert shows."""
+    assert js("sourceBadge({source: 'GRIB'})") == {"text": "GRIB", "cls": "warn"}
+    n = {"wind": {"source": "GRIB"}, "alerts": ["VENT GRIB (pas d'instruments)"]}
+    assert js(f"windBadge({json.dumps(n)})") == {"text": "GRIB", "cls": "warn"}
+    assert js(f"navAlerts({json.dumps(n)})") == ["VENT GRIB (pas d'instruments)"]
+
+
 def test_layline_distance_next_to_the_layline_countdown() -> None:
     """NAV-02 (02 verification gap): the server's layline.dist_nm is shown with the countdown."""
     v = js(f"helmView({json.dumps(NAV)})")

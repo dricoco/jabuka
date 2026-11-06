@@ -221,6 +221,52 @@ def test_route_geojson_split_and_layers() -> None:
     assert {ly["source"] for ly in day} == {"route", "route-tack", "route-next"}
 
 
+# -- Task 2: On reste, bias ----------------------------------------------------------------------
+def test_stay_button() -> None:
+    def sb(r: dict | None) -> dict:
+        return js(f"stayButton({json.dumps(r)})")
+
+    assert sb(route()) == {"label": "ON RESTE", "active": False, "disabled": False}
+    on = route(kind="stay", stay={"active": True, "tack": "stbd"})
+    assert sb(on) == {"label": "ANNULER ON RESTE", "active": True, "disabled": False}
+    assert sb(route(state="computing"))["disabled"] is True
+    assert sb(route(target_tack=None))["disabled"] is True
+    assert sb(None) == {"label": "ON RESTE", "active": False, "disabled": True}
+    # cancelling stays possible whatever the routing state
+    blocked_on = route(state="blocked_clock", stay={"active": True, "tack": "port"})
+    assert sb(blocked_on)["disabled"] is False
+
+
+def test_bias_text() -> None:
+    def bt(**kw: object) -> str | None:
+        b = {"enabled": True, "valid": True, "state": "actif", "dir_deg": 12.3, "ratio": 1.152}
+        b.update(kw)
+        return js(f"biasText({json.dumps(b)})")
+
+    assert bt() == "Biais GRIB +12° ×1.15"
+    assert bt(dir_deg=-7.6, ratio=0.9) == "Biais GRIB -8° ×0.90"
+    assert bt(state="s'estompe") == "Biais GRIB +12° ×1.15 (s'estompe)"
+    assert bt(state="gelé (Jabuka)") == "Biais GRIB +12° ×1.15 (gelé, Jabuka)"
+    assert bt(enabled=False) == "Biais GRIB désactivé"
+    assert bt(valid=False, dir_deg=None, ratio=None, state="apprentissage") == (
+        "Biais GRIB : apprentissage"
+    )
+    assert bt(valid=False, dir_deg=None, ratio=None, state="aucun") is None
+    assert js("biasText(null)") is None
+    bias = {"valid": True, "state": "actif", "dir_deg": 12.3, "ratio": 1.152}
+    band = js(f"routeBand({json.dumps(nav(route(bias=bias)))})")
+    assert band["lines"]["bias"] == "Biais GRIB +12° ×1.15"
+
+
+def test_stay_status_line() -> None:
+    on = route(kind="stay", stay={"active": True, "tack": "stbd"})
+    assert js(f"routeBand({json.dumps(nav(on))})")["lines"]["status"] == "On reste (tribord)"
+    both = route(off_route=True, level="L3")
+    assert js(f"routeBand({json.dumps(nav(both))})")["lines"]["status"] == (
+        "Hors route · Route : niveau L3"
+    )
+
+
 def test_no_inner_html() -> None:
     for name in ("route.js", "route_logic.js"):
         p = STATIC / name

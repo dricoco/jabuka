@@ -225,3 +225,155 @@ def test_route_on_the_map_and_the_helm_steers_it(page, feeder) -> None:
     assert vis and all(v == "visible" for v in vis), vis
     assert page.external_requests == []
     assert _unexpected(page.bad_responses) == [], page.bad_responses
+
+
+# -- Task 2: ON RESTE (lock aware), night colours, Diag, GRIB badge ------------------------------
+# computed colours of the route band and the button: black, pure red or transparent only
+NIGHT_JS = """() => {
+  const ok = (c) => {
+    const skip = ["none", "auto", "transparent", "currentcolor"];
+    if (!c || skip.includes(c)) return true;
+    const m = /^rgba?\\(([^)]+)\\)$/.exec(c);
+    if (!m) return false;
+    const p = m[1].split(/[\\s,\\/]+/).filter(Boolean).map(Number);
+    return p[1] === 0 && p[2] === 0;
+  };
+  const props = ["color", "backgroundColor", "borderTopColor", "borderRightColor",
+    "borderBottomColor", "borderLeftColor", "outlineColor"];
+  const bad = [];
+  let checked = 0;
+  for (const el of document.querySelectorAll("#route-band, #route-band *, #stay-button")) {
+    if (!el.getClientRects().length) continue;
+    checked += 1;
+    const cs = getComputedStyle(el);
+    for (const p of props) if (!ok(cs[p])) bad.push(`${el.id || el.className} ${p}=${cs[p]}`);
+  }
+  const layers = window.jabuka.map.getStyle().layers
+    .filter((l) => (l.metadata || {})["jabuka:overlay"] === "route");
+  const colors = JSON.stringify(layers.map((l) => l.paint || {})).match(/#[0-9a-fA-F]{6}/g) || [];
+  for (const c of colors) if (c.slice(3).toLowerCase() !== "0000") bad.push(`layer ${c}`);
+  return {bad, checked, layers: layers.length};
+}"""
+
+
+def _label(pg) -> str:
+    return pg.locator("#stay-button").inner_text().strip()
+
+
+def _hold_unlock(pg, ms: int = 2400) -> None:
+    box = pg.locator("#unlock-btn").bounding_box()
+    assert box is not None
+    pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    pg.mouse.down()
+    pg.wait_for_timeout(ms)
+    pg.mouse.up()
+
+
+def test_on_reste_lock_night_and_diag(page, feeder) -> None:
+    _routed(feeder)
+    pg = _open(page)
+    posts: list[str] = []
+    pg.on(
+        "request",
+        lambda r: (
+            posts.append(r.post_data or "")
+            if r.method == "POST" and r.url.endswith("/api/route/stay")
+            else None
+        ),
+    )
+    pg.wait_for_function(
+        "() => { const b = document.getElementById('stay-button');"
+        " return b && !b.disabled && b.textContent.trim() === 'ON RESTE'; }",
+        timeout=30000,
+    )
+    box = pg.locator("#stay-button").bounding_box()
+    band = pg.locator("#route-band").bounding_box()
+    assert box and band and box["height"] >= 64 and box["width"] >= band["width"] - 2, (box, band)
+    font = pg.evaluate(
+        "() => parseFloat(getComputedStyle(document.getElementById('stay-button')).fontSize)"
+    )
+    assert font >= 24
+
+    # locked: a tap on the button (lands on the lock overlay) and even a scripted click do nothing
+    pg.click("#lock-btn")
+    pg.wait_for_function("() => document.body.classList.contains('locked')", timeout=2000)
+    x = box["x"] + box["width"] / 2
+    y = box["y"] + box["height"] / 2
+    pg.mouse.click(x, y)
+    pg.evaluate("() => document.getElementById('stay-button').click()")
+    pg.wait_for_timeout(800)
+    assert posts == []
+    assert _label(pg) == "ON RESTE"
+    _hold_unlock(pg)
+    pg.wait_for_function("() => !document.body.classList.contains('locked')", timeout=3000)
+
+    # unlocked: ON RESTE holds the tack, the core reroutes with the tack held
+    pg.click("#stay-button")
+    pg.wait_for_function(
+        "() => document.getElementById('stay-button').textContent.trim() === 'ANNULER ON RESTE'",
+        timeout=20000,
+    )
+    assert posts and '"active":true' in posts[0].replace(" ", ""), posts
+    nav = feeder.wait_nav(lambda n: n["route"]["kind"] == "stay", timeout=60)
+    assert nav["route"]["stay"]["active"] is True
+
+    # night: the band, the active button and the route layers are red on black only
+    pg.click("#night-toggle")
+    pg.wait_for_function("() => window.jabuka.map.getStyle().name.includes('night')")
+    pg.wait_for_function(
+        "() => window.jabuka.map.getStyle().layers.some((l) => l.id === 'route-line')"
+    )
+    res = pg.evaluate(NIGHT_JS)
+    assert res["checked"] >= 3 and res["layers"] == 3, res
+    assert res["bad"] == [], res["bad"]
+
+    # cancel
+    pg.click("#stay-button")
+    pg.wait_for_function(
+        "() => document.getElementById('stay-button').textContent.trim() === 'ON RESTE'",
+        timeout=20000,
+    )
+    assert len(posts) == 2 and '"active":false' in posts[1].replace(" ", ""), posts
+    feeder.wait_nav(lambda n: n["route"]["stay"]["active"] is False, timeout=20)
+
+    # Diag lists the router health row
+    pg.goto(page.base_url + "/diag.html")
+    pg.wait_for_function(
+        "() => [...document.querySelectorAll('#health h3')]"
+        ".some((h) => h.textContent.startsWith('router'))",
+        timeout=15000,
+    )
+    health = pg.locator("#health").inner_text()
+    assert "pool" in health and "pack_ok" in health
+    assert page.external_requests == []
+    assert _unexpected(page.bad_responses) == [], page.bad_responses
+
+
+def test_grib_badge_when_the_bus_is_silent(page, feeder) -> None:
+    _routed(feeder)
+    pg = _open(page)
+    pg.wait_for_function(
+        "() => document.getElementById('badges').textContent.includes('LIVE')", timeout=15000
+    )
+    feeder.boat["send_wind"] = False
+    pg.wait_for_function(
+        "() => [...document.querySelectorAll('#badges .badge')]"
+        ".some((b) => b.textContent === 'GRIB')",
+        timeout=20000,
+    )
+    n1 = feeder.wait_nav(lambda n: n["wind"]["source"] == "GRIB", timeout=10)
+    assert n1["route"]["state"] == "ok"
+    # the route keeps being followed on GRIB wind: its age is still counted and shown
+    n2 = feeder.wait_nav(
+        lambda n: (
+            n["route"]["state"] == "ok"
+            and n["route"]["age_s"] is not None
+            and n["t_mono"] > n1["t_mono"] + 2
+        ),
+        timeout=15,
+    )
+    assert n2["wind"]["source"] == "GRIB"
+    band = pg.locator("#route-band").inner_text()
+    assert "Route :" in band, band
+    assert page.external_requests == []
+    assert _unexpected(page.bad_responses) == [], page.bad_responses
