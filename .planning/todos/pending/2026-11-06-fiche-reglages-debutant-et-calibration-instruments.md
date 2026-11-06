@@ -36,5 +36,10 @@ One printable French doc (e.g. docs/FICHE-REGLAGES.md), plain language, one page
   (starboard = +), computed TWD vs Hercules TWD on both tacks (< 10°), TWD jumping at each tack =
   masthead offset / AWA asymmetry or upwash, symmetric AWA/TWA on both tacks. Note: the log must be
   right before calibrating the efficiency.
+- Glossary up front (owner request): plain-French definitions of every term used on the sheet and
+  on the helm screen — loch, BSP, SOG, COG, cap (compas/vrai/magnétique), déclinaison, AWA/AWS,
+  TWA/TWS/TWD, VMG, polaire, % polaire, layline, GRIB, étale, girouette/anémomètre, upwash,
+  amortissement, ETA/TTW/DTW, XTE. One or two sentences each, with a small sketch where it helps
+  (apparent vs true wind triangle, COG vs heading with current).
 - Polar source: currently the generic X-35 OD ORC 2019 certificate; import the boat's own
   certificate/polar with jabuka-prep-polar if received (the downloaded XC 35 CSV is the wrong boat).
