@@ -77,6 +77,11 @@ function layout(section) {
   const speedLabel = cellOf("helm-speed")?.querySelector(".label");
   if (speedLabel) speedLabel.textContent = "BSP / cible";
   for (const id of ["helm-dtw", "helm-ttw"]) cellOf(id)?.remove();
+  // distance to the layline under the layline countdown (NAV-02)
+  const countdown = $("helm-countdown");
+  if (countdown && !$("helm-layline-dist")) {
+    countdown.after(el("div", { id: "helm-layline-dist", class: "other layline-dist", hidden: "" }));
+  }
   markCell?.classList.add("mark-cell");
 
   if (!$("map-ctrls")) {
@@ -110,6 +115,18 @@ export function render(nav, badge) {
   setText("helm-mark", v.markLine);
   setText("helm-btw", v.btw);
   setText("helm-countdown", v.countdown);
+  const cd = $("helm-countdown");
+  if (cd) {
+    // route countdown: "VIREZ" (alert) / "Route mise à jour…" (warn); data-source route|layline
+    cd.classList.toggle("alert", v.countdownCls === "alert");
+    cd.classList.toggle("warn", v.countdownCls === "warn");
+    cd.dataset.source = v.countdownSource;
+  }
+  const dist = $("helm-layline-dist");
+  if (dist) {
+    setText("helm-layline-dist", v.laylineDist);
+    dist.hidden = !v.laylineDist;
+  }
   setText("helm-other", v.otherTack);
   if (badge) {
     const keys = new Set(v.flags.map((f) => f.key));

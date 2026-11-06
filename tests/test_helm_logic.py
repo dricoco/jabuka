@@ -312,3 +312,24 @@ def test_deviation_and_countdown_prefer_the_route() -> None:
     assert v["countdownSource"] == "layline" and v["primary"]["label"] == "TWA CIBLE ↑"
     now = js(f"helmView({json.dumps(dict(NAV, route=dict(ROUTE_OK, countdown_s=-5)))})")
     assert (now["countdown"], now["countdownCls"]) == ("VIREZ", "alert")
+
+
+def test_layline_distance_next_to_the_layline_countdown() -> None:
+    """NAV-02 (02 verification gap): the server's layline.dist_nm is shown with the countdown."""
+    v = js(f"helmView({json.dumps(NAV)})")
+    assert v["countdown"].startswith("Virement dans")
+    assert v["laylineDist"] == "Layline à 1,5 nm"
+    lay = {"state": "normal", "countdown_s": 720, "dist_nm": 0.42}
+    assert js(f"helmView({json.dumps({'layline': lay, 'leg': 'beat'})})")["laylineDist"] == (
+        "Layline à 0,42 nm"
+    )
+    # not ahead (overstood / fetching), reach leg, unknown distance, or the route counts down
+    for n in (
+        {"layline": dict(lay, state="overstood"), "leg": "beat"},
+        {"layline": dict(lay, state="fetching"), "leg": "beat"},
+        {"layline": lay, "leg": "reach"},
+        {"layline": dict(lay, dist_nm=None), "leg": "beat"},
+        {"layline": lay, "leg": "beat", "route": ROUTE_OK},
+        {},
+    ):
+        assert js(f"helmView({json.dumps(n)})")["laylineDist"] == "", n

@@ -127,6 +127,23 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
 .stale-msg { font-size: min(6vh, 7vw); font-weight: 900; color: var(--bad); }
 .stale-msg[hidden] { display: none; }
 
+/* route countdown (03-06): "VIREZ" inverted, "Route mise à jour…" in the warning colour */
+.countdown.alert { color: var(--bg); background: var(--bad); border-radius: 8px; }
+.countdown.warn { color: var(--warn); }
+.layline-dist { font-weight: 700; }
+.layline-dist[hidden] { display: none; }
+
+/* -- route band (03-06): state, cost of not tacking, age, target, bias; theme colours only ---- */
+.route-band { text-align: center; padding: 2px 0 4px; }
+.route-band[hidden], .route-band [hidden] { display: none !important; }
+.route-line { font-size: min(3.6vh, 4.2vw); font-weight: 800; }
+.route-status.warn { color: var(--warn); }
+.route-status.bad { color: var(--bad); }
+.route-cost { font-size: min(4.2vh, 5vw); }
+.route-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px 18px; }
+.route-item { font-size: min(3vh, 3.6vw); font-weight: 600; color: var(--dim); }
+.route-item.warn { color: var(--warn); }
+
 /* map orientation buttons, over the map between the bands */
 .map-ctrls {
   align-self: flex-end; display: flex; flex-direction: column; gap: 6px; margin: 6px 8px;

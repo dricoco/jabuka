@@ -2,6 +2,11 @@
 // pytest through node (tests/test_helm_logic.py). The server computes every number; this file
 // only formats. Every direction in the message is TRUE; display.heading_ref says whether the helm
 // shows magnetic (true - variation) or true headings, always with a °M/°T suffix (Pitfall 16).
+//
+// Plan 03-06: when the core has a valid route (nav.route.state "ok"), the primary number, the
+// deviation and the countdown come from the route block (route_logic.js formats it); without one
+// the Phase 2 layline values come back by themselves.
+import { STR, countdownView, routeOk, tackWord } from "./route_logic.js";
 
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -41,8 +46,10 @@ export function fmtDistance(nm) {
 }
 
 // Time-to-tack line: "Virement dans 12 min", "Empannage dans 4 min 30", "DÉPASSÉE +3 min",
-// "ÇA PASSE"; "" when there is no layline (reach leg, no wind).
-export function fmtCountdown(layline, leg) {
+// "ÇA PASSE"; "" when there is no layline (reach leg, no wind). With a valid route block as the
+// third argument the route's countdown is used instead ("Virement dans 08:30", "VIREZ", ...).
+export function fmtCountdown(layline, leg, route) {
+  if (routeOk(route)) return countdownView({ route, layline, leg }).text;
   if (!layline || leg === "reach") return "";
   switch (layline.state) {
     case "normal": {
@@ -67,6 +74,9 @@ export function sourceBadge(wind) {
       return { text: "LIVE", cls: "good" };
     case "LIVE_BG":
       return { text: "LIVE B&G", cls: "good" };
+    case "GRIB":
+      // GPS + GRIB only: the bus is silent, heading = COG, speed = SOG (03-05, WIND-05)
+      return { text: "GRIB", cls: "warn" };
     case "MANUEL":
       return {
         // no trusted UTC (GPS not synced, now or at entry): the age is unknown, never guessed
@@ -119,6 +129,12 @@ const roundSym = (x) => Math.sign(x) * Math.round(Math.abs(x));
 // too far off the wind -> LOFER (head up), negative -> ABATTRE (bear away), upwind and downwind
 // alike. On a course to steer, deviation = heading - CTS: positive -> steer to port.
 export function deviationView(nav) {
+  const route = nav?.route;
+  if (routeOk(route) && route.primary) {
+    // same semantics from the core: |TWA| - |target| (LOFER/ABATTRE), heading - target (side)
+    const primary = route.primary === "hdg" ? "cts" : "twa_up";
+    return deviationView({ helm: { primary, deviation: route.deviation } });
+  }
   const helm = nav?.helm;
   const dev = helm?.deviation;
   if (!helm || !isNum(dev)) return { text: "—", hint: "", cls: "" };
@@ -150,6 +166,8 @@ export function primaryView(nav) {
   const helm = nav?.helm;
   const plain = (label, value) => ({ label, value, main: value, unit: "" });
   if (navFailed(nav)) return plain("ERREUR CALCUL", "—");
+  const route = routePrimary(nav);
+  if (route) return route;
   if (!nav || !helm || !helm.primary) {
     const noWind = !nav?.wind || nav.wind.source === "NONE";
     return plain(noWind ? "PAS DE VENT" : "—", "—");
@@ -161,6 +179,33 @@ export function primaryView(nav) {
   const h = fmtHeading(helm.cts_t, nav.display);
   if (h === "—") return plain("CAP À SUIVRE", "—");
   return { label: "CAP À SUIVRE", value: h, main: h.slice(0, -1), unit: h.slice(-1) };
+}
+
+// Distance to the layline next to the layline countdown (NAV-02): "Layline à 1,5 nm"; "" when the
+// countdown comes from the route or the layline is not ahead ("normal" state only).
+export function laylineDistText(nav, source = countdownView(nav).source) {
+  const lay = nav?.layline;
+  if (source !== "layline" || !lay || lay.state !== "normal" || nav?.leg === "reach") return "";
+  if (!isNum(lay.dist_nm)) return "";
+  return `${STR.laylineDist}${fmtDistance(lay.dist_nm)}`;
+}
+
+// Primary number from a valid route: "TWA ROUTE ↑" 42° tribord, or "CAP ROUTE" 114°M on a reach;
+// null without a valid route (the Phase 2 targets apply).
+function routePrimary(nav) {
+  const r = nav?.route;
+  if (!routeOk(r) || !r.primary) return null;
+  if (r.primary === "twa") {
+    if (!isNum(r.target)) return null;
+    const a = Math.abs(r.target);
+    const main = `${Math.round(a)}°`;
+    const word = tackWord(r.target_tack);
+    const label = a >= 90 ? STR.twaRouteDown : STR.twaRouteUp;
+    return { label, value: word ? `${main} ${word}` : main, main, unit: word };
+  }
+  const h = fmtHeading(r.target, nav.display);
+  if (h === "—") return null;
+  return { label: STR.capRoute, value: h, main: h.slice(0, -1), unit: h.slice(-1) };
 }
 
 // Every text of the helm bands from one nav message (missing blocks give "—" or "").
@@ -176,6 +221,7 @@ export function helmView(nav) {
   const markName = mark?.name ? String(mark.name) : "—";
   const dtw = fmtDistance(mark?.dtw_nm);
   const ttw = fmtDuration(mark?.ttw_s);
+  const cd = countdownView(nav);
   return {
     primary: primaryView(nav),
     dev,
@@ -188,7 +234,10 @@ export function helmView(nav) {
     ttw,
     markLine: mark ? `${markName} ${dtw} · ${ttw}` : "—",
     btw: fmtHeading(mark?.btw_t, nav?.display),
-    countdown: fmtCountdown(lay, nav?.leg),
+    countdown: cd.text,
+    countdownCls: cd.cls,
+    countdownSource: cd.source,
+    laylineDist: laylineDistText(nav, cd.source),
     otherTack: other === "—" ? "" : `Autre bord ${other}`,
     badge: windBadge(nav),
     flags: helmFlags(nav),
