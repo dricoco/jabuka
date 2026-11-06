@@ -324,7 +324,31 @@ const MODULES = [
   ["carte", "./carte.js", "tab-carte"],
   ["reglages", "./reglages.js", "tab-reglages"],
   ["overlays", "./overlays.js", null],
+  ["lock", "./lock.js", null],
 ];
+
+// Screen awake (HELM-04): Wake Lock / NoSleep video from a user gesture (the first tap anywhere,
+// retried on later taps until something holds the screen), shown as "ÉCRAN: verrou|vidéo|aucun"
+// ("aucun" is an alert). Capture phase on window, so the lock overlay cannot swallow it.
+const WAKE_CLS = { verrou: "good", vidéo: "warn", aucun: "bad" };
+
+async function setupWake() {
+  const show = (state) => badge("wake", `ÉCRAN: ${state}`, WAKE_CLS[state] ?? "bad");
+  try {
+    const w = await import("./wakelock.js");
+    show(w.wakeState());
+    w.onWakeChange(show);
+    const onGesture = () => {
+      if (w.wakeState() === "aucun") w.keepAwake();
+    };
+    for (const type of ["pointerdown", "pointerup", "keydown"]) {
+      window.addEventListener(type, onGesture, { capture: true });
+    }
+  } catch (e) {
+    console.error("wake lock module", e);
+    show("aucun");
+  }
+}
 
 // The map is optional for the helm: without WebGL (or MapLibre) the numbers keep updating and a
 // badge says so (the Leaflet fallback stays deferred).
@@ -371,6 +395,7 @@ function init() {
     for (const m of MODULES.slice(1)) loadModule(...m);
   });
   showTab(currentTab);
+  setupWake();
 }
 
 init();
