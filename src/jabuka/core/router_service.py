@@ -231,6 +231,7 @@ class RouterService:
         self.missed_watch = MissedTackWatch()
         self.stay = StayOnTack()
         self.missed = False  # a missed tack asked for a reroute: "Route mise à jour…"
+        self._last_follow: Follow | None = None  # the previous tick's projection
         self._missed_t: float | None = None  # UTC s when the missed tack was flagged
         self._missed_req: str | None = None  # request id of the reroute it asked for
         self._missed_failed = False  # ... and that reroute failed
@@ -393,7 +394,9 @@ class RouterService:
             self._set_state(block, "no_position", REASON_NO_POSITION)
         else:
             f = self._follow(now, msg)
-            off = self.offroute.update(now, f) if f is not None else False
+            self._last_follow = f
+            sog = (msg.get("boat") or {}).get("sog_kn")
+            off = self.offroute.update(now, f, sog) if f is not None else False
             if f is not None and self.missed_watch.update(
                 now, f.countdown_s, self.detector.last_tack_t
             ):
@@ -420,6 +423,12 @@ class RouterService:
             ev = self.detector.update(now, twa)
             if ev is not None and self.stay.active:
                 self.stay.on_tack(ev)  # a detected tack ends "On reste" (stay trigger)
+            elif ev is not None and self.route is not None:
+                f = self._last_follow
+                if f is not None and ev.new_side != f.target_tack:
+                    # tacked away from the route (e.g. early): it is outdated for this boat
+                    # (03-REVIEW MD-02), rerouted with the off-route treatment
+                    self.request("tack", forced=False)
         entry = getattr(self.nav.manual, "entry", None)
         key = entry.t_set_wall if entry is not None else None
         if key != self._manual_key:
@@ -888,7 +897,7 @@ class RouterService:
         replace, why = True, "no_route"
         if self.route is not None:
             age = now - self.route.t0
-            if "off_route" in reasons:  # the current route is outdated for this boat
+            if "off_route" in reasons or "tack" in reasons:  # outdated for this boat
                 age = max(age, ROUTE_MAX_AGE_S + 1.0)
             replace, why = should_replace(
                 float(shown.eta if shown.eta is not None else math.inf),
@@ -998,6 +1007,7 @@ class RouterService:
 
     def _on_new_route(self) -> None:
         assert self.route is not None
+        self._last_follow = None
         self.follower = RouteFollower(
             self.route.path, self.route.tacks, legs=[eta for _mid, eta in self.route.legs]
         )

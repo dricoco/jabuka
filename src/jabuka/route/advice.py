@@ -537,14 +537,25 @@ class OffRouteWatch:
     """True once the boat has been off the route (XTE > xte_nm, or COG more than dev_deg off
     the segment course) continuously for sustain_s. Any sample back inside resets it."""
 
-    def __init__(self, xte_nm: float = 0.5, dev_deg: float = 20.0, sustain_s: float = 120.0):
+    def __init__(
+        self,
+        xte_nm: float = 0.5,
+        dev_deg: float = 20.0,
+        sustain_s: float = 120.0,
+        min_sog_kn: float = 2.0,
+    ):
         self.xte_nm = xte_nm
         self.dev_deg = dev_deg
         self.sustain_s = sustain_s
+        self.min_sog_kn = min_sog_kn
         self._since: float | None = None
 
-    def update(self, t: float, follow: Follow) -> bool:
+    def update(self, t: float, follow: Follow, sog_kn: float | None = None) -> bool:
+        """``sog_kn``: below ``min_sog_kn`` the GPS COG wanders by tens of degrees, so only the
+        XTE counts (03-REVIEW MD-02: light-air reroute churn). None = SOG unknown: COG used."""
         dev = follow.course_dev_deg
+        if sog_kn is not None and sog_kn < self.min_sog_kn:
+            dev = None
         off = follow.xte_nm > self.xte_nm or (dev is not None and dev > self.dev_deg)
         if not off:
             self._since = None

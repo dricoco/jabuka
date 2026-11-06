@@ -235,6 +235,48 @@ def test_corrupt_route_file_is_ignored_with_an_alert(routing_core, fake_pool, rh
     fake_pool.hold = False
 
 
+# -- detected tack / low-speed COG (03-REVIEW MD-02) ----------------------------------------------
+def test_an_early_tack_reroutes_as_outdated(routing_core, fake_pool, rh) -> None:
+    core = routing_core(pool_factory=lambda: fake_pool)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 5.0)  # starboard (TWA +40), as the route's first leg
+    core.tick(1.0)
+    core.settle()
+    assert core.tick(0.0)["route"]["version"] == 1
+    fake_pool.script = lambda creq: _with_old(fake_pool, creq, 0.0)  # identical: kept if soft
+    nav = _run(core, pos, 30, hdg=5.0)
+    assert nav["route"]["version"] == 1
+    nav = _run(core, pos, 40, hdg=85.0)  # tacks 25 min early, to port (TWA -40)
+    tack_reqs = [r for r in _reasons(core) if "tack" in r]
+    assert tack_reqs and "off_route" not in tack_reqs[0]  # before the 2 min off-route timer
+    assert nav["route"]["version"] == 2  # replaced although identical: outdated for this boat
+
+
+def test_tack_as_advised_does_not_reroute(routing_core, fake_pool, rh) -> None:
+    fake_pool.tack_at_s = None  # one starboard leg: tacking onto it is no reason to reroute
+    core = routing_core(pool_factory=lambda: fake_pool)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 85.0)  # port
+    core.tick(1.0)
+    core.settle()
+    core.tick(0.0)
+    nav = _run(core, pos, 40, hdg=5.0)  # tacks onto the route's starboard tack
+    assert not any("tack" in r for r in _reasons(core))
+    assert nav["route"]["version"] == 1
+
+
+def test_low_speed_cog_noise_never_fires_off_route(routing_core, fake_pool, rh) -> None:
+    core, pos = _start(routing_core, fake_pool, rh)
+    v = core.client.get("/api/settings").json()["version"]
+    core.client.put("/api/settings", json={"base_version": v, "patch": {"bias_enabled": False}})
+    for _ in range(200):  # 1 kn in light air, COG 90 deg off the route, on the route
+        core.sail(*pos, 247.0, bsp_kn=1.0)
+        nav = core.tick(1.0)
+        core.settle()
+    assert nav["route"]["off_route"] is False
+    assert not any("off_route" in r for r in _reasons(core))
+
+
 # -- pool watchdog (03-REVIEW CR-01) --------------------------------------------------------------
 def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
     pools = [rh.FakePool(), rh.FakePool()]
