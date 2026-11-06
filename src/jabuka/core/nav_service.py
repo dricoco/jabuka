@@ -20,7 +20,7 @@ from jabuka.core.state import StateStore
 from jabuka.nav import laylines, wind
 from jabuka.nav.course import CourseStore
 from jabuka.nav.polar import Targets, load_racepack_polar
-from jabuka.nav.settings import SettingsStore
+from jabuka.nav.settings import ManualWindStore, SettingsStore
 
 log = logging.getLogger("jabuka.nav")
 
@@ -64,6 +64,7 @@ class NavService:
         self.racepack_dir = Path(racepack_dir) if racepack_dir is not None else None
         self.settings_store = SettingsStore(self.data_dir)
         self.course = CourseStore(self.data_dir)
+        self.manual = ManualWindStore(self.data_dir)
         self.polar = load_racepack_polar(self.racepack_dir)
         self.wind = wind.WindPipeline(self.settings_store.settings)
         self.last: dict | None = None
@@ -98,7 +99,11 @@ class NavService:
             "layline": None,
             "course": self.course.status(),
             "display": {"heading_ref": s.heading_display, "variation": s.variation_deg},
-            "alerts": list(self.settings_store.alerts) + list(self.course.alerts),
+            "alerts": (
+                list(self.settings_store.alerts)
+                + list(self.course.alerts)
+                + list(self.manual.alerts)
+            ),
         }
 
     def update(self) -> dict:
@@ -143,7 +148,8 @@ class NavService:
         }
 
         # -- wind --------------------------------------------------------------------------
-        w = self.wind.update(inputs, t_mono)
+        w = self.wind.update(inputs, t_mono, manual=self.manual.entry, t_wall=self.clock.wall())
+        msg["alerts"].extend(w.alerts)
         tws_kn = ms_to_kn(w.tws) if w.tws is not None else None
         msg["wind"] = {
             "source": w.source,

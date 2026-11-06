@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from jabuka.common.conventions import apply_heading_offset, mag_to_true, true_wind_from_apparent
-from jabuka.nav.settings import Settings
+from jabuka.common.units import kn_to_ms, wrap_2pi, wrap_pi
+from jabuka.nav.settings import ManualWind, Settings
 
 AWA = "environment.wind.angleApparent"
 AWS = "environment.wind.speedApparent"
@@ -89,6 +90,7 @@ class WindSolution:
     in_zone: bool = False
     manual_age_s: float | None = None
     check: dict | None = None
+    alerts: list[str] = field(default_factory=list)  # helm alert strings raised by the pipeline
 
     @property
     def ok(self) -> bool:
@@ -107,8 +109,16 @@ class WindPipeline:
             return None
         return heading_true(v, row.get("ref") if row else None, self.settings)
 
-    def update(self, inputs: Inputs, t_mono: float) -> WindSolution:
-        """One tick: computed true wind when AWA, AWS, BSP and heading are all fresh."""
+    def update(
+        self,
+        inputs: Inputs,
+        t_mono: float,
+        manual: ManualWind | None = None,
+        t_wall: float | None = None,
+    ) -> WindSolution:
+        """One tick. Arbitration: LIVE (computed true wind, AWA/AWS/BSP/heading all fresh) >
+        MANUEL (the stored manual entry, sticky until cleared) > NONE.
+        t_wall: injected wall clock, for the age of the manual entry."""
         awa, aws, bsp = num(inputs.get(AWA)), num(inputs.get(AWS)), num(inputs.get(BSP))
         hdg = self.heading(inputs)
         sol = WindSolution(hdg=hdg)
@@ -118,5 +128,22 @@ class WindPipeline:
             sol.twd = sol.twd_lay = tw.twd
             sol.tws = tw.tws
             sol.twa = tw.twa
+        elif manual is not None:
+            sol.source = "MANUEL"
+            sol.twd = sol.twd_lay = wrap_2pi(math.radians(manual.twd_t_deg))
+            sol.tws = kn_to_ms(manual.tws_kn)
+            if hdg is not None:
+                sol.twa = wrap_pi(sol.twd - hdg)
+            self._manual_age(sol, manual, t_wall)
         self.last = sol
         return sol
+
+    def _manual_age(self, sol: WindSolution, manual: ManualWind, t_wall: float | None) -> None:
+        if t_wall is None:
+            return
+        age = max(0.0, t_wall - manual.t_set_wall)
+        sol.manual_age_s = age
+        limit_min = self.settings.manual_wind_max_age_min
+        if age > limit_min * 60.0:
+            sol.stale = True
+            sol.alerts.append(f"Vent manuel ancien (> {limit_min:g} min)")

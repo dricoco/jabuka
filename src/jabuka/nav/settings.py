@@ -104,3 +104,68 @@ class SettingsStore:
     @staticmethod
     def schema() -> dict:
         return Settings.model_json_schema()
+
+
+# -- manual wind (WIND-04) -----------------------------------------------------------------------
+MANUAL_WIND_FILE = "wind_manual.json"
+
+
+class ManualWind(BaseModel):
+    """One manual wind entry, already TRUE (converted once, at entry time, Pitfall 6).
+
+    twd_entered/ref_entered keep what the helmsman typed (B&G display, often °M) for the log and
+    the form; twd_t_deg is what the pipeline uses. t_set_wall is the injected wall clock at entry,
+    so the age survives a core restart."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    twd_t_deg: float = Field(ge=0.0, lt=360.0)
+    tws_kn: float = Field(ge=0.0, le=80.0)
+    ref_entered: Literal["M", "T"]
+    twd_entered: float = Field(ge=0.0, lt=360.0)
+    t_set_wall: float
+
+
+class ManualWindStore:
+    """<data-dir>/wind_manual.json: the stored manual wind ({} when cleared). Sticky until cleared:
+    live instrument wind outranks it without deleting it (next outage reuses it)."""
+
+    def __init__(self, data_dir: str | Path) -> None:
+        self.path = Path(data_dir) / MANUAL_WIND_FILE
+        self.alerts: list[str] = []
+        self.entry: ManualWind | None = None
+        raw = load_json_with_bak(self.path, None)
+        if raw:  # None (missing) or {} (cleared) -> no entry
+            try:
+                self.entry = ManualWind.model_validate(raw)
+            except ValidationError:
+                self.alerts.append("Vent manuel illisible : ignoré")
+
+    def set(
+        self, twd: float, tws_kn: float, ref: str, variation_deg: float, t_wall: float
+    ) -> ManualWind:
+        """Store an entry. A °M direction becomes TRUE with the variation in force now.
+        Raises pydantic.ValidationError (bad values) or OSError (disk); nothing changes then."""
+        twd_t = (twd + variation_deg) % 360.0 if ref == "M" else twd % 360.0
+        if twd_t >= 360.0:  # -tiny % 360 rounds to 360
+            twd_t = 0.0
+        entry = ManualWind(
+            twd_t_deg=round(twd_t, 3),
+            tws_kn=tws_kn,
+            ref_entered=ref,
+            twd_entered=twd,
+            t_set_wall=t_wall,
+        )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self.path, entry.model_dump())
+        self.entry = entry
+        return entry
+
+    def clear(self) -> None:
+        """Forget the entry (an empty record is written atomically)."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self.path, {})
+        self.entry = None
+
+    def to_api(self) -> dict | None:
+        return self.entry.model_dump() if self.entry is not None else None
