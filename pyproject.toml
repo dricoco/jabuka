@@ -15,6 +15,7 @@ dependencies = [
     "fastapi==0.162.0",
     "uvicorn==0.54.0",
     "websockets==17.4",
+    "pmtiles==3.8.1",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,12 @@ dev = [
     "pytest-asyncio==1.4.1.post1",
     "httpx==0.28.1",
     "ruff==0.17.4",
+    # headless UI tests drive the system /usr/bin/chromium (dev laptop only, never on the Pi)
+    "playwright==1.64.1",
+]
+# laptop race-pack prep (seamark extraction from the Geofabrik OSM extract), never on the Pi
+prep = [
+    "osmium==4.3.2",
 ]
 
 # All console scripts are declared up front (plan 01-01) so the wave-2 plans
@@ -37,6 +44,9 @@ jabuka-sim = "jabuka.sim.synth:main"                  # (01-03)
 jabuka-fake-gpsd = "jabuka.sim.fake_gpsd:main"        # (01-03)
 jabuka-logcheck = "jabuka.tools.logcheck:main"        # (01-04)
 jabuka-fastnet-relay = "jabuka.tools.fastnet_relay:main"  # Plan B receive-only relay (WR-03)
+# Phase 2: declared up front (plan 02-01) so the wave-2 plans never edit this file.
+jabuka-prep-map = "jabuka.prep.map:main"              # (02-02) laptop race-pack builder
+jabuka-prep-polar = "jabuka.prep.polar:main"          # (02-02) polar converter
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jabuka"]

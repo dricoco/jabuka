@@ -6,3 +6,4 @@ pyserial==3.5
 fastapi==0.162.0
 uvicorn==0.54.0
 websockets==17.4
+pmtiles==3.8.1

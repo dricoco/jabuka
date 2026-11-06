@@ -24,6 +24,7 @@ from jabuka.core.bus import start_udp_listener
 from jabuka.core.derived_log import DerivedLogger
 from jabuka.core.nav_service import NavService
 from jabuka.core.state import StateStore
+from jabuka.core.tiles import Racepack
 from jabuka.core.web import Hub, create_app
 from jabuka.ingest.gpsd_client import run_gpsd_client, sky_to_values, tpv_epoch, tpv_to_values
 from jabuka.ingest.rawlog import RotatingAppendLog
@@ -43,6 +44,7 @@ class CoreContext:
     data_dir: Path
     nav: NavService
     racepack_dir: Path | None = None
+    racepack: Racepack | None = None  # built by tiles.racepack_router (index once, at startup)
     bus_log: RotatingAppendLog | None = None
     derived: DerivedLogger | None = None
     events_log: RotatingAppendLog | None = None
@@ -274,8 +276,14 @@ class CoreContext:
         if text is not None:
             self.hub.publish(text)
 
+    def record_racepack_health(self) -> None:
+        """Race-pack state in the health table (src "racepack"), refreshed every tick."""
+        if self.racepack is not None:
+            self.state.update_health("racepack", self.racepack.info(), self.clock.monotonic())
+
     def tick_once(self) -> None:
         self.ticks += 1
+        self.record_racepack_health()
         nav = self.update_nav()  # first: its nav.* rows go into this tick's derived line
         diag = self.diag_message()
         if self.derived is not None:
@@ -357,6 +365,8 @@ class CoreContext:
             self._transport.close()
             self._transport = None
         self.close_logs()
+        if self.racepack is not None:
+            self.racepack.close()
 
     def close_logs(self) -> None:
         for lg in self.logs():

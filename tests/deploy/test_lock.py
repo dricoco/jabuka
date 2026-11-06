@@ -17,6 +17,7 @@ EXPECTED_LOCKED = {
     "h11",
     "idna",
     "opentelemetry-api",
+    "pmtiles",
     "pydantic",
     "pydantic-core",
     "pyfastnet",

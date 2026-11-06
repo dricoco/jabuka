@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from jabuka.core import course_api, nav_api
+from jabuka.core.tiles import racepack_router
 
 if TYPE_CHECKING:
     from jabuka.core.main import CoreContext
@@ -125,6 +126,7 @@ def create_app(ctx: CoreContext) -> FastAPI:
 
     app.include_router(nav_api.router(ctx))
     app.include_router(course_api.router(ctx))
+    app.include_router(racepack_router(ctx))  # tile index built once, here
 
     # Static files LAST so they never shadow the API routes.
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
