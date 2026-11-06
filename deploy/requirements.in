@@ -1,0 +1,8 @@
+# Pi runtime: exactly the [project].dependencies pins of pyproject.toml (tests/deploy/test_lock.py).
+# Plain uvicorn, NOT uvicorn[standard] (no watchfiles/uvloop/httptools on the Pi).
+# Re-lock with: bash scripts/build-wheelhouse.sh --relock
+pyfastnet==3.2.1
+pyserial==3.5
+fastapi==0.162.0
+uvicorn==0.54.0
+websockets==17.4

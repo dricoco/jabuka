@@ -1,0 +1,37 @@
+# Jabuka core: state store, logs, GPS clock (via gpsd) and the diagnostics web app on port 80.
+# Installed by deploy/provision.sh to /etc/systemd/system/ and enabled at boot.
+#
+# - Port 80 (tablet bookmark http://10.42.0.1/) without root: CAP_NET_BIND_SERVICE is the only
+#   ambient capability and the bounding set holds nothing else.
+# - Type=notify + WatchdogSec=30, Restart=always + StartLimitIntervalSec=0 (see the ingest unit).
+# - Wants/After gpsd (and chrony, which gpsd feeds): the core starts without them and shows the
+#   routing time gate as blocked until the GPS clock is valid.
+
+[Unit]
+Description=Jabuka core (state, logging, diagnostics web)
+Documentation=file:///opt/jabuka/PI-SETUP.md
+Wants=gpsd.service
+After=network.target chrony.service gpsd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+User=jabuka
+Group=jabuka
+ExecStart=/opt/jabuka/venv/bin/jabuka-core --http-port 80 --data-dir /var/lib/jabuka --clock gps --gpsd 127.0.0.1:2947
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=always
+RestartSec=2
+WatchdogSec=30
+StateDirectory=jabuka
+OOMScoreAdjust=-500
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/jabuka
+
+[Install]
+WantedBy=multi-user.target
