@@ -50,14 +50,15 @@ function setLine(e, text, cls) {
   }
 }
 
-// #route-band, under the countdown (and the layline distance) in the bottom band
+// #route-band, under the countdown (and the layline distance) in the helm's block 2 (quick 002:
+// one line each, in the owner's order: cost, state, age, target, bias, then ON RESTE)
 function buildBand(section) {
   let band = $("route-band");
   if (band) return band;
   band = el("div", { id: "route-band", class: "route-band", hidden: "" });
   band.append(
-    el("div", { id: "route-status", class: "route-line route-status", hidden: "" }),
     el("div", { id: "route-cost", class: "route-line route-cost", hidden: "" }),
+    el("div", { id: "route-status", class: "route-line route-status", hidden: "" }),
   );
   const row = el("div", { class: "route-row" });
   row.append(

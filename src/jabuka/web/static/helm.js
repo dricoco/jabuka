@@ -1,16 +1,23 @@
-// Barre tab (HELM-02): renders the helm bands from helm_logic.js output only (the server
+// Barre tab (HELM-02): renders the helm blocks from helm_logic.js output only (the server
 // computes, the browser formats). Every server string goes through textContent (T-02-05-01).
 //
-//   top band:    label, the big primary number (>= 20% of the viewport height), the deviation
-//                with its LOFER/ABATTRE or steer-left/right hint, "PERTE DONNÉES" when the link
-//                is not live (Pitfall 5: frozen numbers must never look live)
-//   map buttons: "Nord en haut" / "Cap en haut" and "Centrer" (localStorage jabuka.mapMode,
-//                jabuka.centred; overlays.js turns the map on the next nav message)
-//   bottom band: countdown, BSP / target, % polar, mark + DTW · TTW, bearing, other-tack heading
-//   #badges:     wind source (app.js) + CAP NON FIABLE / COURANT / ANGLES RÉELS + one red badge
-//                per nav alert (B&G cross-check, unreadable files, nav computation failure...)
+// Layout (quick 002): #helm-col is the left third of the screen in landscape (the map shows on
+// the right two thirds) and one top area in portrait (the map below):
+//   block 1 #helm-steer: label, the big primary number with its °M/°T suffix or tack word, the
+//                        deviation with its LOFER/ABATTRE or steer-left/right hint, "PERTE DONNÉES"
+//                        when the link is not live (Pitfall 5: frozen numbers never look live)
+//   block 2 #helm-route: countdown, layline distance, then route.js's #route-band (cost, state,
+//                        age, target, bias, one per line) and the ON RESTE button
+//   block 3 #helm-rest:  BSP / target, % polar, mark, distance, time, bearing, other-tack heading
+//   map buttons:         "Nord en haut" / "Cap en haut" and "Centrer" over the map, bottom right
+//                        (localStorage jabuka.mapMode, jabuka.centred; overlays.js turns the map)
+//   map padding:         the camera centre sits in the visible part of the map (map.js
+//                        setMapPadding), on Barre only, kept up to date on resize/orientation/tab
+//   #badges:             wind source (app.js) + CAP NON FIABLE / COURANT / ANGLES RÉELS + one red
+//                        badge per nav alert (B&G cross-check, unreadable files, nav failure...)
 import { helmView } from "./helm_logic.js";
 import { t } from "./i18n.js";
+import { setMapPadding } from "./map.js";
 
 const $ = (id) => document.getElementById(id);
 const MODE_KEY = "jabuka.mapMode";
@@ -55,44 +62,68 @@ function setText(id, text, cls) {
   }
 }
 
-const cellOf = (id) => $(id)?.closest(".cell") ?? null;
-
-// Re-arrange the 02-01 band markup: speed and % polar go to the bottom band next to the mark,
-// the deviation gets its hint, DTW/TTW join the mark line, map buttons sit between the bands.
+// The dynamic pieces of the static markup: the stale message, the deviation hint, the layline
+// distance under the countdown and the map buttons (idempotent).
 function layout(section) {
-  const top = $("helm-top");
-  const bottom = $("helm-bottom");
-  const box = top.querySelector(".primary-box");
-  if (!$("helm-stale")) box.append(el("div", { id: "helm-stale", class: "stale-msg", hidden: "" }, t("helm.stale")));
-  const devCell = cellOf("helm-deviation");
-  if (devCell && !$("helm-hint")) {
-    devCell.classList.add("dev-cell");
-    devCell.append(el("span", { id: "helm-hint", class: "hint" }));
+  const box = $("helm-steer")?.querySelector(".primary-box");
+  if (box && !$("helm-stale")) {
+    box.append(el("div", { id: "helm-stale", class: "stale-msg", hidden: "" }, t("helm.stale")));
   }
-  const bottomRow = bottom.querySelector(".secondary");
-  const markCell = cellOf("helm-mark");
-  for (const id of ["helm-speed", "helm-pct"]) {
-    const c = cellOf(id);
-    if (c && bottomRow && markCell) bottomRow.insertBefore(c, markCell);
-  }
-  const speedLabel = cellOf("helm-speed")?.querySelector(".label");
-  if (speedLabel) speedLabel.textContent = t("helm.bspTarget");
-  for (const id of ["helm-dtw", "helm-ttw"]) cellOf(id)?.remove();
+  const devCell = $("helm-deviation")?.closest(".cell");
+  if (devCell && !$("helm-hint")) devCell.append(el("span", { id: "helm-hint", class: "hint" }));
   // distance to the layline under the layline countdown (NAV-02)
   const countdown = $("helm-countdown");
   if (countdown && !$("helm-layline-dist")) {
     countdown.after(el("div", { id: "helm-layline-dist", class: "other layline-dist", hidden: "" }));
   }
-  markCell?.classList.add("mark-cell");
-
   if (!$("map-ctrls")) {
     const ctrls = el("div", { id: "map-ctrls", class: "map-ctrls" });
     const north = el("button", { type: "button", id: "map-north", class: "ctrl" }, t("helm.northUp"));
     const course = el("button", { type: "button", id: "map-course", class: "ctrl" }, t("helm.courseUp"));
     const centre = el("button", { type: "button", id: "map-centre", class: "ctrl" }, t("helm.centre"));
     ctrls.append(north, course, centre);
-    section.insertBefore(ctrls, bottom);
+    section.append(ctrls);
   }
+}
+
+// Map padding (quick 002): the part of the map the helm covers, so the camera centre (the boat
+// when "Centrer" is on) sits in the middle of the visible map. The top bar always covers the top
+// of the map; landscape adds the column on the left, portrait the top area. Other tabs: none.
+const LANDSCAPE = "(min-aspect-ratio: 1/1)";
+const ZERO = { top: 0, right: 0, bottom: 0, left: 0 };
+
+export function helmPadding(tab) {
+  if (tab !== "barre") return ZERO;
+  const col = $("helm-col")?.getBoundingClientRect();
+  if (!col || !col.width || !col.height) return ZERO;
+  const top = Math.round($("topbar")?.getBoundingClientRect().bottom ?? 0);
+  if (globalThis.matchMedia?.(LANDSCAPE).matches) return { ...ZERO, top, left: Math.round(col.right) };
+  return { ...ZERO, top: Math.max(top, Math.round(col.bottom)) };
+}
+
+function trackPadding(ctx) {
+  let tab = ctx.latest?.("tab") ?? "barre";
+  let queued = false;
+  const update = () => {
+    queued = false;
+    setMapPadding(helmPadding(tab));
+  };
+  const soon = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(update);
+  };
+  ctx.bus.addEventListener("tab", (ev) => {
+    tab = ev.detail;
+    soon();
+  });
+  window.addEventListener("resize", soon);
+  window.addEventListener("orientationchange", soon);
+  if (typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver(soon);
+    for (const id of ["helm-col", "topbar"]) if ($(id)) ro.observe($(id));
+  }
+  soon();
 }
 
 function renderMapButtons() {
@@ -109,11 +140,16 @@ export function render(nav, badge) {
   setText("primary-label", v.primary.label);
   setText("primary", v.primary.main);
   setText("primary-unit", v.primary.unit);
+  // a tack word (tribord / starboard / desno) goes on its own line under the number; a °M/°T
+  // suffix stays inline, so "888°M" always fits the column
+  $("primary-unit")?.classList.toggle("unit-word", (v.primary.unit ?? "").length > 1);
   setText("helm-deviation", v.dev.text, v.dev.cls);
   setText("helm-hint", v.dev.hint, v.dev.cls);
   setText("helm-speed", v.speed);
   setText("helm-pct", v.pct);
-  setText("helm-mark", v.markLine);
+  setText("helm-mark", v.mark);
+  setText("helm-dtw", v.dtw);
+  setText("helm-ttw", v.ttw);
   setText("helm-btw", v.btw);
   setText("helm-countdown", v.countdown);
   const cd = $("helm-countdown");
@@ -155,6 +191,7 @@ export function mount(ctx) {
   const section = ctx.section ?? $("tab-barre");
   layout(section);
   renderMapButtons();
+  trackPadding(ctx);
   const changed = () => {
     renderMapButtons();
     ctx.bus.dispatchEvent(new CustomEvent("mapmode", { detail: { mode: mapMode(), centred: mapCentred() } }));

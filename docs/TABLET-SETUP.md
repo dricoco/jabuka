@@ -99,10 +99,17 @@ only feature the page uses with it.
 | `ÉCRAN: verrou` / `vidéo` / `aucun` | What keeps the screen on (see section 2) |
 | `CARTE INDISPONIBLE` | No WebGL: numbers only (see section 5) |
 
-On the Barre view: the big number is the **target TWA** upwind (↑) or downwind (↓), or the
-**course to steer** (°M) on a reach; under it the deviation with **LOFER / ABATTRE** (or
-**◄ BÂBORD / TRIBORD ►** on a course to steer); the bottom band gives BSP / target, % polar, the
-next mark with distance and time, the tack/gybe countdown and the heading on the other tack.
+On the Barre view the numbers sit in a column on the left third of the screen in landscape, with
+the map on the right two thirds (the boat is centred there). In portrait they sit in one area at
+the top, with the map below. The column has three blocks:
+1. **Steering.** The big number is the **target TWA** upwind (↑) or downwind (↓), or the
+   **course to steer** (°M) on a reach, then the tack. Under it is the deviation with
+   **LOFER / ABATTRE** (or **◄ BÂBORD / TRIBORD ►** on a course to steer).
+2. **Route and tack.** The tack/gybe countdown, then one line each for the cost of not tacking,
+   the route state, the route age, the route heading and the GRIB bias, then the **ON RESTE**
+   button.
+3. **The rest.** BSP / target, % polar, the next mark with distance and time, its bearing and the
+   heading on the other tack. This block scrolls if the screen is short.
 
 ## 10. Remote debugging — Débogage à distance
 
