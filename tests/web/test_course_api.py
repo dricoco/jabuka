@@ -123,3 +123,103 @@ def test_thirty_marks_at_most(make_client) -> None:
         r = client.post("/api/marks", json={**BUOY, "insert_at": None, "base_version": v})
         assert r.status_code == 422
         assert len(client.get("/api/course").json()["marks"]) == 30
+
+
+# -- Task 2: the whole course in a few taps -------------------------------------------------------
+def test_patch_mark_moves_builtin_and_active_anchor(make_client, tmp_data_dir: Path) -> None:
+    _, client = make_client()
+    with client:
+        nav0 = client.get("/api/nav").json()["mark"]
+        r = client.patch(
+            "/api/marks/plic-sestre", json={"lat": 43.69, "lon": 15.80, "base_version": 0}
+        )
+        assert r.status_code == 200, r.text
+        m = r.json()["marks"]["plic-sestre"]
+        assert (m["lat"], m["lon"], m["moved"], m["builtin"]) == (43.69, 15.80, True, True)
+        nav1 = client.get("/api/nav").json()
+        assert nav1["course_version"] == 1
+        assert (nav1["mark"]["lat"], nav1["mark"]["lon"]) == (43.69, 15.80)
+        assert nav1["mark"]["anchor_lat"] != nav0["anchor_lat"]
+        r = client.patch("/api/marks/plic-sestre", json={"name": "Sestre\x00", "base_version": 1})
+        assert r.json()["marks"]["plic-sestre"]["name"] == "Sestre"
+        body = {"lat": 43.7, "lon": 15.8, "base_version": 2}
+        assert client.patch("/api/marks/nope", json=body).status_code == 404
+        stale = client.patch("/api/marks/jabuka", json={**body, "base_version": 0})
+        assert stale.status_code == 409 and stale.json()["version"] == 2
+        assert client.patch("/api/marks/jabuka", json={**body, "lat": 46.0}).status_code == 422
+        assert client.patch("/api/marks/jabuka", json={**body, "x": 1}).status_code == 422
+    acts = [e["action"] for e in events(tmp_data_dir) if e["type"] == "course_edit"]
+    assert acts == ["edit_mark", "edit_mark"]
+
+
+def test_patch_leg_side_and_radius(make_client) -> None:
+    _, client = make_client()
+    with client:
+        r = client.patch(
+            "/api/course/legs/1", json={"side": "port", "radius_nm": 0.5, "base_version": 0}
+        )
+        assert r.status_code == 200
+        assert r.json()["seq"][1] == {"mark_id": "plic-sestre", "side": "port", "radius_nm": 0.5}
+        mark = client.get("/api/nav").json()["mark"]
+        assert (mark["side"], mark["radius_nm"]) == ("port", 0.5)
+        for idx, body, code in (
+            (0, {"side": "port", "base_version": 1}, 422),
+            (9, {"side": "port", "base_version": 1}, 422),
+            (1, {"base_version": 1}, 422),
+            (1, {"radius_nm": 3.1, "base_version": 1}, 422),
+            (1, {"side": "stbd", "base_version": 0}, 409),
+        ):
+            assert client.patch(f"/api/course/legs/{idx}", json=body).status_code == code, body
+
+
+def test_delete_reorder_finish_activate_confirm_select(make_client) -> None:
+    _, client = make_client()
+    with client:
+        assert client.delete("/api/course/legs/0?base_version=0").status_code == 422
+        assert client.delete("/api/course/legs/1").status_code == 422  # base_version required
+        c = client.delete("/api/course/legs/1?base_version=0").json()  # the active leg
+        assert [leg["mark_id"] for leg in c["seq"]] == ["vodice", "jabuka", "blitvenica", "vodice"]
+        assert c["active_idx"] == 1 and c["template"] == "custom"
+        assert client.get("/api/nav").json()["mark"]["id"] == "jabuka"
+        assert client.delete("/api/course/legs/1?base_version=0").status_code == 409
+
+        r = client.post("/api/course/reorder", json={"from_idx": 2, "to_idx": 1, "base_version": 1})
+        c = r.json()
+        assert [leg["mark_id"] for leg in c["seq"]][1:3] == ["blitvenica", "jabuka"]
+        assert c["seq"][c["active_idx"]]["mark_id"] == "jabuka"
+        for bad in ((0, 1), (1, 0), (1, 8)):
+            body = {"from_idx": bad[0], "to_idx": bad[1], "base_version": 2}
+            assert client.post("/api/course/reorder", json=body).status_code == 422, bad
+
+        c = client.post("/api/course/finish", json={"idx": 1, "base_version": 2}).json()
+        assert c["finish_idx"] == 1 and c["active_idx"] == 1
+        assert client.get("/api/nav").json()["course"]["finish_idx"] == 1
+        assert client.post("/api/course/next").json()["active_idx"] == 1  # stops at the finish
+        c = client.post("/api/course/finish", json={"idx": None, "base_version": 3}).json()
+        assert c["finish_idx"] is None
+        assert client.post("/api/course/finish", json={"base_version": 4}).status_code == 422
+
+        c = client.post("/api/course/activate", json={"idx": 3, "base_version": 4}).json()
+        assert c["active_idx"] == 3
+        r = client.post("/api/course/activate", json={"idx": 0, "base_version": 5})
+        assert r.status_code == 422
+        c = client.post("/api/course/confirm-sides", json={"base_version": 5}).json()
+        assert c["sides_confirmed"] is True
+        assert client.get("/api/nav").json()["course"]["sides_confirmed"] is True
+
+        b = client.post("/api/course/select", json={"template": "B", "base_version": 6}).json()
+        assert [leg["mark_id"] for leg in b["seq"]] == [
+            "vodice",
+            "plic-sestre",
+            "jabuka",
+            "mulo",
+            "vodice",
+        ]
+        assert b["template"] == "B" and b["active_idx"] == 1
+
+
+def test_undo_unknown_token_is_410(make_client) -> None:
+    _, client = make_client()
+    with client:
+        assert client.post("/api/course/undo", json={"token": "nope"}).status_code == 410
+        assert client.post("/api/course/undo", json={"token": ""}).status_code == 422

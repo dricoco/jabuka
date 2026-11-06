@@ -86,3 +86,124 @@ def test_tap_adds_a_mark_and_land_tap_warns(page, core_server) -> None:
     assert len(course(page)["seq"]) == 6  # nothing else was added
     assert page.external_requests == []
     assert page.bad_responses == [], page.bad_responses
+
+
+def test_drag_a_mark_sends_one_patch(page, core_server) -> None:
+    pg = open_carte(page)
+    patches: list[str] = []
+    pg.on("request", lambda r: patches.append(r.url) if r.method == "PATCH" else None)
+    x0, y0 = xy(pg, 43.684627, 15.811626)  # Plić Sestre
+    x1, y1 = x0 - 90, y0 + 40
+    target = pg.evaluate(
+        "([x, y]) => { const p = window.jabuka.map.unproject([x, y]); return [p.lat, p.lng]; }",
+        [x1, y1],
+    )
+    center0 = pg.evaluate("() => window.jabuka.map.getCenter().toArray()")
+    with pg.expect_response(lambda r: "/api/marks/plic-sestre" in r.url) as resp:
+        pg.mouse.move(x0, y0)
+        pg.mouse.down()
+        pg.mouse.move(x0 - 30, y0 + 10, steps=4)
+        pg.mouse.move(x1, y1, steps=6)
+        pg.mouse.up()
+    assert resp.value.status == 200, resp.value.text()
+    pg.wait_for_timeout(500)
+    assert len(patches) == 1, patches
+    assert pg.evaluate("() => window.jabuka.map.getCenter().toArray()") == center0  # no pan
+    assert pg.locator("#carte-sheet").is_hidden()  # the release is not a tap
+    m = course(page)["marks"]["plic-sestre"]
+    assert m["lat"] == pytest.approx(target[0], abs=1e-4)
+    assert m["lon"] == pytest.approx(target[1], abs=1e-4)
+    assert m["moved"] is True
+    # a tap on the mark (now at its new place) opens its sheet
+    pg.wait_for_function(
+        """([lat, lon]) => { const m = window.jabuka.map;
+        return m.queryRenderedFeatures(m.project([lon, lat]), {layers: ["carte-marks"]}).length;
+        }""",
+        arg=[m["lat"], m["lon"]],
+    )
+    pg.mouse.click(*xy(pg, m["lat"], m["lon"]))
+    pg.locator("#carte-sheet").wait_for(state="visible")
+    assert "Plić Sestre (n° 1)" in pg.locator("#carte-sheet .sheet-title").inner_text()
+    assert page.bad_responses == [], page.bad_responses
+
+
+def _click_and_wait(pg, selector: str, url_part: str, method: str) -> None:
+    with pg.expect_response(lambda r: url_part in r.url and r.request.method == method) as resp:
+        pg.click(selector)
+    assert resp.value.status == 200, (selector, resp.value.status, resp.value.text())
+
+
+def test_mark_sheet_side_reorder_finish_delete_and_course_b(page, core_server) -> None:
+    pg = open_carte(page)
+    pg.click("#course-list li[data-idx='2']")  # Jabuka
+    pg.locator("#carte-sheet").wait_for(state="visible")
+    assert "Jabuka (n° 2)" in pg.locator("#carte-sheet .sheet-title").inner_text()
+
+    _click_and_wait(pg, "#carte-sheet [data-name=side] button[data-value=port]", "/legs/2", "PATCH")
+    assert course(page)["seq"][2]["side"] == "port"
+
+    _click_and_wait(pg, "#carte-sheet [data-name=radius] button[data-step='+']", "/legs/2", "PATCH")
+    assert course(page)["seq"][2]["radius_nm"] == pytest.approx(0.65)
+
+    _click_and_wait(pg, "#leg-up", "/api/course/reorder", "POST")
+    c = course(page)
+    assert [leg["mark_id"] for leg in c["seq"]][1:3] == ["jabuka", "plic-sestre"]
+    assert c["seq"][c["active_idx"]]["mark_id"] == "plic-sestre"  # the active mark stays
+    pg.wait_for_function(
+        "() => document.querySelector('#carte-sheet .sheet-title')?.textContent === 'Jabuka (n° 1)'"
+    )
+
+    _click_and_wait(pg, "#leg-finish", "/api/course/finish", "POST")
+    c = course(page)
+    assert c["finish_idx"] == 1 and c["active_idx"] == 1
+    pg.wait_for_function(
+        "() => document.querySelector('#course-list li[data-idx=\"1\"] .tag.finish') !== null"
+    )
+    _click_and_wait(pg, "#leg-finish", "/api/course/finish", "POST")  # "Parcours complet"
+    assert course(page)["finish_idx"] is None
+
+    pg.click("#carte-sheet .sheet-close")
+    pg.click("#course-list li[data-idx='3']")  # Blitvenica
+    pg.locator("#leg-delete").wait_for(state="visible")
+    pg.click("#leg-delete")  # the first tap only asks
+    assert pg.locator("#leg-delete").inner_text() == "Confirmer la suppression"
+    assert "blitvenica" in [leg["mark_id"] for leg in course(page)["seq"]]
+    _click_and_wait(pg, "#leg-delete", "/api/course/legs/3", "DELETE")
+    assert [leg["mark_id"] for leg in course(page)["seq"]] == [
+        "vodice",
+        "jabuka",
+        "plic-sestre",
+        "vodice",
+    ]
+    pg.locator("#carte-sheet").wait_for(state="hidden")
+
+    _click_and_wait(pg, "button[data-template=B]", "/api/course/select", "POST")
+    c = course(page)
+    assert c["template"] == "B"
+    names = ["vodice", "plic-sestre", "jabuka", "mulo", "vodice"]
+    assert [leg["mark_id"] for leg in c["seq"]] == names
+    pg.wait_for_function(
+        "() => [...document.querySelectorAll('#course-list .name')].map(e => e.textContent)"
+        ".join(',') === 'Vodice,Plić Sestre,Jabuka,Mulo,Vodice'"
+    )
+    assert page.external_requests == []
+    assert page.bad_responses == [], page.bad_responses
+
+
+def test_stale_tablet_gets_409_and_reloads(page, core_server) -> None:
+    import httpx
+
+    pg = open_carte(page)
+    pg.route("**/api/course", lambda route: route.abort())  # this tablet misses the refetch
+    r = httpx.post(core_server.base_url + "/api/course/confirm-sides", json={"base_version": 0})
+    assert r.status_code == 200  # another tablet edits
+    pg.click("#course-list li[data-idx='2']")
+    with pg.expect_response(lambda r: "/legs/2" in r.url) as resp:
+        pg.click("#carte-sheet [data-name=side] button[data-value=port]")
+    assert resp.value.status == 409
+    pg.wait_for_function(
+        "() => document.getElementById('carte-status').textContent"
+        " === 'Parcours modifié ailleurs — rechargé'"
+    )
+    assert pg.locator("#sides-warning").is_hidden()  # the 409 body is the current course
+    assert course(page)["seq"][2]["side"] == "stbd"  # nothing overwritten
