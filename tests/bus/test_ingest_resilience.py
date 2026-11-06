@@ -207,7 +207,7 @@ def test_decoder_exception_keeps_raw_first(tmp_path: Path, monkeypatch) -> None:
         raise RuntimeError("decoder bug")
 
     monkeypatch.setattr(fastnet_main, "decode_to_values", boom)
-    rawlog = RotatingAppendLog(tmp_path, "fastnet", min_free_bytes=0)
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
     sent: list[bytes] = []
     ingest = FastnetIngest(rawlog, sent.append)
     chunks = chunks_from_capture(EXAMPLE2)[:200]
@@ -227,7 +227,7 @@ def test_decoder_exception_keeps_raw_first(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_unknown_ref_layout_record_path(tmp_path: Path) -> None:
-    rawlog = RotatingAppendLog(tmp_path, "fastnet", min_free_bytes=0)
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
     sent: list[bytes] = []
     ingest = FastnetIngest(rawlog, sent.append)
     for c in chunks_from_capture(RAWFN):
@@ -257,7 +257,7 @@ def test_unknown_ref_layout_record_path(tmp_path: Path) -> None:
 
 
 def test_heartbeat_payload_contract(tmp_path: Path) -> None:
-    rawlog = RotatingAppendLog(tmp_path, "fastnet", min_free_bytes=0)
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
     t = [100.0]
     ingest = FastnetIngest(rawlog, lambda b: None, mono=lambda: t[0], wall=lambda: 1.7e9)
     h = ingest.health()

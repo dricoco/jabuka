@@ -268,7 +268,7 @@ def _read_live(
     """Read the device for `seconds`. Returns (info, device_error)."""
     ser = open_fastnet(device)
     fd = ser.fileno()
-    capture = RotatingAppendLog(out_dir, "capture", guard_prefixes=())
+    capture = RotatingAppendLog(out_dir, "capture")
     icount_start = read_icount(fd)
     device_error: str | None = None
     t0 = time.monotonic()

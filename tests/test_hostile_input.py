@@ -84,7 +84,7 @@ def _raw_bytes(directory: Path) -> bytes:
 
 def test_ingest_survives_1mb_urandom(tmp_path: Path) -> None:
     raw_dir = tmp_path / "raw"
-    rawlog = RotatingAppendLog(raw_dir, "fastnet", min_free_bytes=0)
+    rawlog = RotatingAppendLog(raw_dir, "fastnet")
     sent: list[bytes] = []
     ingest = FastnetIngest(rawlog, sent.append)
     data = os.urandom(1024 * 1024)
@@ -99,7 +99,7 @@ def test_ingest_survives_1mb_urandom(tmp_path: Path) -> None:
 
 
 def test_ingest_send_failure_never_raises(tmp_path: Path, capture_bytes) -> None:
-    rawlog = RotatingAppendLog(tmp_path, "fastnet", min_free_bytes=0)
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
 
     def broken_send(_: bytes) -> None:
         raise OSError("network is down")
@@ -118,7 +118,7 @@ def test_ingest_decoder_exception_counted(tmp_path: Path, capture_bytes, monkeyp
         raise RuntimeError("decoder bug")
 
     monkeypatch.setattr(fastnet_main, "decode_to_values", boom)
-    rawlog = RotatingAppendLog(tmp_path, "fastnet", min_free_bytes=0)
+    rawlog = RotatingAppendLog(tmp_path, "fastnet")
     ingest = FastnetIngest(rawlog, lambda b: None)
     data = capture_bytes("big.txt")[:4096]
     ingest.on_chunk(data)  # must not raise

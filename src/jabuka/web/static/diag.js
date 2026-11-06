@@ -1,6 +1,8 @@
 // Jabuka diagnostics page: renders the server's 1 Hz "diag" message from /ws.
 // Ages and staleness are computed by the server (injected clock); this file only formats.
 
+import { alertsFor } from "./diag_logic.js";
+
 const $ = (id) => document.getElementById(id);
 
 const RAD2DEG = 180 / Math.PI;
@@ -121,8 +123,19 @@ function renderHealth(health) {
   root.replaceChildren(frag);
 }
 
+function renderAlerts(lines) {
+  const el = $("alerts");
+  el.replaceChildren(...lines.map((line) => {
+    const div = document.createElement("div");
+    div.textContent = line;
+    return div;
+  }));
+  el.hidden = lines.length === 0;
+}
+
 function render(msg) {
   if (msg.type !== "diag") return;
+  renderAlerts(alertsFor(msg));
   renderClock(msg.clock ?? {});
   renderValues(msg.values ?? []);
   renderHealth(msg.health ?? {});

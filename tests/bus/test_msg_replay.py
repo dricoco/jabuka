@@ -45,7 +45,7 @@ def _fastnet_paths(diag: dict) -> set[str]:
 
 
 def _record_bus_log(data_dir: Path, port: int, wait_until) -> tuple[list[Path], set[str]]:
-    ctx = CoreContext.create(SystemClock(), data_dir, udp_port=port)
+    ctx = CoreContext.create(SystemClock(), data_dir, udp_port=port, bus_log=True)
     deltas = _deltas()
     with TestClient(create_app(ctx)) as client:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

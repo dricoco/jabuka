@@ -14,7 +14,6 @@ from jabuka.ingest.rawlog import RotatingAppendLog
 class DerivedLogger:
     def __init__(self, directory: Path, clock: Clock, **log_kwargs) -> None:
         self.clock = clock
-        log_kwargs.setdefault("guard_prefixes", ())
         self.log = RotatingAppendLog(
             Path(directory),
             "derived",

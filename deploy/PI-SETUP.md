@@ -317,8 +317,21 @@ has no serial write call, but it is still a fallback, not the normal mode.
   chronyc sources
   ```
 
-- **Disk filling up:** the logs live in `/var/lib/jabuka/logs`. The raw and bus logs delete their
-  oldest files when free space drops below 1 GB.
+- **Disk filling up:** the logs live in `/var/lib/jabuka/logs` (`raw/`, `derived/`, `gps/`,
+  `events/`, and `bus/` only with `jabuka-core --bus-log on`, off by default because it grows about
+  4 GB/day at full bus load). One retention policy (`jabuka.ingest.retention`) covers the whole
+  volume:
+  - The total log budget is half of the data filesystem (override with
+    `jabuka-core --log-budget-gb N`), split raw 50 %, derived 20 %, bus 15 %, gps 10 %, events 5 %.
+    The core deletes the oldest files of a category that is over its share.
+  - Raw history inside the newest 36 h is never deleted for budget reasons. On a 16 GB card the
+    budget is about 7 GB, so raw (~0.5 GB/day) keeps about a week.
+  - When free space drops below the reserve (1 GB, at most 10 % of the filesystem), both the core
+    and the ingest delete the oldest files in the order bus, derived, gps, events, raw. Raw inside
+    the 36 h floor goes only as a last resort, and it is counted (`raw_floor_breaches`).
+  - The diagnostics page shows `disk` under Core (free space, usage per category, raw history in
+    hours, deletions), and a red banner when the disk is low, being pruned for space, or the raw
+    floor was breached. The Fastnet health box shows `disk_state` and `disk_free_bytes`.
 
 ## 7. Deferred to Phase 4
 

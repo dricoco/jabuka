@@ -1,4 +1,6 @@
-"""DATA-07 logging: rotation, flush/fsync cadence, torn lines, disk guard, derived 1 Hz, bus log."""
+"""DATA-07 logging: rotation, flush/fsync cadence, torn lines, derived 1 Hz, bus log.
+
+Disk space (retention) is covered by tests/test_retention.py."""
 
 from __future__ import annotations
 
@@ -6,7 +8,6 @@ import asyncio
 import json
 import os
 import socket
-from collections import namedtuple
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,7 +39,6 @@ class FakeTime:
 
 
 def _log(tmp_path: Path, t: FakeTime, **kw) -> RotatingAppendLog:
-    kw.setdefault("min_free_bytes", 0)
     return RotatingAppendLog(tmp_path, "fastnet", mono=t.mono, wall=t.wall, **kw)
 
 
@@ -155,61 +155,6 @@ def test_torn_last_line_tolerated(tmp_path: Path) -> None:
     assert len(list(iter_log_lines(p))) == 1
 
 
-DU = namedtuple("DU", "total used free")
-
-
-def test_disk_guard_deletes_oldest_guarded_first(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    old = []
-    for i in range(3):
-        f = tmp_path / f"fastnet-20261101T0{i}Z-deadbeef-000.log"
-        f.write_bytes(b"x" * 100)
-        os.utime(f, (1_000_000 + i, 1_000_000 + i))
-        old.append(f)
-    other = tmp_path / "derived-20261101T00Z-deadbeef-000.jsonl"  # not a guarded prefix
-    other.write_bytes(b"y" * 100)
-    os.utime(other, (999_999, 999_999))
-
-    threshold = 10_000
-
-    def fake_usage(path):
-        remaining = sum(f.stat().st_size for f in old if f.exists())
-        return DU(10**9, 0, threshold - 1 - remaining + 300)  # freeing 100 B crosses threshold
-
-    monkeypatch.setattr(rawlog_mod.shutil, "disk_usage", fake_usage)
-    t = FakeTime(wall=H10 - 1800)
-    lg = RotatingAppendLog(tmp_path, "fastnet", mono=t.mono, wall=t.wall, min_free_bytes=threshold)
-    lg.write_chunk(b"\x01")
-    assert not old[0].exists()  # oldest guarded file deleted first
-    assert old[1].exists() and old[2].exists()
-    assert other.exists()
-    assert lg.guard_deleted == 1
-    assert lg.current_path is not None and lg.current_path.exists()
-    lg.close()
-
-
-def test_disk_guard_never_deletes_current(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(rawlog_mod.shutil, "disk_usage", lambda p: DU(10**9, 0, 0))
-    old = tmp_path / "fastnet-20261101T00Z-deadbeef-000.log"
-    old.write_bytes(b"x" * 10)
-    t = FakeTime(wall=H10 - 1800)
-    lg = RotatingAppendLog(tmp_path, "fastnet", mono=t.mono, wall=t.wall, min_free_bytes=10**6)
-    lg.write_chunk(b"\x01")
-    assert not old.exists()
-    assert lg.current_path is not None and lg.current_path.exists()
-    # checked at most once per 60 s of mono
-    old.write_bytes(b"x")
-    t.step(30)
-    lg.write_chunk(b"\x02")
-    assert old.exists()
-    t.step(31)
-    lg.write_chunk(b"\x03")
-    assert not old.exists()
-    assert lg.current_path.exists()
-    lg.close()
-
-
 async def test_derived_log_1hz_under_simclock(tmp_data_dir: Path, free_udp_port: int) -> None:
     clock = SimClock(start_utc=H10 - 1800)
     ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port)
@@ -233,7 +178,7 @@ async def test_derived_log_1hz_under_simclock(tmp_data_dir: Path, free_udp_port:
 
 async def test_bus_log_records_accepted_datagrams(tmp_data_dir: Path, free_udp_port: int) -> None:
     clock = SimClock(start_utc=H10 - 1800)
-    ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port)
+    ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port, bus_log=True)
     await ctx.startup()
     try:
         good = messages.encode(
@@ -260,3 +205,65 @@ async def test_bus_log_records_accepted_datagrams(tmp_data_dir: Path, free_udp_p
     t_mono, t_wall, payload = lines[0].split(" ", 2)
     float(t_mono), float(t_wall)
     assert json.loads(payload)["src"] == "test"
+
+
+async def test_bus_log_is_off_by_default(tmp_data_dir: Path, free_udp_port: int) -> None:
+    """CR-01: the bus log is ~8x the raw log; it is opt-in (--bus-log on)."""
+    clock = SimClock(start_utc=H10 - 1800)
+    ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port)
+    assert ctx.bus_log is None
+    await ctx.startup()
+    try:
+        good = messages.encode(
+            messages.delta_message("test", [{"path": "a.b", "value": 1.0}], 1.0, 2.0)
+        )
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.sendto(good, ("127.0.0.1", free_udp_port))
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if ctx.stats["udp_rx"] >= 1:
+                break
+    finally:
+        await ctx.shutdown()
+    assert ctx.stats["udp_rx"] == 1
+    assert not list((tmp_data_dir / "logs").glob("bus/bus-*.log"))
+
+
+def test_core_cli_bus_log_and_budget_flags() -> None:
+    from jabuka.core.main import build_arg_parser
+
+    args = build_arg_parser().parse_args([])
+    assert args.bus_log == "off"
+    assert args.log_budget_gb is None
+    args = build_arg_parser().parse_args(["--bus-log", "on", "--log-budget-gb", "6.5"])
+    assert args.bus_log == "on" and args.log_budget_gb == 6.5
+    for bad in ("0", "-1", "nan", "x"):
+        with pytest.raises(SystemExit):
+            build_arg_parser().parse_args(["--log-budget-gb", bad])
+
+
+async def test_core_tick_runs_retention_and_reports_disk(
+    tmp_data_dir: Path, free_udp_port: int
+) -> None:
+    """CR-01: derived/ is pruned by the core's retention pass; diag.core.disk reports it."""
+    clock = SimClock(start_utc=H10 - 1800)
+    ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port, log_budget_bytes=10_000)
+    old = tmp_data_dir / "logs" / "derived" / "derived-20261101T00Z-deadbeef-000.jsonl"
+    old.write_bytes(b"{}\n" * 3000)  # 9 kB: over derived's 20 % share of 10 kB
+    os.utime(old, (1_000_000, 1_000_000))
+    await ctx.startup()
+    try:
+        clock.advance(1.0)
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+            if ctx.ticks >= 1:
+                break
+    finally:
+        await ctx.shutdown()
+    assert ctx.ticks >= 1
+    assert not old.exists()
+    disk = ctx.diag_message()["core"]["disk"]
+    assert disk["budget_bytes"] == 10_000
+    assert disk["deleted"] >= 1
+    assert disk["free_bytes"] > 0
+    assert set(disk["used_bytes"]) == {"raw", "bus", "derived", "gps", "events"}

@@ -29,6 +29,7 @@ from jabuka.ingest.fastnet_decode import ROUTED_CHANNELS, decode_to_values
 from jabuka.ingest.fastnet_framing import CountingFramer
 from jabuka.ingest.fastnet_records import iter_records, record_hex
 from jabuka.ingest.rawlog import RotatingAppendLog
+from jabuka.ingest.retention import Retention
 from jabuka.ingest.serial_ro import open_fastnet
 
 log = logging.getLogger("jabuka.ingest.fastnet")
@@ -71,6 +72,8 @@ class FastnetIngest:
         self.device_open = False
         self.reconnects = 0
         self.last_error: str | None = None
+        # data-volume retention (free-space reserve), run by the flusher task
+        self.retention: Retention | None = None
 
     def bus_stats(self) -> dict:
         s = self.framer.stats
@@ -170,6 +173,17 @@ class FastnetIngest:
             "unknown_ch": sorted(self.unknown_ch)[:MAX_UNKNOWN_CH],
             "reconnects": self.reconnects,
             "last_error": self.last_error,
+            **self._disk(),
+        }
+
+    def _disk(self) -> dict:
+        if self.retention is None:
+            return {}
+        st = self.retention.status()
+        return {
+            "disk_state": st["state"],
+            "disk_free_bytes": st["free_bytes"],
+            "retention_deleted": st["deleted"],
         }
 
     def send_heartbeat(self) -> None:
@@ -336,6 +350,9 @@ async def _run(args: argparse.Namespace) -> int:
     rawlog = RotatingAppendLog(raw_dir, "fastnet")
     sock, send = _make_udp_sender(args.udp)
     ingest = FastnetIngest(rawlog, send, awa_sign=args.awa_sign)
+    # Same policy as the core, free-space reserve only (the core owns the budgets): the disk stays
+    # protected while the core is down.
+    ingest.retention = Retention(raw_dir.parent, enforce_budgets=False)
     reader = DeviceReader(str(args.device), ingest, loop)
     done: asyncio.Future[int] = loop.create_future()
 
@@ -344,6 +361,8 @@ async def _run(args: argparse.Namespace) -> int:
         while True:
             await asyncio.sleep(1.0)
             rawlog.maybe_flush()
+            if ingest.retention is not None:
+                ingest.retention.maybe_run(protect=[rawlog.current_path])
 
     async def heartbeat() -> None:
         # independent of byte arrival: a silent bus or a missing device is still reported

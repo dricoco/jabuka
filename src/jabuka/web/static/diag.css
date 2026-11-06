@@ -58,6 +58,16 @@ tr.stale td.age { color: var(--bad); font-weight: 700; }
 .gate-blocked { background: var(--bad); color: #000; }
 .gate-ok { background: var(--ok); color: #000; }
 
+.alerts {
+  background: var(--bad);
+  color: #000;
+  font-weight: 800;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  margin: 0.5rem 0;
+}
+.alerts[hidden] { display: none; }
+
 .conn { padding: 0.1rem 0.5rem; border-radius: 4px; font-weight: 700; }
 .conn-up { background: var(--ok); color: #000; }
 .conn-down { background: var(--bad); color: #000; }

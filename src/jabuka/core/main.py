@@ -25,6 +25,7 @@ from jabuka.core.state import StateStore
 from jabuka.core.web import Hub, create_app
 from jabuka.ingest.gpsd_client import run_gpsd_client, sky_to_values, tpv_epoch, tpv_to_values
 from jabuka.ingest.rawlog import RotatingAppendLog
+from jabuka.ingest.retention import Retention
 
 log = logging.getLogger("jabuka.core")
 
@@ -42,6 +43,7 @@ class CoreContext:
     derived: DerivedLogger | None = None
     events_log: RotatingAppendLog | None = None
     gps_log: RotatingAppendLog | None = None
+    retention: Retention | None = None
     gpsd: tuple[str, int] | None = None
     udp_host: str = "127.0.0.1"
     udp_port: int = messages.DEFAULT_UDP_PORT
@@ -64,44 +66,40 @@ class CoreContext:
         udp_host: str = "127.0.0.1",
         udp_port: int = messages.DEFAULT_UDP_PORT,
         gpsd: tuple[str, int] | None = None,
+        bus_log: bool = False,
+        log_budget_bytes: int | None = None,
     ) -> CoreContext:
+        """bus_log: also log every accepted datagram (logs/bus, ~4 GB/day at full bus load; the
+        raw log plus the deterministic decoder reproduces it), so it is opt-in."""
         data_dir = Path(data_dir)
         logs = data_dir / "logs"
         # Every core log runs on the injected clock, so sim replays rotate on sim time.
-        bus_log = RotatingAppendLog(
-            logs / "bus",
-            "bus",
-            mono=clock.monotonic,
-            wall=clock.wall,
-            guard_prefixes=("bus",),
-        )
+        bus = None
+        if bus_log:
+            bus = RotatingAppendLog(logs / "bus", "bus", mono=clock.monotonic, wall=clock.wall)
         events_log = RotatingAppendLog(
             logs / "events",
             "events",
             suffix=".jsonl",
             mono=clock.monotonic,
             wall=clock.wall,
-            guard_prefixes=(),
         )
         gps_log = None
         if gpsd is not None:
             # raw gpsd JSON lines, written before parsing (raw-first)
-            gps_log = RotatingAppendLog(
-                logs / "gps",
-                "gps",
-                mono=clock.monotonic,
-                wall=clock.wall,
-                guard_prefixes=("gps",),
-            )
+            gps_log = RotatingAppendLog(logs / "gps", "gps", mono=clock.monotonic, wall=clock.wall)
+        # one retention policy for the whole data volume; the core owns the budgets
+        retention = Retention(logs, budget_bytes=log_budget_bytes, mono=clock.monotonic)
         return cls(
             clock=clock,
             state=StateStore(clock),
             hub=Hub(),
             data_dir=data_dir,
-            bus_log=bus_log,
+            bus_log=bus,
             derived=DerivedLogger(logs / "derived", clock),
             events_log=events_log,
             gps_log=gps_log,
+            retention=retention,
             gpsd=gpsd,
             udp_host=udp_host,
             udp_port=udp_port,
@@ -111,6 +109,15 @@ class CoreContext:
         return [
             x for x in (self.bus_log, self.derived, self.events_log, self.gps_log) if x is not None
         ]
+
+    def open_log_paths(self) -> list[Path]:
+        out = []
+        for lg in (self.bus_log, self.events_log, self.gps_log):
+            if lg is not None and lg.current_path is not None:
+                out.append(lg.current_path)
+        if self.derived is not None and self.derived.log.current_path is not None:
+            out.append(self.derived.log.current_path)
+        return out
 
     # -- message handling --------------------------------------------------------------------
     def on_message(self, msg: dict) -> None:
@@ -198,6 +205,7 @@ class CoreContext:
                 "udp_rejected": self.stats.get("udp_rejected", 0),
                 "ws_clients": len(self.hub.clients),
                 "uptime_s": round(max(0.0, self.clock.monotonic() - self.started_mono), 3),
+                "disk": self.retention.status() if self.retention is not None else None,
             },
             "log": {
                 "derived": self.derived.current_name if self.derived is not None else None,
@@ -219,6 +227,8 @@ class CoreContext:
                 lg.maybe_flush()
             except Exception:
                 log.exception("log flush failed")
+        if self.retention is not None:
+            self.retention.maybe_run(protect=self.open_log_paths())  # never raises
         self.hub.publish(json.dumps(diag, separators=(",", ":")))
 
     async def _tick_loop(self, first_target: float) -> None:
@@ -321,8 +331,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="HOST:PORT|none",
         help="gpsd to read GPS from (Pi: 127.0.0.1:2947; default none)",
     )
+    p.add_argument(
+        "--bus-log",
+        choices=("off", "on"),
+        default="off",
+        help="also log every accepted UDP datagram to logs/bus (~4 GB/day at full bus load; "
+        "default off: the raw log reproduces it)",
+    )
+    p.add_argument(
+        "--log-budget-gb",
+        type=_positive_float,
+        default=None,
+        metavar="GB",
+        help="total size budget for logs/ (default: half of the data filesystem)",
+    )
     p.add_argument("--log-level", default="WARNING")
     return p
+
+
+def _positive_float(text: str) -> float:
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got {text!r}") from None
+    if not math.isfinite(v) or v <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive number, got {text!r}")
+    return v
 
 
 class CoreServer(uvicorn.Server):
@@ -366,6 +400,10 @@ def build_context(args: argparse.Namespace) -> CoreContext:
         udp_host=args.udp_host,
         udp_port=args.udp_port,
         gpsd=args.gpsd,
+        bus_log=args.bus_log == "on",
+        log_budget_bytes=(
+            int(args.log_budget_gb * 1_000_000_000) if args.log_budget_gb is not None else None
+        ),
     )
 
 

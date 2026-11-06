@@ -8,8 +8,8 @@ create, so an existing file is never truncated or overwritten.
 Durability: flush() at most every flush_s, os.fsync at most every fsync_s (both measured on the
 injected monotonic clock), plus on rotation and close(); write_json(fsync_now=True) for events.
 Rotation: on UTC-hour change of the injected wall clock, or when a line would push the file past
-max_bytes. Disk guard: at most once per 60 s, if free space < min_free_bytes, delete the oldest
-files whose names start with one of guard_prefixes (never the open file).
+max_bytes. Disk space is managed for the whole data volume by jabuka.ingest.retention (one policy
+with per-category budgets), not per log.
 
 File names are only ever built from fixed prefixes: no user input reaches a path.
 Readers tolerate a torn last line (``iter_log_lines``).
@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -30,7 +29,6 @@ from typing import IO
 log = logging.getLogger("jabuka.rawlog")
 
 _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
-GUARD_INTERVAL_S = 60.0
 
 
 def boot8() -> str:
@@ -58,8 +56,6 @@ class RotatingAppendLog:
         flush_s: float = 1.0,
         fsync_s: float = 10.0,
         max_bytes: int = 32 * 1024 * 1024,
-        min_free_bytes: int = 1_000_000_000,
-        guard_prefixes: tuple[str, ...] = ("fastnet",),
     ) -> None:
         self.directory = Path(directory)
         self.prefix = prefix
@@ -69,9 +65,6 @@ class RotatingAppendLog:
         self.flush_s = flush_s
         self.fsync_s = fsync_s
         self.max_bytes = max_bytes
-        self.min_free_bytes = min_free_bytes
-        self.guard_prefixes = tuple(guard_prefixes)
-        self.guard_deleted = 0
         self.lines_written = 0
         self.rotations = 0
         self._boot = boot8()
@@ -80,7 +73,6 @@ class RotatingAppendLog:
         self._size = 0
         self._last_flush = 0.0
         self._last_fsync = 0.0
-        self._last_guard: float | None = None
         self._dirty = False
         self.current_path: Path | None = None
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -132,39 +124,6 @@ class RotatingAppendLog:
             self.rotations += 1
             self._open(hour)
 
-    # -- disk guard --------------------------------------------------------------------------
-    def _guard(self, now: float) -> None:
-        if self._last_guard is not None and now - self._last_guard < GUARD_INTERVAL_S:
-            return
-        self._last_guard = now
-        if self.min_free_bytes <= 0 or not self.guard_prefixes:
-            return
-        try:
-            if shutil.disk_usage(self.directory).free >= self.min_free_bytes:
-                return
-            candidates = []
-            for p in self.directory.iterdir():
-                if not p.is_file() or p == self.current_path:
-                    continue
-                if not p.name.startswith(self.guard_prefixes):
-                    continue
-                try:
-                    candidates.append((p.stat().st_mtime, p.name, p))
-                except OSError:
-                    continue
-            candidates.sort()
-            for _, _, p in candidates:
-                try:
-                    p.unlink()
-                    self.guard_deleted += 1
-                    log.warning("disk guard: deleted %s", p.name)
-                except OSError:
-                    continue
-                if shutil.disk_usage(self.directory).free >= self.min_free_bytes:
-                    break
-        except OSError as e:
-            log.warning("disk guard failed: %s", e)
-
     # -- writing -----------------------------------------------------------------------------
     def _write(self, data: bytes, *, fsync_now: bool = False) -> None:
         now = self._mono()
@@ -182,7 +141,6 @@ class RotatingAppendLog:
             self._dirty = False
         else:
             self._cadence(now)
-        self._guard(now)
 
     def _cadence(self, now: float) -> None:
         fh = self._fh
