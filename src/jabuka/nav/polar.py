@@ -160,6 +160,41 @@ class Polar:
         return out
 
 
+# -- efficiency (WIND-02) ----------------------------------------------------------------------
+EFF_UP_MAX_DEG = 70.0  # |TWA| below: upwind factor (same split as the helm primary number)
+EFF_DOWN_MIN_DEG = 110.0  # |TWA| above: downwind factor; in between the general factor
+
+
+def efficiency_for(
+    twa_deg: float | None,
+    efficiency: float,
+    efficiency_up: float | None = None,
+    efficiency_down: float | None = None,
+) -> float:
+    """Factor for the current point of sail (% polar, reach target speed): efficiency_up upwind,
+    efficiency_down downwind when set, the general efficiency otherwise."""
+    if twa_deg is not None and math.isfinite(twa_deg):
+        a = abs(twa_deg)
+        if a < EFF_UP_MAX_DEG and efficiency_up is not None:
+            return efficiency_up
+        if a > EFF_DOWN_MIN_DEG and efficiency_down is not None:
+            return efficiency_down
+    return efficiency
+
+
+def apply_efficiency(
+    raw: Targets,
+    efficiency: float,
+    efficiency_up: float | None = None,
+    efficiency_down: float | None = None,
+) -> Targets:
+    """Raw VMG targets -> targets with the efficiency on the SPEEDS only (Pitfall 9): the upwind
+    target speed gets efficiency_up (else efficiency), the downwind one efficiency_down."""
+    up = efficiency_up if efficiency_up is not None else efficiency
+    down = efficiency_down if efficiency_down is not None else efficiency
+    return Targets(raw.up_twa, raw.up_bsp * up, raw.down_twa, raw.down_bsp * down)
+
+
 # -- parsing / serialisation -------------------------------------------------------------------
 def parse_expedition(text: str, name: str = "polar") -> Polar:
     """Expedition polar: '!' comment lines, data lines 'TWS TWA BSP TWA BSP ...' separated by tabs

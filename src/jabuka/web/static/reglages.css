@@ -13,3 +13,26 @@
   padding: 0 8px;
 }
 .reglages-row input[type="checkbox"] { min-width: 48px; width: 48px; height: 48px; }
+
+/* Vent manuel (WIND-04): above the settings form, 48 px controls. */
+.manual-wind {
+  max-width: 720px; margin: 0 0 16px; padding: 8px 12px 12px;
+  border: 2px solid var(--line); border-radius: 8px;
+}
+.manual-wind h3 { margin: 4px 0 6px; font-size: 20px; }
+.manual-wind-source { font-size: 20px; font-weight: 700; min-height: 1.4em; }
+.manual-wind-source[data-source="MANUEL"] { color: var(--warn); }
+.manual-wind-source[data-source="NONE"] { color: var(--bad); }
+.manual-wind-source[data-source="LIVE"], .manual-wind-source[data-source="LIVE_BG"] { color: var(--good); }
+.manual-wind-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin: 8px 0; }
+.manual-field { display: flex; flex-direction: column; gap: 4px; font-size: 16px; }
+.manual-wind input, .manual-wind select, .manual-wind button {
+  min-height: 48px; font-size: 20px;
+  color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 6px;
+  padding: 0 10px;
+}
+.manual-wind input { width: 120px; }
+.manual-wind button { min-width: 120px; font-weight: 700; cursor: pointer; }
+.manual-wind .manual-apply { border-color: var(--good); }
+.manual-wind-stored { color: var(--dim); font-size: 16px; }
+.manual-wind-error { color: var(--bad); font-weight: 600; min-height: 1.4em; }
