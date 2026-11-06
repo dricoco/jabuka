@@ -3,27 +3,39 @@
 #
 # Use it only when the Jabuka ingest is unusable: OpenCPN on a laptop on the jabuka AP listens on
 # UDP 2002 for the NMEA 0183 sentences broadcast here.
-#   start:   sudo systemctl start fastnet2ip        (Conflicts= stops jabuka-ingest-fastnet)
-#   return:  sudo systemctl start jabuka-ingest-fastnet   (Conflicts= stops fastnet2ip)
+#   start:   sudo systemctl start fastnet2ip        (pulls in jabuka-fastnet-relay; Conflicts=
+#                                                    stops jabuka-ingest-fastnet)
+#   return:  sudo systemctl start jabuka-ingest-fastnet   (Conflicts= stops fastnet2ip and the relay)
 #
-# Installed with `pipx install --global fastnet2ip==3.3.1` (lands in /usr/local/bin).
-# It runs as root and pyserial opens the port read/write (/dev/fastnet is 0640 root:dialout).
-# The upstream source at 3.3.1 has no serial write call (checked by grep during planning,
-# 2026-11-06), but the ingest's kernel-enforced O_RDONLY guarantee does not apply here.
+# fastnet2ip 3.3.1 and every dependency are installed from the offline wheelhouse into
+# /opt/fastnet2ip/venv with --require-hashes against deploy/fastnet2ip.lock (provision.sh step g).
+# It never gets the bus: it runs as jabuka WITHOUT the dialout group (it cannot open /dev/fastnet,
+# which is root:dialout 0640) and reads the pty of jabuka-fastnet-relay, which opens the device
+# receive-only. pyserial opens that pty read/write and sets DTR/RTS on it; anything written there
+# is discarded by the relay. The upstream source at 3.3.1 has no serial write call (checked by grep
+# during planning, 2026-11-06), but the guarantee no longer depends on that.
 #
 # Upstream's unit binds to the ttyUSB0 device; that is dropped here (it is started by hand).
 
 [Unit]
-Description=fastnet2ip Plan B (Fastnet to NMEA 0183 on UDP 2002), manual start only
+Description=fastnet2ip Plan B (Fastnet to NMEA 0183 on UDP 2002) via the read-only relay, manual start only
+BindsTo=jabuka-fastnet-relay.service
+After=jabuka-fastnet-relay.service
 Conflicts=jabuka-ingest-fastnet.service
 
 [Service]
 Type=simple
-User=root
-ExecStart=/usr/local/bin/fastnet2ip --output nmea0183 --serial /dev/fastnet --udp-port 2002 --host 10.42.0.255 --log-level WARNING
+User=jabuka
+Group=jabuka
+ExecStart=/opt/fastnet2ip/venv/bin/fastnet2ip --output nmea0183 --serial /run/jabuka-relay/fastnet-ro --udp-port 2002 --host 10.42.0.255 --log-level WARNING
 Restart=on-failure
 RestartSec=5
 OOMScoreAdjust=-700
 TimeoutStopSec=30
 Environment=PYTHONUNBUFFERED=1
 SyslogIdentifier=fastnet2ip
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

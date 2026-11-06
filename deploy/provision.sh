@@ -25,8 +25,8 @@ EXAMPLE_PSK="change-me-8-to-63-chars"
 OPT=/opt/jabuka
 VENV=$OPT/venv
 DATA=/var/lib/jabuka
-APT_PACKAGES=(gpsd gpsd-clients chrony python3-venv pipx jq dnsmasq-base)
-FASTNET2IP_VERSION=3.3.1
+APT_PACKAGES=(gpsd gpsd-clients chrony python3-venv jq dnsmasq-base)
+F2I_VENV=/opt/fastnet2ip/venv
 
 usage() {
     sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -243,12 +243,29 @@ run "$VENV/bin/pip" install --no-index --find-links "$OPT/wheelhouse" --require-
 run "$VENV/bin/pip" install --no-index --no-deps --force-reinstall "$OPT/wheelhouse/$JABUKA_WHEEL_NAME"
 
 # --- g. Plan B: fastnet2ip (installed, never enabled) -------------------------------------------
-step "g. fastnet2ip Plan B (installed, NOT enabled)"
-show pipx install --global "fastnet2ip==$FASTNET2IP_VERSION"
-if [ "$DRY_RUN" -eq 0 ]; then
-    pipx install --global "fastnet2ip==$FASTNET2IP_VERSION" ||
-        warn "pipx install fastnet2ip failed (offline?). Plan B unavailable until re-run with internet."
+# Hash-locked from the wheelhouse into its own venv, like the app: no live PyPI resolution. It runs
+# as jabuka without dialout and reads the receive-only relay's pty, never /dev/fastnet itself.
+step "g. fastnet2ip Plan B (hash-locked venv + receive-only relay, NOT enabled)"
+F2I_LOCK="$SCRIPT_DIR/fastnet2ip.lock"
+if [ ! -f "$F2I_LOCK" ]; then
+    [ "$DRY_RUN" -eq 1 ] || die 3 "missing $F2I_LOCK (run 'bash scripts/build-wheelhouse.sh --relock')"
+    warn "missing $F2I_LOCK; dry run continues"
 fi
+if [ "$DRY_RUN" -eq 1 ] || [ -d "$OPT/wheelhouse/fastnet2ip" ]; then
+    run install -m 0644 "$F2I_LOCK" "$OPT/fastnet2ip.lock"
+    run python3 -m venv "$F2I_VENV"
+    run "$F2I_VENV/bin/pip" install --no-index --find-links "$OPT/wheelhouse/fastnet2ip" \
+        --require-hashes -r "$OPT/fastnet2ip.lock"
+else
+    warn "no fastnet2ip/ in the wheelhouse: Plan B NOT installed (re-run scripts/build-wheelhouse.sh)"
+fi
+# An earlier provisioning installed fastnet2ip with `pipx install --global` (root, unpinned
+# dependencies): remove it so only the hash-locked venv remains.
+if [ "$DRY_RUN" -eq 0 ] && [ -e /usr/local/bin/fastnet2ip ] && command -v pipx >/dev/null 2>&1; then
+    run_tolerant pipx uninstall --global fastnet2ip
+fi
+install_file "$SCRIPT_DIR/systemd/jabuka-fastnet-relay.service" \
+    /etc/systemd/system/jabuka-fastnet-relay.service
 install_file "$SCRIPT_DIR/systemd/fastnet2ip.service" /etc/systemd/system/fastnet2ip.service
 
 # --- h. services, journald, hardware watchdog ---------------------------------------------------

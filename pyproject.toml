@@ -36,6 +36,7 @@ fastnet-probe = "jabuka.tools.probe:main"             # (01-02)
 jabuka-sim = "jabuka.sim.synth:main"                  # (01-03)
 jabuka-fake-gpsd = "jabuka.sim.fake_gpsd:main"        # (01-03)
 jabuka-logcheck = "jabuka.tools.logcheck:main"        # (01-04)
+jabuka-fastnet-relay = "jabuka.tools.fastnet_relay:main"  # Plan B receive-only relay (WR-03)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jabuka"]

@@ -121,8 +121,9 @@ SSH key there, from any computer, before the first boot.
    Expected: the steps a-k run without `ERROR`. The last step brings up the access point and
    prints that a Wi-Fi SSH session would drop (yours is on Ethernet, so it stays).
    The script is idempotent: run it again after any change (for example a new wheelhouse).
-   It needs internet only for `apt-get` and the fastnet2ip Plan B. With every apt package
-   already installed, a re-run works offline.
+   It needs internet only for `apt-get`. The app and the fastnet2ip Plan B both install from the
+   wheelhouse with `--require-hashes` (`deploy/requirements.lock`, `deploy/fastnet2ip.lock`), so
+   with every apt package already installed a re-run works offline.
 
 3. Reboot once, so the hardware watchdog is armed and you prove a clean headless boot:
 
@@ -246,22 +247,36 @@ m. **Package lock review.** Read `deploy/requirements.lock` and confirm the 17 r
    are exactly: annotated-doc, annotated-types, anyio, click, fastapi, h11, idna,
    opentelemetry-api, pydantic, pydantic-core, pyfastnet, pyserial, starlette, typing-extensions,
    typing-inspection, uvicorn, websockets. Flag any extra or unfamiliar name before the wheelhouse
-   goes to the Pi.
+   goes to the Pi. Do the same for `deploy/fastnet2ip.lock` (Plan B, 11 names): fastnet2ip,
+   nmea2000, orjson, packaging, pyfastnet, pyserial, pyserial-asyncio, python-can, tenacity,
+   typing-extensions, wrapt.
 
 ## 5. Plan B: fastnet2ip and OpenCPN
 
-Use this only when the Jabuka ingest is unusable. fastnet2ip runs as root and opens the port
-read/write (pyserial), so the kernel-enforced read-only guarantee does not apply. Its 3.3.1 source
-has no serial write call, but it is still a fallback, not the normal mode.
+Use this only when the Jabuka ingest is unusable. fastnet2ip never gets the bus:
+
+- `jabuka-fastnet-relay` opens `/dev/fastnet` exactly like the ingest (O_RDONLY, break/RTS/DTR/
+  RS-485 control refused, echo and XON/XOFF off, exclusive lock) and copies the bytes into a pty
+  at `/run/jabuka-relay/fastnet-ro`.
+- fastnet2ip runs as `jabuka` WITHOUT the `dialout` group, so it cannot open `/dev/fastnet` at
+  all. It reads the relay's pty; pyserial opens that read/write and sets DTR/RTS on it, but
+  anything written there is read back by the relay, discarded and logged
+  (`journalctl -u jabuka-fastnet-relay`: "Plan B reader wrote N bytes ... discarded").
+- fastnet2ip 3.3.1 and all 10 dependencies are pinned with hashes in `deploy/fastnet2ip.lock` and
+  installed offline into `/opt/fastnet2ip/venv`. No `pipx`/PyPI resolution happens on the Pi.
+
+Residual risk: the third-party code still runs on the appliance (as an unprivileged user with
+its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. Review the lock
+(item m) and re-lock deliberately (`bash scripts/build-wheelhouse.sh --relock`).
 
 1. Start it. `Conflicts=` stops the Jabuka ingest automatically:
 
    ```bash
    sudo systemctl start fastnet2ip
-   systemctl is-active fastnet2ip jabuka-ingest-fastnet
+   systemctl is-active fastnet2ip jabuka-fastnet-relay jabuka-ingest-fastnet
    ```
 
-   Expected: `active` then `inactive`.
+   Expected: `active`, `active`, then `inactive`.
 
 2. On the laptop, join the `jabuka` AP and set OpenCPN to a network connection: UDP, input,
    port 2002. NMEA 0183 sentences are broadcast to 10.42.0.255.
@@ -272,8 +287,8 @@ has no serial write call, but it is still a fallback, not the normal mode.
    sudo systemctl start jabuka-ingest-fastnet
    ```
 
-   Expected: fastnet2ip stops, and the ingest is active again. fastnet2ip is never enabled at
-   boot.
+   Expected: fastnet2ip and the relay stop, and the ingest is active again. Neither fastnet2ip
+   nor the relay is ever enabled at boot.
 
 ## 6. Troubleshooting
 

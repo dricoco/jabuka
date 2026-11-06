@@ -17,6 +17,7 @@ from jabuka.ingest.fastnet_main import build_arg_parser as ingest_parser
 INGEST = "jabuka-ingest-fastnet.service"
 CORE = "jabuka-core.service"
 PLANB = "fastnet2ip.service"
+RELAY = "jabuka-fastnet-relay.service"
 JABUKA_UNITS = (INGEST, CORE)
 
 COMMON_SERVICE = {
@@ -70,7 +71,7 @@ def test_ingest_unit(parse_unit) -> None:
     u = parse_unit(INGEST)
     assert _one(u, "Service", "SupplementaryGroups") == "dialout"
     assert _one(u, "Service", "OOMScoreAdjust") == "-700"
-    assert "fastnet2ip.service" in _words(u, "Unit", "Conflicts")
+    assert {"fastnet2ip.service", RELAY} <= _words(u, "Unit", "Conflicts")
     # no capabilities at all: the ingest only reads a device and sends UDP to localhost
     assert "AmbientCapabilities" not in u["Service"]
 
@@ -94,16 +95,14 @@ def test_plan_b_conflicts_both_ways_and_not_enabled(parse_unit) -> None:
     assert "fastnet2ip.service" in _words(ingest, "Unit", "Conflicts")
     # no [Install] section: `systemctl enable fastnet2ip` cannot wire it into boot
     assert "Install" not in planb
-    assert _one(planb, "Service", "User") == "root"
     assert _one(planb, "Service", "Restart") == "on-failure"
-    assert "BindsTo" not in planb["Unit"]
     argv = shlex.split(_one(planb, "Service", "ExecStart"))
     assert argv == [
-        "/usr/local/bin/fastnet2ip",
+        "/opt/fastnet2ip/venv/bin/fastnet2ip",
         "--output",
         "nmea0183",
         "--serial",
-        "/dev/fastnet",
+        "/run/jabuka-relay/fastnet-ro",
         "--udp-port",
         "2002",
         "--host",
@@ -113,12 +112,52 @@ def test_plan_b_conflicts_both_ways_and_not_enabled(parse_unit) -> None:
     ]
 
 
+def test_plan_b_never_gets_the_bus(parse_unit) -> None:
+    """WR-03: fastnet2ip runs unprivileged, without dialout (cannot open /dev/fastnet), and reads
+    the receive-only relay's pty."""
+    planb = parse_unit(PLANB)
+    assert _one(planb, "Service", "User") == "jabuka"
+    assert _one(planb, "Service", "Group") == "jabuka"
+    assert "SupplementaryGroups" not in planb["Service"]
+    assert "AmbientCapabilities" not in planb["Service"]
+    assert planb["Service"]["CapabilityBoundingSet"] == [""]
+    assert _one(planb, "Service", "NoNewPrivileges") == "yes"
+    assert _one(planb, "Service", "ProtectSystem") == "strict"
+    assert "/dev/fastnet" not in _one(planb, "Service", "ExecStart")
+    assert RELAY in _words(planb, "Unit", "BindsTo")
+    assert RELAY in _words(planb, "Unit", "After")
+
+
+def test_relay_unit(parse_unit) -> None:
+    relay = parse_unit(RELAY)
+    assert "Install" not in relay  # only ever pulled in by fastnet2ip
+    assert _one(relay, "Unit", "StopWhenUnneeded") == "yes"
+    assert "jabuka-ingest-fastnet.service" in _words(relay, "Unit", "Conflicts")
+    assert _one(relay, "Service", "Type") == "notify"
+    assert _one(relay, "Service", "User") == "jabuka"
+    assert _one(relay, "Service", "SupplementaryGroups") == "dialout"
+    assert _one(relay, "Service", "RuntimeDirectory") == "jabuka-relay"
+    assert _one(relay, "Service", "NoNewPrivileges") == "yes"
+    argv = shlex.split(_one(relay, "Service", "ExecStart"))
+    assert argv[0] == "/opt/jabuka/venv/bin/jabuka-fastnet-relay"
+    from jabuka.tools.fastnet_relay import build_arg_parser as relay_parser
+
+    args = relay_parser().parse_args(argv[1:])
+    assert args.device == "/dev/fastnet"
+    assert str(args.link) == "/run/jabuka-relay/fastnet-ro"
+    # the link lives in the relay's RuntimeDirectory, which fastnet2ip reads
+    planb_argv = shlex.split(_one(parse_unit(PLANB), "Service", "ExecStart"))
+    assert planb_argv[planb_argv.index("--serial") + 1] == str(args.link)
+
+
 def test_plan_b_header_documents_manual_use(deploy_dir: Path) -> None:
     text = (deploy_dir / "systemd" / PLANB).read_text()
     header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
     assert "NOT enabled at boot" in header
     assert "3.3.1" in header
     assert "no serial write call" in header
+    assert "require-hashes" in header
+    assert "WITHOUT the dialout group" in header
 
 
 def test_ingest_execstart_parses_with_the_real_cli(parse_unit) -> None:
@@ -170,11 +209,13 @@ BAD = re.compile(r"Unknown key|Unknown section|Unknown lvalue|Failed to parse|In
 @pytest.mark.skipif(not Path(SYSTEMD_ANALYZE).exists(), reason="systemd-analyze not installed")
 def test_systemd_analyze_verify(tmp_path: Path, deploy_dir: Path) -> None:
     venv_bin = str(Path(sys.executable).parent) + "/"
-    names = (INGEST, CORE, PLANB)
+    names = (INGEST, CORE, PLANB, RELAY)
     for name in names:
         text = (deploy_dir / "systemd" / name).read_text()
         text = text.replace("/opt/jabuka/venv/bin/", venv_bin)
-        text = text.replace("/usr/local/bin/fastnet2ip", shutil.which("true") or "/bin/true")
+        text = text.replace(
+            "/opt/fastnet2ip/venv/bin/fastnet2ip", shutil.which("true") or "/bin/true"
+        )
         (tmp_path / name).write_text(text)
     proc = subprocess.run(
         [SYSTEMD_ANALYZE, "verify", "--man=no", *(str(tmp_path / n) for n in names)],

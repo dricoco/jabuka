@@ -109,3 +109,48 @@ def test_wheelhouse(deploy_dir: Path, lock) -> None:
         hits = [n for n in names if _norm(n.split("-")[0]) == name]
         assert len(hits) == 1, (name, hits)
         assert hits[0].startswith(f"{stem}-{version}-"), (name, version, hits[0])
+
+
+# -- Plan B (WR-03): fastnet2ip and every dependency hash-locked, installed offline ---------------
+EXPECTED_F2I_LOCKED = {
+    "fastnet2ip",
+    "nmea2000",
+    "orjson",
+    "packaging",
+    "pyfastnet",
+    "pyserial",
+    "pyserial-asyncio",
+    "python-can",
+    "tenacity",
+    "typing-extensions",
+    "wrapt",
+}
+
+
+@pytest.fixture
+def f2i_lock(deploy_dir: Path) -> dict[str, tuple[str, list[str]]]:
+    return _lock_entries((deploy_dir / "fastnet2ip.lock").read_text())
+
+
+def test_fastnet2ip_lock_is_hashed_pinned_and_for_the_pi(deploy_dir: Path, f2i_lock) -> None:
+    assert _requirements((deploy_dir / "fastnet2ip.in").read_text()) == ["fastnet2ip==3.3.1"]
+    assert f2i_lock["fastnet2ip"][0] == "3.3.1"
+    for name, (version, hashes) in f2i_lock.items():
+        assert hashes, f"{name}=={version} has no --hash=sha256"
+    header = (deploy_dir / "fastnet2ip.lock").read_text()
+    assert "--python-platform aarch64-unknown-linux-gnu" in header
+    assert "--python-version 3.13" in header
+    assert "--generate-hashes" in header
+    assert set(f2i_lock) == EXPECTED_F2I_LOCKED, "review new/removed packages before shipping"
+
+
+def test_fastnet2ip_wheelhouse(deploy_dir: Path, f2i_lock) -> None:
+    wh = deploy_dir / "wheelhouse" / "fastnet2ip"
+    if not wh.is_dir():
+        pytest.skip("deploy/wheelhouse/fastnet2ip absent: run `bash scripts/build-wheelhouse.sh`")
+    names = sorted(p.name for p in wh.glob("*.whl"))
+    for name, (version, _) in f2i_lock.items():
+        stem = re.sub(r"[-.]+", "_", name)
+        hits = [n for n in names if _norm(n.split("-")[0]) == name]
+        assert len(hits) == 1, (name, hits)
+        assert hits[0].startswith(f"{stem}-{version}-"), (name, version, hits[0])

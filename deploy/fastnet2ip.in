@@ -1,0 +1,4 @@
+# Plan B (fastnet2ip) runtime, installed into its own venv /opt/fastnet2ip/venv from the offline
+# wheelhouse (deploy/wheelhouse/fastnet2ip/) with --require-hashes, never from PyPI on the Pi.
+# Re-lock with: bash scripts/build-wheelhouse.sh --relock
+fastnet2ip==3.3.1

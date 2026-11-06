@@ -81,6 +81,37 @@ class PtyFeeder:
             view = view[n:]
             self.bytes_written += n
 
+    def offer(self, b: bytes) -> int:
+        """Non-blocking write: as many bytes as the pty takes now (0 when full). For live relays,
+        where blocking on a reader that stopped reading would stall the source."""
+        if self.master is None:
+            raise OSError(errno.EBADF, "pty closed")
+        try:
+            n = os.write(self.master, b)
+        except BlockingIOError:
+            return 0
+        self.bytes_written += n
+        return n
+
+    def drain(self) -> int:
+        """Read and discard whatever the reader wrote into the slave side (its transmit attempts:
+        they end here, never on a wire). Returns the number of bytes discarded (0: nothing
+        pending). Raises OSError when the master cannot be read (EIO: no slave side open)."""
+        n = 0
+        while self.master is not None:
+            try:
+                b = os.read(self.master, 4096)
+            except BlockingIOError:
+                break
+            except OSError:
+                if n:
+                    break
+                raise
+            if not b:
+                break
+            n += len(b)
+        return n
+
     # -- lifecycle ---------------------------------------------------------------------------
     def close(self) -> None:
         """Close both ends (reader sees EOF/EIO = unplug) and remove the symlink."""

@@ -46,7 +46,7 @@ def test_dry_run_prints_every_required_step(dry_run) -> None:
     assert dry_run.returncode == 0, dry_run.stdout + dry_run.stderr
     out = dry_run.stdout
     for token in (
-        "apt-get install -y gpsd gpsd-clients chrony python3-venv pipx jq dnsmasq-base",
+        "apt-get install -y gpsd gpsd-clients chrony python3-venv jq dnsmasq-base",
         "apt-get purge -y modemmanager brltty",
         "/etc/default/gpsd",
         "/etc/udev/rules.d/99-jabuka.rules",
@@ -59,7 +59,10 @@ def test_dry_run_prints_every_required_step(dry_run) -> None:
         "python3 -m venv /opt/jabuka/venv",
         "--require-hashes",
         "--no-index",
-        "pipx install --global fastnet2ip==3.3.1",
+        "python3 -m venv /opt/fastnet2ip/venv",
+        "/opt/fastnet2ip/venv/bin/pip install --no-index --find-links "
+        "/opt/jabuka/wheelhouse/fastnet2ip --require-hashes -r /opt/jabuka/fastnet2ip.lock",
+        "/etc/systemd/system/jabuka-fastnet-relay.service",
         "/etc/systemd/system/fastnet2ip.service",
         "/etc/systemd/system.conf.d/jabuka-watchdog.conf",
         "/etc/systemd/journald.conf.d/jabuka.conf",
@@ -95,7 +98,7 @@ def test_dry_run_order(dry_run) -> None:
         "systemctl enable --now gpsd.service",
         "useradd",
         "--require-hashes",
-        "pipx install",
+        "/opt/fastnet2ip/venv/bin/pip install",
         "systemctl enable jabuka-ingest-fastnet.service",
         "nmcli connection add",
         "nmcli connection up jabuka-ap",
@@ -117,6 +120,16 @@ def test_fastnet2ip_never_enabled(dry_run) -> None:
     for line in dry_run.stdout.splitlines():
         if line.startswith("+ ") and "systemctl" in line and "enable" in line:
             assert "fastnet2ip" not in line, line
+            assert "relay" not in line, line
+
+
+def test_plan_b_is_hash_locked_never_live_pypi(dry_run) -> None:
+    """WR-03: no `pipx install` (root, unpinned dependencies resolved from PyPI)."""
+    commands = [line for line in dry_run.stdout.splitlines() if line.startswith("+ ")]
+    assert not [c for c in commands if "pipx install" in c]
+    f2i = [c for c in commands if "/opt/fastnet2ip/venv/bin/pip install" in c]
+    assert len(f2i) == 1
+    assert "--no-index" in f2i[0] and "--require-hashes" in f2i[0]
 
 
 def test_only_mutations_through_run(dry_run) -> None:

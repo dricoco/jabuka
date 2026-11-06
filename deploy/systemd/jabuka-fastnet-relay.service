@@ -1,0 +1,35 @@
+# Jabuka receive-only Fastnet relay for Plan B (fastnet2ip). Manual start only: it is pulled in by
+# fastnet2ip.service (BindsTo=) and stops again when fastnet2ip stops (StopWhenUnneeded=). No
+# [Install] section, so it can never be enabled at boot.
+#
+# It opens /dev/fastnet exactly like the ingest (O_RDONLY, line control refused, exclusive lock) and
+# copies the bytes into a pty linked at /run/jabuka-relay/fastnet-ro. fastnet2ip reads that pty as
+# the unprivileged jabuka user without the dialout group: it cannot open /dev/fastnet, and anything
+# it writes into the pty is read back by the relay, discarded and logged, never sent on the wire.
+#
+# Conflicts=jabuka-ingest-fastnet.service: only one process may own the port (exclusive lock).
+
+[Unit]
+Description=Jabuka receive-only Fastnet relay for Plan B (fastnet2ip)
+Documentation=file:///opt/jabuka/PI-SETUP.md
+Conflicts=jabuka-ingest-fastnet.service
+StopWhenUnneeded=yes
+
+[Service]
+Type=notify
+User=jabuka
+Group=jabuka
+SupplementaryGroups=dialout
+RuntimeDirectory=jabuka-relay
+RuntimeDirectoryMode=0750
+ExecStart=/opt/jabuka/venv/bin/jabuka-fastnet-relay --device /dev/fastnet --link /run/jabuka-relay/fastnet-ro --log-level INFO
+Restart=on-failure
+RestartSec=2
+WatchdogSec=30
+OOMScoreAdjust=-700
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

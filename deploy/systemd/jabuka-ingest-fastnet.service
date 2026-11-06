@@ -8,12 +8,13 @@
 #   dev-fastnet.device): the process reports "device missing" in its health and reconnects itself.
 # - /dev/fastnet is root:dialout 0640 (deploy/udev/99-jabuka.rules), so via the dialout group this
 #   unprivileged user can only open it read-only.
-# - Conflicts=fastnet2ip.service: the Plan B tool and this ingest are never active together.
+# - Conflicts=fastnet2ip.service jabuka-fastnet-relay.service: Plan B (and its relay, which owns
+#   the port) and this ingest are never active together.
 
 [Unit]
 Description=Jabuka Fastnet ingest (receive-only)
 Documentation=file:///opt/jabuka/PI-SETUP.md
-Conflicts=fastnet2ip.service
+Conflicts=fastnet2ip.service jabuka-fastnet-relay.service
 StartLimitIntervalSec=0
 
 [Service]
