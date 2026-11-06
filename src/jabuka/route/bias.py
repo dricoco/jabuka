@@ -55,6 +55,16 @@ REASON_TURN = "virage"
 REASON_LIGHT = "vent faible"
 
 JSON_VERSION = 1
+# bias.json config keys and their accepted ranges; anything else keeps the code default
+# (03-REVIEW LO-06: tau_ema_s = 0 made every update raise ZeroDivisionError)
+CONFIG_RANGES: dict[str, tuple[float, float]] = {
+    "tau_ema_s": (1.0, 86400.0),
+    "min_gated_s": (0.0, 86400.0),
+    "clamp_deg": (0.0, 90.0),
+    "k_min": (0.1, 1.0),
+    "k_max": (1.0, 5.0),
+    "tau_decay_s": (60.0, 10.0 * 86400.0),
+}
 
 
 @dataclass(frozen=True)
@@ -345,7 +355,17 @@ class BiasEstimator:
         try:
             if int(obj["version"]) != JSON_VERSION:
                 raise ValueError(f"unsupported bias state version {obj['version']!r}")
-            cfg = {k: float(v) for k, v in dict(obj["config"]).items()}
+            cfg: dict[str, float] = {}
+            for k, v in dict(obj["config"]).items():
+                rng = CONFIG_RANGES.get(k)
+                if rng is None or isinstance(v, bool):
+                    continue  # unknown key or not a number: code default
+                try:
+                    x = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(x) and rng[0] <= x <= rng[1]:
+                    cfg[k] = x
             est = cls(**cfg)
             est.enabled = bool(obj["enabled"])
             est._s, est._c = float(obj["S"]), float(obj["C"])
@@ -365,6 +385,11 @@ class BiasEstimator:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid bias state: {exc}") from exc
         values = [est._s, est._c, est._m, est._g, est._gated_s]
+        for extra in (est._manual, est._fallback):
+            if extra is not None:
+                values.extend(extra)
+        if est._t_obs is not None:
+            values.append(est._t_obs)
         if not all(math.isfinite(x) for x in values):
             raise ValueError("invalid bias state: non-finite value")
         # after a restart the learned EMA is history: a decaying fallback, never the live EMA

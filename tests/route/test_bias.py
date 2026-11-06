@@ -311,6 +311,27 @@ def test_restart_restores_a_decaying_fallback() -> None:
     assert back.status(t2)["gated_s"] == pytest.approx(1.0)
 
 
+def test_bias_json_config_is_range_checked() -> None:
+    """03-REVIEW LO-06: tau_ema_s = 0 from bias.json made every update raise; NaN t_obs or
+    manual gave NaN weights."""
+    est, t = learned(400)
+    obj = json.loads(json.dumps(est.to_json()))
+    obj["config"].update(tau_ema_s=0.0, k_min=-1.0, clamp_deg="x", tau_decay_s=7200.0, bogus=1)
+    back = BiasEstimator.from_json(obj)
+    assert back.tau_ema_s == 600.0 and back.k_min == 0.6 and back.clamp_deg == 35.0
+    assert back.tau_decay_s == 7200.0  # in range: kept
+    back.update(sample(t + 1.0))  # no ZeroDivisionError
+    for key, bad in (("t_obs", float("nan")), ("manual", [0.1, float("nan"), T0])):
+        broken = json.loads(json.dumps(est.to_json()))
+        broken[key] = bad
+        with pytest.raises(ValueError, match="non-finite"):
+            BiasEstimator.from_json(broken)
+    fb = json.loads(json.dumps(est.to_json()))
+    fb["fallback"] = [0.1, 1.1, float("inf")]
+    with pytest.raises(ValueError):
+        BiasEstimator.from_json(fb)
+
+
 def test_bias_changed() -> None:
     assert bias_changed((10.0, 1.2), (14.0, 1.25)) is False
     assert bias_changed((10.0, 1.2), (16.0, 1.2)) is True
