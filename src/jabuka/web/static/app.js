@@ -3,7 +3,8 @@
 //
 // Module contract: each module exports mount(ctx), ctx = {section, api, bus, badge, latest}.
 //   bus events (CustomEvent detail): "nav" (nav message), "course" (GET /api/course JSON),
-//   "settings" ({version, settings}), "tab" (tab name), "link" ("live" | "stale" | "reconnect").
+//   "settings" ({version, settings}), "tab" (tab name), "link" ("live" | "stale" | "reconnect"),
+//   "route" (the WS route message of an adopted route, plan 03-06), "lock" (true | false).
 //   api: {get, post, put, patch, del} -> parsed JSON; throws ApiError {status, body}.
 //   badge(key, text | null, cls): show/clear a badge in #badges.
 //   latest(type): the last detail emitted for a bus event type (a module mounted after the first
@@ -306,6 +307,13 @@ function connect() {
       } catch (e) {
         console.error("nav handler", e);
       }
+    } else if (msg && msg.type === "route") {
+      // an adopted route (03-05): sent on adoption and on connect, drawn by route.js
+      try {
+        emit("route", msg);
+      } catch (e) {
+        console.error("route handler", e);
+      }
     }
   };
   sock.onclose = () => {
@@ -325,6 +333,8 @@ const MODULES = [
   ["reglages", "./reglages.js", "tab-reglages"],
   ["overlays", "./overlays.js", null],
   ["lock", "./lock.js", null],
+  // the route (03-06): its own try/catch like every module, so it never stops the helm numbers
+  ["route", "./route.js", "tab-barre"],
 ];
 
 // Screen awake (HELM-04): Wake Lock / NoSleep video from a user gesture (the first tap anywhere,

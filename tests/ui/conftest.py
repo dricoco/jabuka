@@ -1,8 +1,10 @@
 """Headless-browser harness shared by the Phase 2 UI tests (plans 02-01, 02-04, 02-05).
 
-- racepack_dir: tmp copy of the tile fixture (race.pmtiles) and the seamark fixture.
+- racepack_dir: tmp copy of the tile fixture (race.pmtiles) and the seamark fixture, then
+  racepack_extra(dir) (default no-op; plan 03-06 adds the routing files: land mask + wind).
 - core_server: the venv's jabuka-core as a subprocess (127.0.0.1, free HTTP/UDP ports, tmp data
-  dir, --racepack, --clock system, --gpsd none), stopped cleanly after the test.
+  dir, --racepack, then core_extra_args: default --clock system --gpsd none; plan 03-06 runs
+  --clock gps against a fake gpsd), stopped cleanly after the test.
 - feeder: a thread sending schema-v1 UDP deltas every 0.5 s from a mutable boat dict (wind,
   heading and BSP under src "sim" with heading ref T; position/COG/SOG under src "sim-gps").
   Mutate feeder.boat between steps; feeder.wait_nav(pred) polls GET /api/nav.
@@ -59,11 +61,24 @@ def _free_port(kind: int) -> int:
 
 
 @pytest.fixture
-def racepack_dir(tmp_path: Path) -> Path:
+def racepack_extra() -> Callable[[Path], None]:
+    """Hook: add files to the race pack before the core starts (override in a test module)."""
+    return lambda _d: None
+
+
+@pytest.fixture
+def core_extra_args() -> list[str]:
+    """Hook: the core's clock and gpsd arguments (override in a test module)."""
+    return ["--clock", "system", "--gpsd", "none"]
+
+
+@pytest.fixture
+def racepack_dir(tmp_path: Path, racepack_extra: Callable[[Path], None]) -> Path:
     d = tmp_path / "racepack"
     d.mkdir()
     shutil.copy(FIX / "sibenik.pmtiles", d / "race.pmtiles")
     shutil.copy(FIX / "seamarks-mini.geojson", d / "seamarks.geojson")
+    racepack_extra(d)
     return d
 
 
@@ -81,7 +96,9 @@ class CoreServer:
 
 
 @pytest.fixture
-def core_server(tmp_path: Path, racepack_dir: Path) -> Iterator[CoreServer]:
+def core_server(
+    tmp_path: Path, racepack_dir: Path, core_extra_args: list[str]
+) -> Iterator[CoreServer]:
     http_port = _free_port(socket.SOCK_STREAM)
     udp_port = _free_port(socket.SOCK_DGRAM)
     data_dir = tmp_path / "data"
@@ -98,10 +115,7 @@ def core_server(tmp_path: Path, racepack_dir: Path) -> Iterator[CoreServer]:
             str(data_dir),
             "--racepack",
             str(racepack_dir),
-            "--clock",
-            "system",
-            "--gpsd",
-            "none",
+            *core_extra_args,
         ]
     )
     server = CoreServer(f"http://127.0.0.1:{http_port}", udp_port, data_dir, proc)
