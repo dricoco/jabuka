@@ -7,6 +7,7 @@ degraded-mode drills, power pull) is long and only runs with JABUKA_REHEARSAL_FU
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import subprocess
@@ -125,6 +126,21 @@ def test_quick_run_wiring_and_capture(quick_run) -> None:
     assert wall <= QUICK_BUDGET_S, f"quick rehearsal took {wall:.1f} s"
 
 
+def test_quick_run_boat_checks(quick_run) -> None:
+    """§4 instrument checks, §5 offline tablet page and §7 course drill on the synthetic boat."""
+    proc, results, _, _ = quick_run
+    for sid in ("R4.variation", "R4.cog_hdg", "R4.awa_sign", "R4.twd", "R5.offline", "R7.drill"):
+        assert results.get(sid, ("missing",))[0] == "PASS", (sid, proc.stdout)
+    for sid in ("R4.dock", "R4.underway"):
+        assert results[sid][0] == "HUMAN", (sid, proc.stdout)
+    m = re.search(r"en ([0-9.]+) s", results["R7.drill"][1])
+    assert m and float(m.group(1)) < 30.0, results["R7.drill"]
+    assert results["R9.summary"][0] == "PASS"
+    # quick mode stays hermetic and short: no wheelhouse/soak lookups, no route, no drills
+    for sid in ("R1.wheelhouse", "R1.soak", "R6.pack", "R8.gribonly", "R8.powerpull"):
+        assert sid not in results, sid
+
+
 def test_random_bytes_capture_fails(tmp_path: Path) -> None:
     rng = random.Random(20261112)
     data = rng.randbytes(6000)
@@ -148,3 +164,41 @@ def test_runbook_tags_match_the_registry() -> None:
     for s in rehearsal.STEPS:
         if s.section in (2, 3):
             assert s.id in tags, f"{s.id} is not tagged in docs/COMMISSIONING.md"
+
+
+def test_runbook_tags_cover_every_step() -> None:
+    tags = set(TAG.findall(RUNBOOK.read_text(encoding="utf-8")))
+    missing = [s.id for s in rehearsal.STEPS if s.id not in tags]
+    assert not missing, f"steps not tagged in docs/COMMISSIONING.md: {missing}"
+
+
+# -- full run (long: live probe drills, route, degraded drills, power pull) --------------------
+@pytest.mark.skipif(
+    os.environ.get("JABUKA_REHEARSAL_FULL") != "1",
+    reason="full rehearsal (about 4 min): set JABUKA_REHEARSAL_FULL=1",
+)
+def test_full_run(tmp_path: Path) -> None:
+    proc, results, wall = _run("--steps", "all", "--out", str(tmp_path / "full"), timeout=900)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for s in rehearsal.STEPS:
+        assert s.id in results, (s.id, proc.stdout)
+    assert results["R6.dryrun"][0] == "SKIP" and "hors ligne" in results["R6.dryrun"][1]
+    for sid in (
+        "R2.silent",
+        "R2.swap",
+        "R2.noisy",
+        "R2.ok",
+        "R3.capture",
+        "R3.replay",
+        "R4.variation",
+        "R4.twd",
+        "R6.pack",
+        "R7.drill",
+        "R8.gribonly",
+        "R8.manual",
+        "R8.stay",
+        "R8.powerpull",
+        "R9.summary",
+    ):
+        assert results[sid][0] == "PASS", (sid, results[sid], proc.stdout)
+    print(f"full rehearsal: {wall:.0f} s")
