@@ -185,6 +185,19 @@ Terms chosen (to confirm first):
 | `carte.delete` | Supprimer | Delete | Izbriši |
 | `carte.confirmDelete` | Confirmer la suppression | Confirm delete | Potrdi brisanje |
 | `carte.markTitle` | {name} (n° {idx}) | {name} (no. {idx}) | {name} (št. {idx}) |
+| `carte.coordButton` | ＋ Marque (coordonnées) | ＋ Mark (coordinates) | ＋ Boja (koordinate) |
+| `carte.coords` | Coordonnées | Coordinates | Koordinate |
+| `carte.lat` | Latitude | Latitude | Zemljepisna širina |
+| `carte.lon` | Longitude | Longitude | Zemljepisna dolžina |
+| `carte.coordHint` | Degrés et minutes : 43 45,2 ou 43°45,2' N | Degrees and minutes: 43 45.2 or 43°45.2' N | Stopinje in minute: 43 45,2 ali 43°45,2' N |
+| `carte.moveHere` | Déplacer ici | Move here | Premakni sem |
+| `carte.errEmpty` | À remplir | Required | Obvezno polje |
+| `carte.errFormat` | Format non reconnu (ex. 43 45,2) | Format not recognised (e.g. 43 45.2) | Neprepoznana oblika (npr. 43 45,2) |
+| `carte.errMinutes` | Minutes : de 0 à 59,999 | Minutes: 0 to 59.999 | Minute: od 0 do 59,999 |
+| `carte.errSeconds` | Secondes : de 0 à 59,9 | Seconds: 0 to 59.9 | Sekunde: od 0 do 59,9 |
+| `carte.errRange` | Hors limites | Out of range | Izven meja |
+| `carte.errHemi` | Lettre attendue : {h} | Expected letter: {h} | Pričakovana črka: {h} |
+| `carte.errArea` | Hors zone de course ({s} à {n}, {w} à {e}) | Outside the race area ({s} to {n}, {w} to {e}) | Izven območja regate ({s} do {n}, {w} do {e}) |
 | `banner.undo` | Annuler | Undo | Razveljavi |
 | `banner.expired` | Annuler expiré | Undo expired | Razveljavitev potekla |
 

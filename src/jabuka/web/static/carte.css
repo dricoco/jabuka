@@ -24,6 +24,21 @@
 .carte-list .meta { display: block; font-size: 14px; color: var(--dim); }
 .carte-list .tag { display: inline-block; font-size: 13px; font-weight: 800; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
 .carte-list .tag.finish { color: var(--bad); }
+.carte-list .coord { display: block; font-size: 14px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+/* typed coordinates (quick 003): degrees + decimal minutes, one tolerant field per axis */
+.coord-editor { display: flex; flex-direction: column; gap: 4px; }
+.coord-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.coord-row .coord-field { flex: 1 1 200px; min-width: 0; }
+.coord-field input { font-variant-numeric: tabular-nums; }
+.coord-field input[aria-invalid="true"] { border-color: var(--bad); }
+.coord-error { color: var(--bad); font-weight: 700; font-size: 15px; min-height: 0; }
+.coord-error:empty { display: none; }
+.coord-hint { font-size: 14px; }
+.coord-land { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 2px solid var(--warn); border-radius: 8px; }
+.coord-land[hidden] { display: none; }
+.coord-land strong { color: var(--warn); font-size: 18px; }
+#mark-coords { white-space: normal; }
 
 /* bottom sheet (left of the side panel) */
 .carte-sheet {

@@ -6,12 +6,18 @@
 //   to add a mark (a tap on the "earth" layer first asks "Marque à terre ?"), drag a mark to move
 //   it (one PATCH on release), tap a mark for its sheet: name, side, radius, Monter / Descendre,
 //   Supprimer (confirmed), "Finir ici", "Rendre active".
+// - Typed coordinates (quick 003, coord_logic.js): the add sheet and the mark sheet edit the
+//   position in degrees + decimal minutes (VHF format), validated live against the race area the
+//   map is clamped to; a valid entry shows the pending marker and eases the map there; the land
+//   check runs on typed positions before "Ajouter" / "Déplacer ici". "＋ Marque (coordonnées)"
+//   opens the add sheet at the boat (else the map centre). The list shows every mark's position.
 // - Every write carries base_version; a 409 shows "Parcours modifié ailleurs — rechargé" and
 //   loads the current course from the 409 body.
 // - #banner (every tab): "Marque suivante : <nom>" with a 48 px "Annuler" while the nav message's
 //   t_mono is before undo_until_s; "ARRIVÉE — <nom>" without Annuler.
 // DOM built with textContent only: mark names are data typed on another tablet (T-02-04-02).
 // Texts in the tablet's language (i18n.js); the core's banner text goes through trServer.
+import { areaFrom, checkPosition, formatDM, inArea } from "./coord_logic.js";
 import { fmtDec, t, trServer } from "./i18n.js";
 import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
 
@@ -65,6 +71,29 @@ function button(text, attrs = {}, onClick) {
 
 const round6 = (x) => Math.round(x * 1e6) / 1e6;
 const roundR = (x) => Math.round(x * 100) / 100;
+const posKey = (lat, lon) => `${round6(lat)},${round6(lon)}`;
+const PREVIEW_MS = 350;
+const LAND_WAIT_MS = 3000;
+
+// Coordinates in degrees + decimal minutes, decimal comma in fr / sl (fmtDec's separator).
+const decSep = () => fmtDec(0.5, 1).charAt(1);
+const fmtLat = (v, digits = 3) => formatDM(v, "lat", { digits, sep: decSep() });
+const fmtLon = (v, digits = 3) => formatDM(v, "lon", { digits, sep: decSep() });
+export const fmtPos = (lat, lon) => `${fmtLat(lat)}  ${fmtLon(lon)}`;
+const ERR_KEYS = {
+  empty: "carte.errEmpty",
+  format: "carte.errFormat",
+  minutes: "carte.errMinutes",
+  seconds: "carte.errSeconds",
+  range: "carte.errRange",
+};
+function coordError(code, axis) {
+  if (!code) return "";
+  if (code === "hemisphere") return t("carte.errHemi", { h: axis === "lat" ? "N / S" : "E / W" });
+  return t(ERR_KEYS[code] ?? "carte.errFormat");
+}
+const areaText = (a) =>
+  t("carte.errArea", { s: fmtLat(a.south, 0), n: fmtLat(a.north, 0), w: fmtLon(a.west, 0), e: fmtLon(a.east, 0) });
 
 // -- pure helpers (course JSON -> GeoJSON) ------------------------------------------------------
 export function lastIdx(course) {
@@ -203,7 +232,9 @@ export function mount(ctx) {
   let map = null;
   let drag = null;
   let suppressClickUntil = 0;
-  let sheetFor = null; // {kind: "mark", markId, idx} | {kind: "add"|"land", ...}
+  let sheetFor = null; // {kind: "mark", markId, idx, draft} | {kind: "add"|"land", ...}
+  let locked = document.body.classList.contains("locked"); // then the "lock" bus events
+  let previewTimer = null;
 
   // -- side panel ------------------------------------------------------------------------------
   const panel = el("div", { class: "carte-panel" });
@@ -221,8 +252,9 @@ export function mount(ctx) {
   warn.append(warnText, btnSides);
   const status = el("div", { class: "carte-status", id: "carte-status", "aria-live": "polite" });
   const hint = el("div", { class: "carte-hint" }, t("carte.hint"));
+  const btnCoords = button(t("carte.coordButton"), { id: "mark-coords" });
   const list = el("ol", { class: "carte-list", id: "course-list", start: "0" });
-  panel.append(tpl, navRow, warn, status, hint, list);
+  panel.append(tpl, navRow, warn, status, hint, btnCoords, list);
   const sheet = el("div", { class: "carte-sheet", id: "carte-sheet", role: "dialog" });
   sheet.hidden = true;
   root.replaceChildren(panel, sheet);
@@ -246,6 +278,7 @@ export function mount(ctx) {
       const radius = `${fmtDec(leg.radius_nm, 2)} nm`;
       const meta = el("span", { class: "meta" }, side ? `${side} · ${radius}` : radius);
       li.append(name, meta);
+      if (mark) li.append(el("span", { class: "coord" }, fmtPos(mark.lat, mark.lon)));
       if (i === 0) li.append(el("span", { class: "tag" }, t("carte.start")));
       if (i === last) li.append(el("span", { class: "tag finish" }, t("carte.finish")));
       li.addEventListener("click", () => openMarkSheet(leg.mark_id, i));
@@ -280,7 +313,7 @@ export function mount(ctx) {
   }
 
   async function act(fn, after) {
-    if (busy) return false;
+    if (busy || locked) return false;
     busy = true;
     status.textContent = "";
     try {
@@ -346,6 +379,7 @@ export function mount(ctx) {
 
   // -- sheets ----------------------------------------------------------------------------------
   function closeSheet() {
+    clearTimeout(previewTimer);
     sheetFor = null;
     sheet.hidden = true;
     sheet.replaceChildren();
@@ -387,28 +421,229 @@ export function mount(ctx) {
     return wrap;
   }
 
+  // -- typed coordinates (quick 003) -----------------------------------------------------------
+  // The race area is the one the map is clamped to (clipped to what the core accepts).
+  const area = () => {
+    const b = map?.getMaxBounds?.();
+    return areaFrom(b ? b.toArray() : null);
+  };
+
+  // Camera offset that puts the target in the middle of the largest map area left free by the
+  // side panel and the sheet: above the sheet, or beside it when the sheet is tall.
+  function viewOffset() {
+    const box = map.getContainer().getBoundingClientRect();
+    const pr = panel.getBoundingClientRect();
+    const sr = sheet.hidden ? null : sheet.getBoundingClientRect();
+    const right = pr.width ? Math.min(box.width, Math.max(0, pr.left - box.left)) : box.width;
+    const size = (r) => Math.max(0, r.x1 - r.x0) * Math.max(0, r.y1 - r.y0);
+    let free = { x0: 0, x1: right, y0: 0, y1: box.height };
+    if (sr && sr.height) {
+      const above = { x0: 0, x1: right, y0: 0, y1: sr.top - box.top };
+      const beside = { x0: sr.right - box.left, x1: right, y0: 0, y1: box.height };
+      const best = size(above) >= size(beside) ? above : beside;
+      if (size(best) >= 120 * 120) free = best;
+    }
+    return [(free.x0 + free.x1) / 2 - box.width / 2, (free.y0 + free.y1) / 2 - box.height / 2];
+  }
+
+  function showOnMap(lat, lon, duration = 500) {
+    if (map) map.easeTo({ center: [lon, lat], offset: viewOffset(), duration });
+  }
+
+  // The tap's land check for a typed position: bring it on screen, let the tiles render, then
+  // look for the "earth" layer under it (no map or no earth layer: not land).
+  async function isLand(lat, lon) {
+    if (!map || !map.getLayer("earth")) return false;
+    const idle = new Promise((resolve) => {
+      const timer = setTimeout(resolve, LAND_WAIT_MS);
+      map.once("idle", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    showOnMap(lat, lon, 0);
+    map.triggerRepaint();
+    await idle;
+    if (!map.getLayer("earth")) return false;
+    const p = map.project([lon, lat]);
+    const c = map.getContainer();
+    if (p.x < 0 || p.y < 0 || p.x > c.clientWidth || p.y > c.clientHeight) return false;
+    return map.queryRenderedFeatures([p.x, p.y], { layers: ["earth"] }).length > 0;
+  }
+
+  // Pending marker at a valid typed position; the map eases there after a pause in typing.
+  function preview(res, move) {
+    clearTimeout(previewTimer);
+    if (!res.ok) {
+      setPending(null, null);
+      return;
+    }
+    setPending(res.lat, res.lon);
+    if (move) previewTimer = setTimeout(() => showOnMap(res.lat, res.lon), PREVIEW_MS);
+  }
+
+  // Latitude and longitude fields (tolerant text, numeric keyboard) with live errors.
+  // onCheck(res, fromInput) after every edit and on check(); texts() gives the drafts.
+  function coordEditor(latText, lonText, onCheck) {
+    const mk = (axis, value) => {
+      const input = el("input", {
+        id: `coord-${axis}`,
+        type: "text",
+        inputmode: "decimal",
+        enterkeyhint: axis === "lat" ? "next" : "done",
+        autocomplete: "off",
+        autocapitalize: "characters",
+        spellcheck: "false",
+        maxlength: "24",
+        value,
+      });
+      // the first tap selects the whole value (typing replaces it); a second tap places the caret
+      // (the click after the focus would otherwise drop the selection)
+      let fresh = false;
+      input.addEventListener("focus", () => {
+        fresh = true;
+        input.select();
+      });
+      input.addEventListener("click", () => {
+        if (fresh) input.select();
+        fresh = false;
+      });
+      input.addEventListener("blur", () => {
+        fresh = false;
+      });
+      const err = el("div", { class: "coord-error", id: `coord-${axis}-err`, "aria-live": "polite" });
+      const wrap = el("label", { class: "sheet-field coord-field" });
+      wrap.append(el("span", { class: "label" }, t(`carte.${axis}`)), input, err);
+      return { input, err, wrap };
+    };
+    const la = mk("lat", latText);
+    const lo = mk("lon", lonText);
+    const areaErr = el("div", { class: "coord-error", id: "coord-area-err", "aria-live": "polite" });
+    const row = el("div", { class: "coord-row" });
+    row.append(la.wrap, lo.wrap);
+    const box = el("div", { class: "coord-editor", "data-name": "coords" });
+    box.append(row, el("div", { class: "sheet-text coord-hint" }, t("carte.coordHint")), areaErr);
+    const check = (fromInput = false) => {
+      const a = area();
+      const res = checkPosition(la.input.value, lo.input.value, a);
+      la.err.textContent = coordError(res.latError, "lat");
+      lo.err.textContent = coordError(res.lonError, "lon");
+      la.input.setAttribute("aria-invalid", String(Boolean(res.latError)));
+      lo.input.setAttribute("aria-invalid", String(Boolean(res.lonError)));
+      areaErr.textContent = res.areaError ? areaText(a) : "";
+      onCheck(res, fromInput);
+      return res;
+    };
+    la.input.addEventListener("input", () => check(true));
+    lo.input.addEventListener("input", () => check(true));
+    la.input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") lo.input.focus();
+    });
+    return { el: box, check, texts: () => ({ lat: la.input.value, lon: lo.input.value }) };
+  }
+
+  // Inline "Marque à terre ?" for a typed position (the sheet and its values stay).
+  function landBox(onKeep) {
+    const box = el("div", { class: "coord-land", id: "coord-land" });
+    box.hidden = true;
+    const row = el("div", { class: "carte-row" });
+    row.append(
+      button(t("carte.keep"), { id: "coord-land-keep" }, () => {
+        box.hidden = true;
+        onKeep();
+      }),
+      button(t("common.cancel"), { id: "coord-land-cancel" }, () => {
+        box.hidden = true;
+      }),
+    );
+    box.append(el("strong", {}, t("carte.landTitle")), el("p", { class: "sheet-text" }, t("carte.landText")), row);
+    return box;
+  }
+
+  // The write button of a coordinate editor: runs the land check on a position not checked yet,
+  // shows the inline warning on land, else writes.
+  function landChecked(getPos, isChecked, land, write) {
+    return async (btn) => {
+      const pos = getPos();
+      if (!pos.ok || busy || locked) return;
+      const key = posKey(pos.lat, pos.lon);
+      if (!isChecked(key)) {
+        btn.disabled = true;
+        const onLand = await isLand(pos.lat, pos.lon);
+        const now = getPos();
+        btn.disabled = !now.ok;
+        if (!btn.isConnected || !now.ok || posKey(now.lat, now.lon) !== key) return; // edited
+        if (onLand) {
+          land.hidden = false;
+          return;
+        }
+      }
+      write(pos);
+    };
+  }
+
   function openLandWarning(lat, lon) {
     sheetFor = { kind: "land" };
     setPending(lat, lon);
     const row = el("div", { class: "carte-row" });
     row.append(
-      button(t("carte.keep"), { id: "land-keep" }, () => openAddSheet(lat, lon)),
+      button(t("carte.keep"), { id: "land-keep" }, () => openAddSheet(lat, lon, { checked: true })),
       button(t("common.cancel"), { id: "land-cancel" }, closeSheet),
     );
     showSheet(t("carte.landTitle"), el("p", { class: "sheet-text" }, t("carte.landText")), row);
   }
 
-  function openAddSheet(lat, lon) {
+  // checked: the land check already ran for (lat, lon) (a tap on water, or "Garder");
+  // move: bring (lat, lon) into view (opened from the button, not from a tap).
+  function openAddSheet(lat, lon, { checked = false, move = false } = {}) {
     sheetFor = { kind: "add" };
     setPending(lat, lon);
     const st = { side: "none", radius: RADIUS_STEP, pos: "active" };
+    let pos = { ok: true, lat, lon };
+    let checkedAt = checked ? posKey(lat, lon) : null;
     const n = Object.values(course.marks).filter((m) => !m.builtin).length + 1;
     const name = el("input", { id: "mark-name", type: "text", maxlength: "40", value: `M${n}`, autocomplete: "off" });
     const body = el("div", { class: "sheet-body" });
+    const post = async (at) => {
+      // "à la fin" = before the finish (the finish stays the finish)
+      const insertAt = st.pos === "end" ? lastIdx(course) : null;
+      const ok = await act(() =>
+        ctx.api.post("/api/marks", {
+          name: name.value,
+          lat: round6(at.lat),
+          lon: round6(at.lon),
+          radius_nm: st.radius,
+          side: st.side,
+          insert_at: insertAt,
+          base_version: version(),
+        }),
+      );
+      if (ok) closeSheet();
+    };
+    const land = landBox(() => {
+      checkedAt = posKey(pos.lat, pos.lon);
+      post(pos);
+    });
+    const onAdd = landChecked(
+      () => pos,
+      (key) => key === checkedAt,
+      land,
+      (at) => {
+        checkedAt = posKey(at.lat, at.lon);
+        post(at);
+      },
+    );
+    const addBtn = button(t("carte.add"), { id: "mark-add", class: "big primary" }, () => onAdd(addBtn));
+    const editor = coordEditor(fmtLat(lat), fmtLon(lon), (res, fromInput) => {
+      pos = res;
+      addBtn.disabled = !res.ok;
+      land.hidden = true;
+      if (fromInput) preview(res, true);
+    });
     const draw = () => {
       body.replaceChildren(
         field(t("carte.name"), name),
-        el("div", { class: "sheet-text" }, `${lat.toFixed(4)}° N  ${lon.toFixed(4)}° E`),
+        editor.el,
         field(t("carte.side"), segmented(sides(), st.side, (v) => ((st.side = v), draw()), "side")),
         field(t("carte.radius"), stepper(st.radius, (v) => ((st.radius = v), draw()), "radius")),
         field(
@@ -423,27 +658,28 @@ export function mount(ctx) {
             "pos",
           ),
         ),
-        button(t("carte.add"), { id: "mark-add", class: "big primary" }, async () => {
-          // "à la fin" = before the finish (the finish stays the finish)
-          const insertAt = st.pos === "end" ? lastIdx(course) : null;
-          const ok = await act(() =>
-            ctx.api.post("/api/marks", {
-              name: name.value,
-              lat: round6(lat),
-              lon: round6(lon),
-              radius_nm: st.radius,
-              side: st.side,
-              insert_at: insertAt,
-              base_version: version(),
-            }),
-          );
-          if (ok) closeSheet();
-        }),
+        land,
+        addBtn,
       );
     };
     draw();
     showSheet(t("carte.newMark"), body);
+    if (move) showOnMap(lat, lon);
   }
+
+  function openAtBoatOrCentre() {
+    if (!course || locked) return;
+    const a = area();
+    const b = ctx.latest?.("nav")?.boat;
+    let at = null;
+    if (b && Number.isFinite(b.lat) && Number.isFinite(b.lon) && inArea(b.lat, b.lon, a)) at = [b.lat, b.lon];
+    else if (map) {
+      const c = map.getCenter();
+      at = [c.lat, c.lng];
+    } else at = [(a.south + a.north) / 2, (a.west + a.east) / 2];
+    openAddSheet(at[0], at[1], { move: true });
+  }
+  btnCoords.addEventListener("click", openAtBoatOrCentre);
 
   function openMarkSheet(markId, idx, refresh = false) {
     if (!course) return;
@@ -453,7 +689,10 @@ export function mount(ctx) {
       return;
     }
     if (refresh && sheet.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
-    sheetFor = { kind: "mark", markId, idx };
+    // typed coordinates not sent yet survive a refresh of the same mark's sheet
+    const draft = refresh && sheetFor?.kind === "mark" && sheetFor.markId === markId ? (sheetFor.draft ?? null) : null;
+    const s = { kind: "mark", markId, idx, draft };
+    sheetFor = s;
     setPending(null, null);
     const leg = idx >= 0 ? course.seq[idx] : null;
     const last = course.seq.length - 1;
@@ -465,6 +704,44 @@ export function mount(ctx) {
     nameRow.append(name, rename);
     const body = el("div", { class: "sheet-body" });
     body.append(field(t("carte.name"), nameRow));
+
+    // "Déplacer ici": PATCH lat/lon (a builtin mark gets an override in course.json)
+    const lat0 = fmtLat(mark.lat);
+    const lon0 = fmtLon(mark.lon);
+    let pos = { ok: false };
+    let checkedAt = null;
+    const move = (at) =>
+      act(
+        () =>
+          ctx.api.patch(`/api/marks/${encodeURIComponent(markId)}`, {
+            lat: round6(at.lat),
+            lon: round6(at.lon),
+            base_version: version(),
+          }),
+        () => {
+          if (sheetFor?.kind === "mark") sheetFor.draft = null;
+        },
+      );
+    const land = landBox(() => {
+      checkedAt = posKey(pos.lat, pos.lon);
+      move(pos);
+    });
+    const onMove = landChecked(() => pos, (key) => key === checkedAt, land, move);
+    const moveBtn = button(t("carte.moveHere"), { id: "mark-move", class: "big primary" }, () => onMove(moveBtn));
+    // the callback runs from editor.check() / typing, after editor is assigned
+    const editor = coordEditor(draft?.lat ?? lat0, draft?.lon ?? lon0, (res, fromInput) => {
+      pos = res;
+      const tx = editor.texts();
+      const changed = tx.lat !== lat0 || tx.lon !== lon0;
+      s.draft = changed ? tx : null;
+      moveBtn.disabled = !(res.ok && changed);
+      land.hidden = true;
+      preview(changed ? res : { ok: false }, fromInput);
+    });
+    const coords = el("div", { class: "sheet-field", "data-name": "mark-coords" });
+    coords.append(el("span", { class: "label" }, t("carte.coords")), editor.el, land, moveBtn);
+    body.append(coords);
+    editor.check();
     if (leg && idx >= 1) {
       const patchLeg = (patch) =>
         act(() => ctx.api.patch(`/api/course/legs/${idx}`, { ...patch, base_version: version() }));
@@ -591,7 +868,7 @@ export function mount(ctx) {
       const { lat, lng } = e.lngLat;
       const land = map.getLayer("earth") ? map.queryRenderedFeatures(e.point, { layers: ["earth"] }) : [];
       if (land.length) openLandWarning(lat, lng);
-      else openAddSheet(lat, lng);
+      else openAddSheet(lat, lng, { checked: true });
     });
   }
 
@@ -648,6 +925,10 @@ export function mount(ctx) {
     if (!drag) render();
   });
   ctx.bus.addEventListener("nav", (ev) => renderBanner(ev.detail));
+  // behind the lock overlay (lock.js) the Carte also refuses writes
+  ctx.bus.addEventListener("lock", (ev) => {
+    locked = Boolean(ev.detail);
+  });
   ctx.bus.addEventListener("tab", (ev) => {
     tab = ev.detail;
     setOverlayVisible(OVERLAY, tab === "carte");
