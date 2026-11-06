@@ -22,7 +22,9 @@ Gate d <= 2 nm. The candidate must hold DEBOUNCE_S consecutive seconds of t_mono
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
 Annuler). undo() restores the previous mark and suppresses that mark until the boat has left its
-zone. The finish leg finishes on entering its radius ("ARRIVÉE — <nom>"), no further advance.
+zone; leaving that zone then counts as the rounding (10 s debounce), so the real rounding after
+an early advance + Annuler still advances. The finish leg finishes on entering its radius
+("ARRIVÉE — <nom>"), no further advance.
 Hairpin marks (Jabuka in Course A: in 203 deg, out 009 deg) advance when abeam of the island:
 slightly early but safe, the laylines then point to the next mark. Debounce state lives in memory.
 """
@@ -218,6 +220,7 @@ class CourseStore:
         self._fsm_key: tuple[int, str] | None = None
         self._entered = False
         self._cand_since: float | None = None
+        self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
         self._banner_until: float | None = None  # t_mono end of the banner window
         raw = load_json_with_bak(self.path, None)
         if raw is not None:
@@ -547,6 +550,7 @@ class CourseStore:
         self._fsm_key = None
         self._entered = False
         self._cand_since = None
+        self._suppressed_in_zone = False
 
     def _tick_banner(self, t: float) -> None:
         b = self.course.banner
@@ -608,12 +612,21 @@ class CourseStore:
         zone = leg.radius_nm + ZONE_MARGIN_NM
         if c.suppress_idx is not None:
             if c.suppress_idx == idx and d <= zone:
+                self._suppressed_in_zone = True
                 return  # Annuler: not again until the boat has left this zone
+            left_this_zone = c.suppress_idx == idx and self._suppressed_in_zone
             self._save_quiet(c.model_copy(update={"suppress_idx": None}))
             self._reset_fsm()
             self._fsm_key = key
             if d <= zone:
                 return
+            # CR-02: leaving the zone the boat was suppressed in (seen inside it after Annuler)
+            # IS the rounding evidence: keep it, the usual 10 s "left the zone" debounce then
+            # advances. Discarding it would leave the course stuck on the mark just rounded,
+            # since the boat never re-enters that zone. Annuler tapped already outside the zone
+            # still needs a fresh entry.
+            if left_this_zone:
+                self._entered = True
         if idx >= self.last_idx:  # the finish
             if d <= max(leg.radius_nm, FINISH_MIN_NM):
                 self._finish(t, idx, mark)

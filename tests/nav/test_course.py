@@ -276,12 +276,49 @@ def test_undo_restores_and_suppresses_until_exit(tmp_path: Path) -> None:
         cs.undo(token, t + 6)  # only once
     t = run(cs, at(81, 0.4), t + 6, 30)  # still abeam in the zone: suppressed
     assert cs.course.active_idx == 1
-    t = run(cs, at(81, 0.8), t, 1)  # leaves the zone: suppression lifted, state reset
-    assert cs.course.suppress_idx is None
-    t = run(cs, at(81, 0.8), t, 15)  # outside without a fresh entry: nothing
+    # CR-02: leaving the zone the boat was suppressed in is the real rounding: it is kept as
+    # evidence (the boat never comes back), the 10 s "left the zone" debounce then advances
+    t = run(cs, at(81, 0.8), t, 1)  # leaves the zone: suppression lifted
+    assert cs.course.suppress_idx is None and cs.course.active_idx == 1
+    t = run(cs, at(81, 0.8), t, 9)  # 9 s outside: not yet
     assert cs.course.active_idx == 1
-    t = run(cs, at(81, 0.4), t, 11)  # entered again and abeam 10 s: fires again
+    t = run(cs, at(81, 0.8), t, 1)  # 10 s held outside: advances
     assert cs.course.active_idx == 2
+    adv = [e for e in log if e["type"] == "course_advance"]
+    assert len(adv) == 2 and adv[-1]["from_idx"] == 1
+
+
+def test_undo_outside_the_zone_needs_a_fresh_entry(tmp_path: Path) -> None:
+    """An advance fired by a zone exit, then Annuler tapped outside the zone: the suppression
+    lifts at once and nothing re-fires until the boat enters the zone again (no banner loop)."""
+    cs, _ = store(tmp_path)
+    t = run(cs, at(61, 0.5), 0.0, 3)
+    t = run(cs, at(51, 0.8), t, 11)  # left the zone without abeam: advanced
+    assert cs.course.active_idx == 2
+    cs.undo(cs.status()["banner"]["token"], t)
+    t = run(cs, at(51, 0.8), t, 30)  # still outside: nothing
+    assert cs.course.active_idx == 1 and cs.course.suppress_idx is None
+    t = run(cs, at(61, 0.4), t, 2)  # entered again
+    t = run(cs, at(51, 0.8), t, 11)  # and left: fires again
+    assert cs.course.active_idx == 2
+
+
+def test_hairpin_annuler_then_real_rounding_advances(tmp_path: Path) -> None:
+    """CR-02 scenario: Jabuka (Course A) advances early abeam, the helmsman taps Annuler, rounds
+    the island inside the zone and heads north: the exit advances to Blitvenica."""
+    cs, _ = store(tmp_path)
+    cs.activate(2)
+    jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
+    t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)  # approaching from the NNE, in the zone
+    t = run(cs, at(203, 0.6, mark=jab), t, 11)  # abeam (past the island on the incoming leg)
+    assert cs.course.active_idx == 3
+    cs.undo(cs.status()["banner"]["token"], t)
+    assert cs.course.active_idx == 2
+    t = run(cs, at(203, 0.6, mark=jab), t, 20)  # rounding inside the zone: suppressed
+    t = run(cs, at(300, 0.7, mark=jab), t, 20)
+    assert cs.course.active_idx == 2
+    t = run(cs, at(9, 1.2, mark=jab), t, 11)  # heading north out of the zone
+    assert cs.course.active_idx == 3 and active_id(cs) == "blitvenica"
 
 
 def test_undo_after_60_s_is_gone(tmp_path: Path) -> None:
