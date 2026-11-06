@@ -23,8 +23,10 @@ class Fake:
 
 
 def iso(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, tz=UTC).isoformat(timespec="milliseconds").replace(
-        "+00:00", "Z"
+    return (
+        datetime.fromtimestamp(epoch, tz=UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
     )
 
 

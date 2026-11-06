@@ -131,9 +131,13 @@ class CoreContext:
 
     # -- gps ---------------------------------------------------------------------------------
     def _discipline_clock(self, tpv: dict) -> None:
-        """Feed a TPV to the clock BEFORE stamping t_rx (SimClock follows sane fix times)."""
+        """Feed a TPV to the clock BEFORE stamping t_rx: GpsClock disciplines itself from it,
+        SimClock follows the fix time."""
         clock = self.clock
-        if isinstance(clock, SimClock):
+        on_tpv = getattr(clock, "on_tpv", None)
+        if callable(on_tpv):
+            on_tpv(tpv, clock.monotonic())
+        elif isinstance(clock, SimClock):
             mode = tpv.get("mode")
             if isinstance(mode, int) and not isinstance(mode, bool) and mode >= 2:
                 epoch = tpv_epoch(tpv)
@@ -304,7 +308,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--udp-host", default="127.0.0.1")
     p.add_argument("--udp-port", type=int, default=messages.DEFAULT_UDP_PORT)
     p.add_argument("--data-dir", type=Path, default=Path("./var"))
-    p.add_argument("--clock", choices=("system", "sim"), default="system")
+    p.add_argument(
+        "--clock",
+        choices=("system", "sim", "gps"),
+        default="system",
+        help="time source: system (unvalidated), sim (replay/sim t_sim), gps (Pi: gpsd fixes)",
+    )
     p.add_argument(
         "--gpsd",
         type=parse_gpsd,
