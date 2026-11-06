@@ -29,6 +29,19 @@ def _name(node: ast.AST) -> str | None:
     return None
 
 
+def _only_refuses(fn: ast.FunctionDef) -> bool:
+    """A method whose whole body is `raise PermissionError(...)` (ReadOnlySerial's overrides)."""
+    body = [
+        n for n in fn.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+    ]
+    return (
+        len(body) == 1
+        and isinstance(body[0], ast.Raise)
+        and isinstance(body[0].exc, ast.Call)
+        and _name(body[0].exc.func) == "PermissionError"
+    )
+
+
 def violations(source: str, filename: str = "<src>") -> list[str]:
     tree = ast.parse(source, filename=filename)
     out: list[str] = []
@@ -44,7 +57,8 @@ def violations(source: str, filename: str = "<src>") -> list[str]:
                 if alias.name in WRITE_FLAGS or alias.name == "write":
                     out.append(f"{filename}:{line} from os import {alias.name}")
         if isinstance(node, ast.FunctionDef) and node.name == "send_break":
-            out.append(f"{filename}:{line} def send_break")
+            if not _only_refuses(node):
+                out.append(f"{filename}:{line} def send_break")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             func = node.func
             recv = _name(func.value)

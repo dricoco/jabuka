@@ -84,6 +84,7 @@ def test_core_unit(parse_unit) -> None:
     assert _one(u, "Service", "OOMScoreAdjust") == "-500"
     # the core never touches the serial devices (GPS comes via gpsd TCP)
     assert "SupplementaryGroups" not in u["Service"]
+    assert _one(u, "Service", "PrivateDevices") == "yes"  # WR-01: no tty reachable at all
 
 
 def test_plan_b_conflicts_both_ways_and_not_enabled(parse_unit) -> None:

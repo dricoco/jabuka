@@ -91,3 +91,94 @@ def test_reads_bytes_written_to_master(pty_pair) -> None:
         assert got == b"\xff\x01\x02"
     finally:
         ser.close()
+
+
+# -- WR-01: O_RDONLY does not block line control; every pyserial path to it must raise ----------
+LINE_CONTROL = [
+    ("send_break()", lambda s: s.send_break()),
+    ("send_break(0)", lambda s: s.send_break(0)),
+    ("sendBreak()", lambda s: s.sendBreak()),
+    ("break_condition=True", lambda s: setattr(s, "break_condition", True)),
+    ("break_condition=False", lambda s: setattr(s, "break_condition", False)),
+    ("rts=True", lambda s: setattr(s, "rts", True)),
+    ("rts=False", lambda s: setattr(s, "rts", False)),
+    ("dtr=True", lambda s: setattr(s, "dtr", True)),
+    ("dtr=False", lambda s: setattr(s, "dtr", False)),
+    ("setRTS()", lambda s: s.setRTS(1)),
+    ("setDTR()", lambda s: s.setDTR(0)),
+    ("rs485_mode=settings", lambda s: setattr(s, "rs485_mode", _rs485())),
+    ("set_input_flow_control()", lambda s: s.set_input_flow_control(True)),
+    ("set_input_flow_control(False)", lambda s: s.set_input_flow_control(False)),
+    ("set_output_flow_control()", lambda s: s.set_output_flow_control(False)),
+    ("xonxoff=True", lambda s: setattr(s, "xonxoff", True)),
+    ("rtscts=True", lambda s: setattr(s, "rtscts", True)),
+]
+
+
+def _rs485():
+    import serial.rs485
+
+    return serial.rs485.RS485Settings()
+
+
+@pytest.mark.parametrize("name,action", LINE_CONTROL, ids=[n for n, _ in LINE_CONTROL])
+def test_line_control_raises(pty_pair, name, action) -> None:
+    _, path = pty_pair
+    ser = open_fastnet(path)
+    try:
+        with pytest.raises(PermissionError):
+            action(ser)
+    finally:
+        ser.close()
+
+
+@pytest.mark.parametrize("name,action", LINE_CONTROL, ids=[n for n, _ in LINE_CONTROL])
+def test_line_control_raises_even_when_closed(name, action) -> None:
+    """Setters are stored and applied on open; the methods refuse regardless of state."""
+    ser = ReadOnlySerial()
+    if name.split("=")[0].split("(")[0] in ("rts", "dtr", "break_condition", "setRTS", "setDTR"):
+        action(ser)  # only stored while closed; open() never applies them (no TIOCM* on open)
+        return
+    with pytest.raises(PermissionError):
+        action(ser)
+
+
+def test_disabling_is_still_allowed(pty_pair) -> None:
+    _, path = pty_pair
+    ser = open_fastnet(path)
+    try:
+        ser.rs485_mode = None
+        ser.xonxoff = False
+        ser.rtscts = False
+        assert ser.rs485_mode is None and not ser.xonxoff and not ser.rtscts
+    finally:
+        ser.close()
+
+
+def test_open_turns_off_echo_and_flow_control(pty_pair) -> None:
+    """A fresh ttyUSB is in cooked mode with ECHO: the line discipline would transmit every
+    received byte back onto the bus. open() must leave echo and XON/XOFF off."""
+    master, path = pty_pair
+    fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+    try:
+        attrs = termios.tcgetattr(fd)
+        attrs[0] |= termios.IXON | termios.IXOFF
+        attrs[3] |= termios.ECHO | termios.ICANON | termios.ECHONL
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    finally:
+        os.close(fd)
+    ser = open_fastnet(path)
+    try:
+        iflag, _o, _c, lflag = termios.tcgetattr(ser.fileno())[:4]
+        assert not lflag & (termios.ECHO | termios.ICANON | termios.ECHONL)
+        assert not iflag & (termios.IXON | termios.IXOFF)
+        # behaviour: bus bytes in, nothing comes back out towards the bus
+        os.write(master, b"\x01\x02\x03abc\n")
+        import select
+        import time
+
+        time.sleep(0.05)
+        r, _, _ = select.select([master], [], [], 0.1)
+        assert r == [], os.read(master, 64)
+    finally:
+        ser.close()

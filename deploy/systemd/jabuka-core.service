@@ -31,6 +31,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# the core never opens a tty (GPS comes from gpsd over TCP): no device nodes besides /dev/null etc.
+PrivateDevices=yes
 ReadWritePaths=/var/lib/jabuka
 
 [Install]
