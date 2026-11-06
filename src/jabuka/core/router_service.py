@@ -445,12 +445,15 @@ class RouterService:
                     # tacked away from the route (e.g. early): it is outdated for this boat
                     # (03-REVIEW MD-02), rerouted with the off-route treatment
                     self.request("tack", forced=False)
-        entry = getattr(self.nav.manual, "entry", None)
-        key = entry.t_set_wall if entry is not None else None
+        store = self.nav.manual
+        entry = getattr(store, "entry", None)
+        # LO-01: key on the store's set/clear counter and the entry object, never on
+        # t_set_wall (None for every entry made without trusted GPS time)
+        key = (getattr(store, "version", None), id(entry) if entry is not None else None)
         if key != self._manual_key:
             if self._manual_key is _UNSET:
                 pass  # first tick: an entry restored from disk is not a new observation
-            elif self._manual_key is not None or key is not None:
+            else:
                 self.manual_version += 1
                 if entry is not None:
                     self._observe_manual(now, msg, entry)

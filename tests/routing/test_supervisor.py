@@ -293,6 +293,24 @@ def test_low_speed_cog_noise_never_fires_off_route(routing_core, fake_pool, rh) 
     assert not any("off_route" in r for r in _reasons(core))
 
 
+def test_manual_wind_without_gps_time_is_observed(routing_core, fake_pool, rh) -> None:
+    """03-REVIEW LO-01: entries made without trusted UTC (t_set_wall None) were never seen:
+    no manual reroute trigger, no bias observation."""
+    core, pos = _start(routing_core, fake_pool, rh)
+    store = core.ctx.nav.manual
+    seen = []
+    for action in ("set", "clear", "set", "set"):
+        if action == "set":
+            core.call(store.set, 40.0, 15.0, "T", 0.0, None)
+        else:
+            core.call(store.clear)
+        assert store.entry is None or store.entry.t_set_wall is None
+        _run(core, pos, 1)
+        seen.append(core.router.manual_version)
+    assert seen == [1, 2, 3, 4]
+    assert any("manual" in r for r in _reasons(core))
+
+
 # -- one pack for the core and the worker (03-REVIEW MD-05) ---------------------------------------
 def test_pack_replaced_on_disk_raises_a_restart_alert(routing_core, fake_pool, rh, route_pack):
     core, pos = _start(routing_core, fake_pool, rh)

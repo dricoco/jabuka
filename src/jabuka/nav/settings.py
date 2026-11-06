@@ -178,6 +178,9 @@ class ManualWindStore:
         self.path = Path(data_dir) / MANUAL_WIND_FILE
         self.alerts: list[str] = []
         self.entry: ManualWind | None = None
+        # bumps on every set/clear: observers key on it, never on t_set_wall, which is None
+        # without trusted GPS time (03-REVIEW LO-01)
+        self.version = 0
         raw = load_json_with_bak(self.path, None)
         if raw:  # None (missing) or {} (cleared) -> no entry
             try:
@@ -203,6 +206,7 @@ class ManualWindStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, entry.model_dump())
         self.entry = entry
+        self.version += 1
         return entry
 
     def clear(self) -> None:
@@ -210,6 +214,7 @@ class ManualWindStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, {})
         self.entry = None
+        self.version += 1
 
     def to_api(self) -> dict | None:
         return self.entry.model_dump() if self.entry is not None else None
