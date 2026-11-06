@@ -122,7 +122,9 @@ def straight_route(
         mlat, mlon = lat + f * (to_mark[0] - lat), lon + f * (to_mark[1] - lon)
         pts.append(PathPoint(t0 + tack_at_s, mlat, mlon, -twa, -tack, 6.0, 45.0, 18.0))
         tacks = (TackPoint(t0 + tack_at_s, mlat, mlon, tack, -tack, "tack"),)
-    pts.append(PathPoint(eta, to_mark[0], to_mark[1], pts[-1].twa_deg, pts[-1].tack, 6.0, 45.0, 18.0))
+    pts.append(
+        PathPoint(eta, to_mark[0], to_mark[1], pts[-1].twa_deg, pts[-1].tack, 6.0, 45.0, 18.0)
+    )
     return RouteResult(
         ok=True,
         reason=None,
@@ -280,9 +282,7 @@ class RoutingCore:
             vals.append({"path": "navigation.speedOverGround", "value": kn_to_ms(sog_kn)})
         self.ctx.state.update_values("gpsd", vals, t)
 
-    def feed_wind(
-        self, twd_deg: float, tws_kn: float, hdg_deg: float, bsp_kn: float = 6.0
-    ) -> None:
+    def feed_wind(self, twd_deg: float, tws_kn: float, hdg_deg: float, bsp_kn: float = 6.0) -> None:
         """Instrument true wind (TWD, TWS, TWA) + heading + BSP, as the B&G would send it."""
         from jabuka.common.conventions import apparent_from_true
 

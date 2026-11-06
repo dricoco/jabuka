@@ -13,6 +13,7 @@ import pytest
 
 from jabuka.common.clock import SimClock
 
+
 def _wrap360(a: float) -> float:
     return a % 360.0
 
@@ -99,7 +100,7 @@ def test_clock_not_valid_blocks_routing_and_keeps_phase2(routing_core, rh) -> No
     # Phase 2 fields are unchanged
     assert nav["wind"]["source"] == "LIVE"
     assert nav["mark"]["name"] == "Plić Sestre"
-    assert nav["layline"] is not None
+    assert nav["leg"] == "reach" and nav["helm"]["primary"] == "cts"
 
 
 def test_pack_without_wind_reports_no_pack(routing_core, rh, tmp_path: Path) -> None:
@@ -113,7 +114,7 @@ def test_pack_without_wind_reports_no_pack(routing_core, rh, tmp_path: Path) -> 
     assert "wind.npz absent" in r["reason"]
     assert r["pack"]["ok"] is False
     assert core.router.health()["jobs_submitted"] == 0
-    assert nav["wind"]["source"] == "LIVE" and nav["layline"] is not None
+    assert nav["wind"]["source"] == "LIVE" and nav["helm"]["primary"] == "cts"
     assert core.client.get("/api/route").status_code == 404
     assert core.client.get("/api/route").json()["state"] == "no_pack"
 
