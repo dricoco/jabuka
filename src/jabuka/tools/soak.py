@@ -127,7 +127,7 @@ class Harness:
         self._synth_reader: threading.Thread | None = None
         self._progress: tuple[float, float] | None = None  # (sim t, wall)
         self._tl_lock = threading.Lock()
-        self._tl = open(run_dir / "timeline.jsonl", "a", encoding="utf-8")  # noqa: SIM115
+        self._tl = rep.open_append(run_dir / "timeline.jsonl")
         self.t0_wall = time.time()
         self.wall_budget = self.duration / self.speed * 4.0 + 600.0
         self.faults: list[dict[str, Any]] = []
@@ -254,7 +254,7 @@ class Harness:
 
     def _read_synth(self) -> None:
         assert self.synth is not None and self.synth.stdout is not None
-        with open(self.run_dir / "proc" / "synth.log", "a", encoding="utf-8") as f:
+        with rep.open_append(self.run_dir / "proc" / "synth.log") as f:
             for raw in iter(self.synth.stdout.readline, b""):
                 line = raw.decode("utf-8", "replace").rstrip()
                 f.write(f"{time.time():.3f} {line}\n")
@@ -372,7 +372,9 @@ class Harness:
         st, cur = self.http("GET", "/api/settings")
         if st != 200 or not isinstance(cur, dict):
             raise SoakAbort(f"GET /api/settings -> {st}")
-        end = self.start_utc + self.duration + 3600.0
+        # the race window spans the whole generated wind (1 h inside its end), as on race day: a
+        # wind cube cut short (grib-gap) then leaves part of the window uncovered
+        end = max(self.start_utc + self.duration, self.wind_end_utc() - 3600.0)
         patch = {
             "race_start_local": local_minutes(self.start_utc),
             "race_end_local": local_minutes(end, up=True),
@@ -475,9 +477,16 @@ class Harness:
         settle = self.sc.budget("settle_s")
         for spec in self.timeline:
             fn = FAULTS.get(spec.kind)
+            why = None
             if fn is None:
-                self.skipped.append({"kind": spec.kind, "id": spec.id, "reason": "not implemented"})
-                self.log("fault_skipped", id=spec.id, kind=spec.kind, reason="not implemented")
+                why = "not implemented"
+            elif spec.at > self.duration:  # a shortened run (--duration): smoke tests
+                why = (
+                    f"scheduled at {spec.at:g} sim s, after the end of the run ({self.duration:g})"
+                )
+            if why is not None:
+                self.skipped.append({"kind": spec.kind, "id": spec.id, "reason": why})
+                self.log("fault_skipped", id=spec.id, kind=spec.kind, reason=why)
                 continue
             self.wait_sim(spec.at)
             self.log("fault_start", id=spec.id, kind=spec.kind, params=spec.params)
@@ -579,13 +588,20 @@ class Harness:
 
         logs = self.data_dir / "logs"
         res = check_dir(logs) if logs.is_dir() else None
+        bad = [] if res is None else [f for f in res.files if not f.ok]
         out = {
             "label": label,
             "ok": bool(res.ok) if res is not None else None,
-            "errors": []
-            if res is None
-            else [e for f in res.files for e in getattr(f, "errors", [])][:20],
+            "errors": [f"{f.path}: {e}" for f in bad for e in f.errors][:20],
         }
+        if bad:  # keep the evidence: a tmpfs vanishes with the run's namespace
+            keep = self.run_dir / "logcheck-failed" / label.replace(" ", "_")
+            for f in bad[:5]:
+                src = logs / f.path
+                dst = inside(keep / f.path, self.run_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with contextlib.suppress(OSError):
+                    shutil.copy2(src, dst)
         self.logcheck_runs.append(out)
         return out
 

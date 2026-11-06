@@ -1,0 +1,22 @@
+{
+  "name": "gpsclock-ci",
+  "seed": 5,
+  "clock": "gps",
+  "speed": 1,
+  "duration_s": 50,
+  "start": [43.708265, 15.800369],
+  "start_utc": "now",
+  "wind": {"twd": 161, "tws_kn": 12, "shift_deg_h": 0, "gust_kn": 0},
+  "grib": {"tws_factor": 1.0, "hours_before": 2, "hours_after": 4},
+  "course": "A",
+  "settings": {},
+  "logs_fs": "none",
+  "budgets": {"gps": 10, "route": 30, "settle_s": 1},
+  "faults": [
+    {"kind": "gps-loss", "at": 0, "dur": 12},
+    {"kind": "clock-jump", "at": 24, "dur": 12}
+  ],
+  "random": null,
+  "quiet_tail_s": 0,
+  "expected_tracebacks": {}
+}

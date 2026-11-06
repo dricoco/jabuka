@@ -119,12 +119,22 @@ def _fail(rec: dict[str, Any], text: str) -> None:
     _note(rec, text)
 
 
-def _route_after(h: Harness, rec: dict[str, Any], t_from: float, v_before: int) -> bool:
-    """A route with version > v_before adopted (and land-checked) within the route budget."""
+def _route_after(
+    h: Harness, rec: dict[str, Any], t_from: float, v_before: int, *, restarted: bool = False
+) -> bool:
+    """A newly adopted route (land-checked by the tablet) within the route budget: version >
+    v_before, or after a core restart any version other than the restored one (a saved route
+    computed for an earlier course version is rightly not restored, and the numbering restarts
+    at 1; the helm app redraws on any version change)."""
     budget = h.sc.budget("route")
     deadline = max(time.time(), t_from) + budget
+
+    def new(r: dict) -> bool:
+        v = r.get("version") or 0
+        return v > v_before or (restarted and v != v_before)
+
     while time.time() < deadline:
-        newer = [r for r in h.tablet.routes_after(t_from) if (r.get("version") or 0) > v_before]
+        newer = [r for r in h.tablet.routes_after(t_from) if new(r)]
         if newer:
             r = newer[0]
             rec["route_version"] = r["version"]
@@ -178,7 +188,7 @@ def _restart_recovery(
     rec["recovery_s"] = round(t_live - t_kill, 2)
     rec["end_wall"] = t_live
     if route:
-        if not _route_after(h, rec, t_live, rec.get("route_version_before", 0)):
+        if not _route_after(h, rec, t_live, rec.get("route_version_before", 0), restarted=True):
             rec["ok"] = False
         rec["end_wall"] = time.time()
     return t_live
@@ -226,8 +236,17 @@ def kill_core(h: Harness, spec: FaultSpec) -> dict[str, Any]:
         seen = any(r.get("version") == v_before for r in after)
         carried = bool(after) and min(r.get("version") or 0 for r in after) >= v_before
         rec["route_restored"] = "shown" if seen else ("version carried on" if carried else None)
+        # a route computed for an earlier course version (the mark was rounded since) is rightly
+        # not restored (RouterService.restore)
+        with h.tablet.lock:
+            adopted = [r["t_wall"] for r in h.tablet.routes if r.get("version") == v_before]
+            changes = [t for t, _cv in h.tablet.course_versions]
+        course_moved = bool(adopted) and any(adopted[0] < t < rec["t_wall"] for t in changes)
         if not (seen or carried):
-            _fail(rec, f"route.json (version {v_before}) not restored after the restart")
+            if course_moved:
+                rec["route_restored"] = "not expected: course changed since that route"
+            else:
+                _fail(rec, f"route.json (version {v_before}) not restored after the restart")
     return rec
 
 
@@ -350,7 +369,7 @@ def sigterm_storm(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     )
     rec["cleared_wall"] = t0
     rec["end_wall"] = time.time()
-    if t_live is not None and not _route_after(h, rec, t_live, v_before):
+    if t_live is not None and not _route_after(h, rec, t_live, v_before, restarted=True):
         rec["ok"] = False
     return rec
 
@@ -512,7 +531,7 @@ def power_pull(h: Harness, spec: FaultSpec) -> dict[str, Any]:
         if target is not None:
             _reapply(h, snap)
         h.http("DELETE", "/api/wind/manual")
-    if not _route_after(h, rec, t_live, v_before):
+    if not _route_after(h, rec, t_live, v_before, restarted=True):
         rec["ok"] = False
     rec["end_wall"] = time.time()
     return rec
@@ -763,17 +782,26 @@ def disk_full(h: Harness, spec: FaultSpec) -> dict[str, Any]:
         disk0 = dict(((h.tablet.last_diag or {}).get("core") or {}).get("disk") or {})
     rec["t_wall"] = t_on = time.time()
     written = 0
-    chunk = b"\0" * (1 << 20)
-    with open(ballast, "wb") as f:
-        while True:
+    chunk = b"\1" * (1 << 20)
+    fd = os.open(ballast, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        while written < 1 << 30:  # never more than the 512M tmpfs cap allows anyway
             try:
-                f.write(chunk)
-                f.flush()
-                written += len(chunk)
+                n = os.write(fd, chunk)  # unbuffered: ENOSPC surfaces here, not at close
             except OSError:
                 break
-            if written > 1 << 30:  # never more than the 512M cap allows anyway
+            if n <= 0:
                 break
+            written += n
+        while True:  # the last free pages, below one chunk
+            try:
+                if os.write(fd, b"\1" * 4096) <= 0:
+                    break
+                written += 4096
+            except OSError:
+                break
+    finally:
+        os.close(fd)
     rec["ballast_mb"] = round(written / 1e6, 1)
     dead: list[float] = []
     end = t_on + spec.dur / h.speed
@@ -861,10 +889,11 @@ def grib_gap(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     rec["route_state"] = (rb.get("state"), rb.get("horizon_hold"), rb.get("reason"))
     if not st:
         _fail(rec, f"route state {rb.get('state')} ({rb.get('reason')}) with the short cube")
-    n0 = h.tablet.layline_missing
+    n0, legs0 = h.tablet.layline_missing, h.tablet.layline_legs
     _hold(h, t_live, spec.dur)
     missing = h.tablet.layline_missing - n0
     rec["nav_without_laylines"] = missing
+    rec["nav_beat_run"] = h.tablet.layline_legs - legs0  # reach legs have no laylines
     if missing:
         _fail(rec, f"{missing} nav messages without laylines during the GRIB gap")
     # restore the full cube with another restart

@@ -314,6 +314,12 @@ def render_md(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def open_append(path: Path) -> Any:
+    """A text file of the run dir opened for appending (timeline.jsonl, proc/synth.log). The
+    harness's own files live here: jabuka.tools is scanned by the receive-only write guard."""
+    return open(path, "a", encoding="utf-8")  # noqa: SIM115 - the caller closes it
+
+
 def write_report(run_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
     run_dir = Path(run_dir)
     jpath, mpath = run_dir / "report.json", run_dir / "report.md"

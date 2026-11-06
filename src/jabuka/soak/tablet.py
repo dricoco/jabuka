@@ -132,12 +132,14 @@ class TabletClient(threading.Thread):
         self.tick_pairs = 0
         self.tick_sim_s = 0.0
         self.alerts_seen: dict[str, float] = {}
+        self.course_versions: list[tuple[float, Any]] = []  # (t_wall, nav.course_version)
         self.wind_sources: list[tuple[float, str | None]] = []
         self.route_blocks: list[tuple[float, dict]] = []  # (t_wall, nav.route), on change only
         self._last_route_key: Any = None
         self.clock_valid = Signal("clock")
         self.clock_invalid_count = 0  # valid -> invalid transitions of the diag clock
-        self.layline_missing = 0  # nav messages with live wind + position but no laylines
+        self.layline_missing = 0  # beat/run nav messages with live wind + position, no laylines
+        self.layline_legs = 0  # beat/run nav messages with live wind + position
 
     # -- lifecycle ---------------------------------------------------------------------------
     def stop(self) -> None:
@@ -218,13 +220,19 @@ class TabletClient(threading.Thread):
     def _on_nav(self, msg: dict, t: float) -> None:
         self.nav_count += 1
         self.last_nav = msg
-        if self.wind.value and self.pos.value and not msg.get("layline"):
-            self.layline_missing += 1
+        # reach legs have no laylines by design (nav/laylines.py): only beats and runs count
+        if self.wind.value and self.pos.value and msg.get("leg") in ("beat", "run"):
+            self.layline_legs += 1
+            if not msg.get("layline"):
+                self.layline_missing += 1
         for a in msg.get("alerts") or []:
             self.alerts_seen.setdefault(a, t)
         r = msg.get("route") or {}
         for a in (r.get("pack") or {}).get("alerts") or []:
             self.alerts_seen.setdefault(a, t)
+        cv = msg.get("course_version")
+        if not self.course_versions or self.course_versions[-1][1] != cv:
+            self.course_versions.append((t, cv))
         src = (msg.get("wind") or {}).get("source")
         if not self.wind_sources or self.wind_sources[-1][1] != src:
             self.wind_sources.append((t, src))
