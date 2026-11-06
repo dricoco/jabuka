@@ -53,10 +53,16 @@ def write_wind(
     t0: int = T_WIND0,
     hours: int = 72,
     step_h: int = 1,
+    lat: np.ndarray | None = None,
+    lon: np.ndarray | None = None,
 ) -> Path:
     """Uniform wind (FROM twd_deg, tws_kn) wind.npz + sidecar in dest."""
-    lat = np.arange(42.5, 44.3, 0.25, dtype=np.float64)
-    lon = np.arange(14.75, 16.6, 0.25, dtype=np.float64)
+    if lat is None:
+        lat = np.arange(42.5, 44.3, 0.25, dtype=np.float64)
+    if lon is None:
+        lon = np.arange(14.75, 16.6, 0.25, dtype=np.float64)
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
     t = np.arange(t0, t0 + hours * 3600 + 1, step_h * 3600, dtype=np.int64)
     ms = tws_kn * KN
     u = -ms * math.sin(math.radians(twd_deg))
@@ -157,12 +163,15 @@ class FakePool:
         self.closed = False
         self.started = False
         self._busy = 0
-        self.max_busy = 0
+        self._pending: asyncio.Future | None = None
+        self.max_running = 0
+        self.superseded = 0
         self.stats_d = {"jobs": 0, "ok": 0, "timeouts": 0, "crashes": 0, "last_ms": 1.0}
 
     @property
     def stats(self) -> dict:
-        return {**self.stats_d, "running": self._busy, "pending": 0}
+        pending = 1 if self._pending is not None and not self._pending.done() else 0
+        return {**self.stats_d, "running": self._busy, "pending": pending}
 
     def start(self) -> None:
         self.started = True
@@ -197,9 +206,18 @@ class FakePool:
         )
 
     async def run_latest(self, fn, creq) -> PoolOutcome:
+        """One running + one pending, latest wins (RouterPool semantics)."""
         self.requests.append(creq)
+        if self._busy:
+            old, self._pending = self._pending, asyncio.get_running_loop().create_future()
+            if old is not None and not old.done():
+                old.set_result(PoolOutcome("superseded", None, 0.0, None))
+                self.superseded += 1
+            waited = await self._pending
+            if waited is not None:
+                return waited
         self._busy += 1
-        self.max_busy = max(self.max_busy, self._busy)
+        self.max_running = max(self.max_running, self._busy)
         try:
             while self.hold:
                 await asyncio.sleep(0.01)
@@ -211,6 +229,9 @@ class FakePool:
             return PoolOutcome("ok", ans, 0.001, None)
         finally:
             self._busy -= 1
+            nxt, self._pending = self._pending, None
+            if nxt is not None and not nxt.done():
+                nxt.set_result(None)  # go: the pending request runs now
 
 
 # --------------------------------------------------------------------------------------------
