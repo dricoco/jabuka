@@ -13,7 +13,15 @@ Outputs:
 - GPS (both modes): an embedded FakeGpsd on --gpsd-port (default 2948, never the real 2947).
 
 Faults ``KIND@START+DUR`` (sim seconds, active while START <= t < START+DUR): bus-silent,
-gps-loss, garbage, clock-jump. Closed-loop steering is Phase 2.
+gps-loss, garbage, clock-jump.
+
+Closed loop (``--follow URL``, plan 02-04): each simulated second the boat reads the core's own
+GET URL/api/nav and steers to it like a helmsman: on twa_up/twa_down it holds the target TWA on
+its current tack (heading = TWD - s * target, starting on starboard); it tacks (10 s at half speed)
+when the layline is overstood or the countdown reaches 0; when fetching or on a reach it steers the
+bearing to the mark; it never turns back to a mark it has just passed (holds its heading while the
+core decides the rounding). Boat speed comes from the X35 polar x the core's efficiency. Without
+--follow nothing changes.
 
 Dev tool only (never in a systemd unit); it may read the wall clock.
 """
@@ -22,12 +30,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import math
 import os
 import random
 import socket
 import sys
 import time
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -38,6 +49,7 @@ from jabuka.common import messages
 from jabuka.common.conventions import apparent_from_true, true_to_mag
 from jabuka.common.units import kn_to_ms, ms_to_kn, wrap_2pi, wrap_pi
 from jabuka.ingest.fastnet_encode import frame, rec01, rec08
+from jabuka.nav.polar import Polar, default_polar
 from jabuka.sim.fake_gpsd import DEVICE_PATH, FakeGpsd, utc_iso
 from jabuka.sim.pty_replay import PtyFeeder
 
@@ -95,6 +107,7 @@ class SynthConfig:
     start_utc: float | None = None  # sim UTC epoch at t=0 (default: now, whole second)
     wait_gpsd_s: float = 0.0  # wait for a gpsd client to WATCH before starting
     wait_reader_s: float = 0.0  # pty mode: wait for a reader to open the pty before starting
+    follow: str | None = None  # core base URL: closed-loop steering from its /api/nav
 
 
 # -- boat model --------------------------------------------------------------------------------
@@ -130,18 +143,29 @@ class SynthBoat:
         self.cfg = cfg
         self.t = 0.0
         self.lat, self.lon = cfg.start
+        # closed loop (--follow): commanded heading and the polar speed model
+        self.hdg_cmd: float | None = None  # rad true
+        self.polar: Polar | None = None
+        self.eff = 1.0
+        self.bsp_factor = 1.0
         self.state = self._compute()
 
     def _compute(self) -> SynthState:
         cfg, t = self.cfg, self.t
         twd = wrap_2pi(math.radians(cfg.twd + cfg.shift * t / 3600.0))
         tws_kn = max(0.0, cfg.tws + cfg.gust * math.sin(2.0 * math.pi * t / 120.0))
-        if cfg.heading is not None:
+        if self.hdg_cmd is not None:
+            hdg = wrap_2pi(self.hdg_cmd)
+        elif cfg.heading is not None:
             hdg = wrap_2pi(math.radians(cfg.heading))
         else:
             hdg = wrap_2pi(twd - math.radians(cfg.twa))
         twa = wrap_pi(twd - hdg)
-        bsp = kn_to_ms(synthetic_bsp(tws_kn, abs(twa)))
+        if self.polar is not None:
+            bsp_kn = self.polar.speed(tws_kn, abs(math.degrees(twa))) * self.eff * self.bsp_factor
+            bsp = kn_to_ms(bsp_kn)
+        else:
+            bsp = kn_to_ms(synthetic_bsp(tws_kn, abs(twa)))
         tws = kn_to_ms(tws_kn)
         aw = apparent_from_true(twd=twd, tws=tws, bsp=bsp, hdg=hdg)
         return SynthState(t, twd, tws, twa, hdg, bsp, aw.awa, aw.aws, self.lat, self.lon)
@@ -156,6 +180,93 @@ class SynthBoat:
         self.t += dt
         self.state = self._compute()
         return self.state
+
+
+# -- closed loop -------------------------------------------------------------------------------
+def _num(x: Any) -> float | None:
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+        return None
+    return float(x)
+
+
+def _angle_diff(a_deg: float, b_deg: float) -> float:
+    """Signed a - b in degrees, wrapped to (-180, 180]."""
+    return math.degrees(wrap_pi(math.radians(a_deg - b_deg)))
+
+
+class FollowHelm:
+    """A helmsman steering to the core's nav message (``--follow``)."""
+
+    TACK_S = 10  # manoeuvre: sim seconds at half speed
+    HOLD_NM = 0.5  # a mark this close and behind the bow was just passed: hold the heading
+
+    def __init__(self, base_url: str, start_twa_deg: float) -> None:
+        parts = urllib.parse.urlsplit(base_url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError(f"--follow expects http://HOST:PORT, got {base_url!r}")
+        self.url = base_url.rstrip("/") + "/api/nav"
+        self.sign = 1 if start_twa_deg >= 0 else -1  # +1 starboard tack, -1 port
+        self.start_twa = abs(start_twa_deg)
+        self.tack_left = 0
+        self.tacks = 0
+        self.fetch_errors = 0
+        self.last: dict | None = None
+
+    def fetch(self) -> dict | None:
+        """GET /api/nav (1 s timeout); None on any failure (the last command is kept)."""
+        try:
+            with urllib.request.urlopen(self.url, timeout=1.0) as r:  # noqa: S310 (dev tool)
+                obj = json.loads(r.read().decode("utf-8"))
+        except (OSError, ValueError):
+            self.fetch_errors += 1
+            return None
+        return obj if isinstance(obj, dict) and obj.get("type") == "nav" else None
+
+    def command(self, nav: dict | None, state: SynthState) -> tuple[float, float]:
+        """(heading deg true, speed factor) for the next simulated second."""
+        if nav is not None:
+            self.last = nav
+        nav = self.last or {}
+        hdg_now = math.degrees(state.hdg)
+        wind = nav.get("wind") or {}
+        twd = _num(wind.get("twd_t"))
+        if twd is None:
+            twd = math.degrees(state.twd)
+        factor = 1.0
+        if self.tack_left > 0:
+            self.tack_left -= 1
+            factor = 0.5
+        helm = nav.get("helm") or {}
+        lay = nav.get("layline") or {}
+        mark = nav.get("mark") or {}
+        btw, dtw = _num(mark.get("btw_t")), _num(mark.get("dtw_nm"))
+        primary, target = helm.get("primary"), _num(helm.get("target"))
+
+        if btw is not None and dtw is not None and dtw < self.HOLD_NM:
+            if abs(_angle_diff(btw, hdg_now)) > 90.0:
+                return hdg_now, factor  # just passed: let the core call the rounding
+        if primary not in ("twa_up", "twa_down") or target is None:
+            if primary == "cts" and btw is not None:
+                return self._steer(_num(helm.get("cts_t")) or btw, twd), factor
+            return (twd - self.sign * self.start_twa) % 360.0, factor
+        if lay.get("state") == "fetching" and btw is not None:
+            # lay the mark, never pinching above the target angle
+            if abs(_angle_diff(twd, btw)) >= target or primary == "twa_down":
+                return self._steer(btw, twd), factor
+        my_tack = "stbd" if self.sign > 0 else "port"
+        countdown = _num(lay.get("countdown_s"))
+        due = lay.get("state") == "overstood" or (countdown is not None and countdown <= 0)
+        if due and self.tack_left == 0 and lay.get("tack") == my_tack:
+            self.sign = -self.sign
+            self.tacks += 1
+            self.tack_left = self.TACK_S
+            factor = 0.5
+        return (twd - self.sign * target) % 360.0, factor
+
+    def _steer(self, heading: float, twd: float) -> float:
+        """Steer a heading; the tack follows the side the wind is on."""
+        self.sign = 1 if _angle_diff(twd, heading) >= 0 else -1
+        return heading % 360.0
 
 
 # -- encoders ----------------------------------------------------------------------------------
@@ -248,16 +359,26 @@ async def _wait_reader(slave_path: str, timeout: float) -> bool:
 
 # -- runner ------------------------------------------------------------------------------------
 async def run_synth(
-    cfg: SynthConfig, *, on_ready: Callable[[dict], None] | None = None
+    cfg: SynthConfig,
+    *,
+    on_ready: Callable[[dict], None] | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Run the synthetic boat for cfg.duration sim seconds. Returns a summary with the last
-    emitted Fastnet state and per-fault active seconds."""
+    """Run the synthetic boat for cfg.duration sim seconds (or until stop() is true). Returns a
+    summary with the last emitted Fastnet state, per-fault active seconds, the tacks made in
+    follow mode and the final position."""
     if cfg.mode not in ("udp", "pty"):
         raise ValueError(f"mode must be udp or pty, got {cfg.mode!r}")
     speed = cfg.speed if cfg.speed > 0 else 1.0
     rng = random.Random(cfg.seed)
     start_utc = float(cfg.start_utc) if cfg.start_utc is not None else float(int(time.time()))
+    helm = FollowHelm(cfg.follow, cfg.twa) if cfg.follow else None
     boat = SynthBoat(cfg)
+    if helm is not None:
+        boat.polar = default_polar()
+        boat.eff = 0.92
+        boat.hdg_cmd = math.radians(cfg.twd - helm.sign * helm.start_twa)
+        boat.state = boat._compute()
     fake = FakeGpsd(cfg.gpsd_host, cfg.gpsd_port)
     gpsd_port = await fake.start()
     sock: socket.socket | None = None
@@ -297,6 +418,8 @@ async def run_synth(
         t0 = loop.time()
         n = max(0, int(math.ceil(cfg.duration)))
         for k in range(n):
+            if stop is not None and stop():
+                break
             s = boat.state
             t = s.t
             active = {f.kind for f in cfg.faults if f.active(t)}
@@ -348,6 +471,13 @@ async def run_synth(
             if not fake.paused:
                 counts["tpv"] += 1
 
+            if helm is not None:
+                nav = await asyncio.to_thread(helm.fetch)
+                eff = _num(((nav or {}).get("polar") or {}).get("eff"))
+                if eff is not None and eff > 0:
+                    boat.eff = eff
+                hdg_deg, boat.bsp_factor = helm.command(nav, s)
+                boat.hdg_cmd = math.radians(hdg_deg)
             boat.step(1.0)
             delay = t0 + (k + 1) / speed - loop.time()
             if delay > 0:
@@ -366,6 +496,8 @@ async def run_synth(
         "counts": counts,
         "faults": fault_secs,
         "last": asdict(last) if last is not None else None,
+        "tacks": helm.tacks if helm is not None else 0,
+        "final": {"lat": boat.lat, "lon": boat.lon, "t": boat.t},
     }
 
 
@@ -439,6 +571,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--wait-gpsd", type=float, default=0.0, help="wait S for a gpsd client")
     p.add_argument("--wait-reader", type=float, default=0.0, help="pty: wait S for a reader")
+    p.add_argument(
+        "--follow",
+        metavar="URL",
+        default=None,
+        help="closed loop: steer to the core's GET URL/api/nav each simulated second "
+        "(e.g. http://127.0.0.1:8080); X35 polar boat speed",
+    )
     return p
 
 
@@ -464,6 +603,7 @@ def config_from_args(args: argparse.Namespace) -> SynthConfig:
         start_utc=args.start_utc,
         wait_gpsd_s=args.wait_gpsd,
         wait_reader_s=args.wait_reader,
+        follow=args.follow,
     )
 
 
@@ -487,6 +627,9 @@ def main(argv: list[str] | None = None) -> int:
         secs = summary["faults"][str(f)]
         print(f"  {f.kind:<10} t={f.start:g}..{f.start + f.dur:g} s  active {secs} s", flush=True)
     print(f"jabuka-sim: {summary['counts']}", flush=True)
+    if cfg.follow:
+        f = summary["final"]
+        print(f"jabuka-sim: {summary['tacks']} tacks, final {f['lat']:.5f},{f['lon']:.5f}")
     return 0
 
 

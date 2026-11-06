@@ -1,4 +1,6 @@
-/* Carte tab: a side panel over the map (the map stays usable on the left). */
+/* Carte tab: a side panel over the map (the map stays usable on the left), the bottom sheet for
+   adding/editing a mark, and the global advance banner's Annuler button. Touch targets >= 48 px;
+   colours only from the theme custom properties (night stays red-only). */
 .panel-side { pointer-events: none; }
 .carte-panel {
   position: absolute; top: 8px; right: 8px; bottom: 8px; width: min(360px, 90vw);
@@ -6,15 +8,49 @@
   background: var(--bg-band); color: var(--fg); border: 1px solid var(--line);
   display: flex; flex-direction: column; gap: 10px;
 }
-.carte-row { display: flex; gap: 8px; }
+.carte-row { display: flex; gap: 8px; align-items: center; }
 .carte-row button { flex: 1; }
-.carte-row button.active { border-color: var(--fg); background: var(--line); }
-.carte-warn { color: var(--bad); font-weight: 700; font-size: 18px; }
+.carte-row button.active, .seg button.active { border-color: var(--fg); background: var(--line); }
+.carte-warn { color: var(--bad); font-weight: 700; font-size: 18px; display: flex; flex-direction: column; gap: 6px; }
 .carte-warn[hidden] { display: none; }
-.carte-status { color: var(--warn); min-height: 1.2em; }
+.carte-status { color: var(--warn); min-height: 1.2em; font-weight: 700; }
+.carte-hint { color: var(--dim); font-size: 15px; }
 .carte-list { margin: 0; padding-left: 28px; font-size: 18px; }
-.carte-list li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.carte-list li { padding: 8px 0; min-height: 48px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .carte-list li.active { font-weight: 800; }
-.carte-list li.done { color: var(--dim); }
+.carte-list li.done, .carte-list li.cut { color: var(--dim); }
+.carte-list li.cut .name { text-decoration: line-through; }
 .carte-list .name { display: block; }
 .carte-list .meta { display: block; font-size: 14px; color: var(--dim); }
+.carte-list .tag { display: inline-block; font-size: 13px; font-weight: 800; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
+.carte-list .tag.finish { color: var(--bad); }
+
+/* bottom sheet (left of the side panel) */
+.carte-sheet {
+  position: absolute; left: 8px; bottom: 8px; width: min(520px, calc(100vw - 390px));
+  min-width: 300px; max-height: calc(100% - 16px); overflow: auto; z-index: 5;
+  padding: 10px 12px; border-radius: 10px; pointer-events: auto;
+  background: var(--bg); color: var(--fg); border: 2px solid var(--fg);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.carte-sheet[hidden] { display: none; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sheet-title { margin: 0; font-size: 22px; }
+.sheet-close { flex: 0 0 auto; }
+.sheet-body { display: flex; flex-direction: column; gap: 8px; }
+.sheet-text { color: var(--dim); font-size: 16px; margin: 0; }
+.sheet-field { display: flex; flex-direction: column; gap: 4px; }
+.sheet-field input {
+  flex: 1; min-height: 48px; font-size: 20px; padding: 0 10px;
+  color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 8px;
+}
+.stepper .step-value { flex: 1; text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stepper button { flex: 0 0 64px; font-size: 24px; }
+button.primary { border-color: var(--fg); }
+button.danger { color: var(--bad); border-color: var(--bad); }
+button.danger[data-confirm="1"] { background: var(--bad); color: var(--bg); }
+
+/* advance banner (#banner lives in app.css; shown on every tab) */
+#banner { display: flex; align-items: center; gap: 12px; pointer-events: auto; }
+#banner[hidden] { display: none; }
+#banner .banner-undo { min-height: 48px; min-width: 120px; border-color: var(--fg); }
