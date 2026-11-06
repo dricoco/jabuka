@@ -4,7 +4,7 @@
 body.theme-day {
   --bg: #ffffff;
   --bg-band: rgba(255, 255, 255, 0.88);
-  --bg-col: rgba(255, 255, 255, 0.96);
+  --bg-col: #ffffff; /* opaque: no map ghosting behind the helm numbers (quick 002) */
   --fg: #000000;
   --dim: #555555;
   --line: #bbbbbb;

@@ -292,6 +292,12 @@ def test_on_reste_in_block_two_padding_per_tab_and_night(page, feeder) -> None:
     assert ctrls and col and ctrls["x"] > col["x"] + col["width"], (ctrls, col)
     assert ctrls["x"] + ctrls["width"] >= 1024 - 16 and ctrls["y"] + ctrls["height"] <= 600
 
+    # day: an opaque column, the map never ghosts behind the helm numbers
+    col_bg = pg.evaluate(
+        "() => getComputedStyle(document.getElementById('helm-col')).backgroundColor"
+    )
+    assert col_bg in ("rgb(255, 255, 255)", "rgba(255, 255, 255, 1)"), col_bg
+
     # night: red on black only, the column background included
     pg.click("#night-toggle")
     pg.wait_for_function("() => document.body.classList.contains('theme-night')")
