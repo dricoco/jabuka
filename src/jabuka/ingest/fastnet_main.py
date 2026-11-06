@@ -2,6 +2,11 @@
 
 Read path per chunk: RAW LOG FIRST -> CountingFramer -> pyfastnet decode -> UDP delta to the core.
 The device is opened O_RDONLY (ReadOnlySerial); nothing in this process can write to the bus.
+
+Unattended operation: the process never exits because the device is absent or disappears. A
+reconnect loop retries open_fastnet every 1-2 s, and a 1 Hz heartbeat (health_message "fastnet")
+reports device ok/missing plus the bus verdict (ok/silent/no_frames/noisy/...) even when no byte
+arrives, so the core can tell "ingest alive, bus silent" from "ingest dead".
 """
 
 from __future__ import annotations
@@ -16,16 +21,25 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from jabuka.common import messages, sdnotify
-from jabuka.ingest.fastnet_decode import decode_to_values
+from jabuka.ingest.bus_health import HINT_MISSING, WindowStats, classify
+from jabuka.ingest.fastnet_decode import ROUTED_CHANNELS, decode_to_values
 from jabuka.ingest.fastnet_framing import CountingFramer
+from jabuka.ingest.fastnet_records import iter_records, record_hex
 from jabuka.ingest.rawlog import RotatingAppendLog
 from jabuka.ingest.serial_ro import open_fastnet
 
 log = logging.getLogger("jabuka.ingest.fastnet")
 
 SRC = "fastnet"
+HEARTBEAT_S = 1.0
+HEALTH_WINDOW_S = 5.0
+RECONNECT_MIN_S = 1.0
+RECONNECT_MAX_S = 2.0
+MAX_UNKNOWN_CH = 50
+_ROUTED_PATHS = frozenset(ROUTED_CHANNELS.values())
 
 
 class FastnetIngest:
@@ -51,6 +65,12 @@ class FastnetIngest:
         self.send_errors = 0
         self.messages_sent = 0
         self.unknown_ch: set[str] = set()
+        self.channels_seen: set[str] = set()
+        self.window = WindowStats(HEALTH_WINDOW_S)
+        # device state, maintained by DeviceReader (the reconnect loop)
+        self.device_open = False
+        self.reconnects = 0
+        self.last_error: str | None = None
 
     def bus_stats(self) -> dict:
         s = self.framer.stats
@@ -59,7 +79,7 @@ class FastnetIngest:
             "bytes_discarded": s.bytes_discarded,
             "frames_ok": s.frames_ok,
             "decode_errors": self.decode_errors,
-            "unknown_ch": sorted(self.unknown_ch),
+            "unknown_ch": sorted(self.unknown_ch)[:MAX_UNKNOWN_CH],
         }
 
     def on_chunk(self, b: bytes) -> None:
@@ -88,7 +108,85 @@ class FastnetIngest:
             self.unknown_ch.update(res.unknown_ch)
             if not res.values:
                 continue
-            self._emit(res.values)
+            values = res.values
+            try:
+                values = self._with_layout_records(frame, values)
+            except Exception:  # diagnostics extra: never lose the decoded values over it
+                log.debug("layout record extraction failed for %s", frame.hex())
+            self._emit(values)
+
+    def _with_layout_records(self, frame: bytes, values: list[dict]) -> list[dict]:
+        """For Heading/TWD/Set whose M/T reference is unknown ("?"), also publish the raw record
+        as bandg.layoutRecord.0xNN, so the unidentified layout is visible on the diagnostics
+        page (RESEARCH Pattern 3, Pitfall 1)."""
+        unknown_ref: set[int] = set()
+        for v in values:
+            ch = v.get("ch")
+            if not isinstance(ch, str):
+                continue
+            self.channels_seen.add(ch.upper())
+            if v.get("path") in _ROUTED_PATHS and v.get("ref") == "?":
+                unknown_ref.add(int(ch, 16))
+        if not unknown_ref:
+            return values
+        extra = [
+            {
+                "path": f"bandg.layoutRecord.0x{ch:02X}",
+                "value": record_hex(ch, fmt, data),
+                "unit": None,
+                "ch": f"0x{ch:02X}",
+            }
+            for ch, fmt, data in iter_records(frame)
+            if ch in unknown_ref
+        ]
+        return values + extra
+
+    # -- 1 Hz heartbeat ----------------------------------------------------------------------
+    def health(self) -> dict:
+        """Heartbeat payload: device ok/missing, bus verdict over the last 5 s, counters."""
+        s = self.framer.stats
+        self.window.push(self._mono(), s)
+        r = self.window.rates()
+        if self.device_open:
+            state, hint = classify(
+                int(r["bytes_in"]),
+                int(r["bytes_discarded"]),
+                int(r["frames_ok"]),
+                float(r["span_s"]),
+                len(self.channels_seen),
+            )
+        else:
+            state, hint = "missing", HINT_MISSING
+        return {
+            "device": "ok" if self.device_open else "missing",
+            "state": state,
+            "hint": hint,
+            "bytes_per_s": r["bytes_per_s"],
+            "frames_per_s": r["frames_per_s"],
+            "bytes_in": s.bytes_in,
+            "bytes_discarded": s.bytes_discarded,
+            "frames_ok": s.frames_ok,
+            "decode_errors": self.decode_errors,
+            "unknown_ch": sorted(self.unknown_ch)[:MAX_UNKNOWN_CH],
+            "reconnects": self.reconnects,
+            "last_error": self.last_error,
+        }
+
+    def send_heartbeat(self) -> None:
+        """Never raises (same contract as on_chunk)."""
+        try:
+            msg = messages.health_message(SRC, self.health(), self._mono(), self._wall())
+            data = messages.encode(msg)
+        except (ValueError, TypeError) as e:
+            self.send_errors += 1
+            log.debug("cannot encode heartbeat: %s", e)
+            return
+        try:
+            self.send(data)
+            self.messages_sent += 1
+        except OSError as e:
+            self.send_errors += 1
+            log.debug("udp send failed: %s", e)
 
     def _emit(self, values: list[dict]) -> None:
         try:
@@ -146,47 +244,112 @@ def _make_udp_sender(addr: tuple[str, int]) -> tuple[socket.socket, Callable[[by
     return sock, send
 
 
+class DeviceReader:
+    """Owns the serial port: open, read via loop.add_reader, detect loss, reopen. Forever."""
+
+    def __init__(self, device: str, ingest: FastnetIngest, loop: asyncio.AbstractEventLoop) -> None:
+        self.device = device
+        self.ingest = ingest
+        self.loop = loop
+        self.ser: Any = None
+        self.fd: int | None = None
+        self.opens = 0
+        self._lost: asyncio.Future[str] | None = None
+
+    def try_open(self) -> bool:
+        """One open attempt. On success the fd is registered with the loop."""
+        ing = self.ingest
+        try:
+            ser = open_fastnet(self.device)
+        except Exception as e:  # FileNotFoundError / SerialException / OSError while unplugged
+            ing.device_open = False
+            ing.last_error = f"open {self.device}: {e}"
+            return False
+        self.ser = ser
+        self.fd = ser.fileno()
+        if self.opens > 0:
+            ing.reconnects += 1
+        self.opens += 1
+        ing.framer.buf.clear()  # never splice bytes from before the loss onto the new stream
+        ing.device_open = True
+        self._lost = self.loop.create_future()
+        self.loop.add_reader(self.fd, self._on_readable)
+        log.info("reading %s (fd %d) receive-only", self.device, self.fd)
+        return True
+
+    def _on_readable(self) -> None:
+        fd = self.fd
+        if fd is None:
+            return
+        try:
+            b = os.read(fd, 4096)
+        except BlockingIOError:
+            return
+        except OSError as e:  # EIO on USB unplug / pty master closed
+            self._mark_lost(f"read error: {e}")
+            return
+        if not b:
+            self._mark_lost("device EOF")
+            return
+        self.ingest.on_chunk(b)
+
+    def _mark_lost(self, reason: str) -> None:
+        log.warning("device %s lost: %s", self.device, reason)
+        self.close()
+        self.ingest.last_error = reason
+        if self._lost is not None and not self._lost.done():
+            self._lost.set_result(reason)
+
+    def close(self) -> None:
+        if self.fd is not None:
+            try:
+                self.loop.remove_reader(self.fd)
+            except Exception:
+                pass
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+        self.fd = None
+        self.ingest.device_open = False
+
+    async def run(self) -> None:
+        """Reconnect loop: never ends because the device is absent (RESEARCH Pitfall 7)."""
+        backoff = RECONNECT_MIN_S
+        while True:
+            if self.fd is None:
+                if not self.try_open():
+                    await asyncio.sleep(backoff)
+                    backoff = min(RECONNECT_MAX_S, backoff * 1.5)
+                    continue
+                backoff = RECONNECT_MIN_S
+            assert self._lost is not None
+            await self._lost
+            await asyncio.sleep(RECONNECT_MIN_S)
+
+
 async def _run(args: argparse.Namespace) -> int:
     loop = asyncio.get_running_loop()
     raw_dir = Path(args.data_dir) / "logs" / "raw"
     rawlog = RotatingAppendLog(raw_dir, "fastnet")
     sock, send = _make_udp_sender(args.udp)
     ingest = FastnetIngest(rawlog, send, awa_sign=args.awa_sign)
+    reader = DeviceReader(str(args.device), ingest, loop)
     done: asyncio.Future[int] = loop.create_future()
-
-    try:
-        ser = open_fastnet(str(args.device))
-    except Exception as e:
-        log.error("cannot open %s: %s", args.device, e)
-        rawlog.close()
-        sock.close()
-        return 2
-    fd = ser.fileno()
-
-    def on_readable() -> None:
-        try:
-            b = os.read(fd, 4096)
-        except BlockingIOError:
-            return
-        except OSError as e:  # EIO on USB unplug / pty master closed
-            loop.remove_reader(fd)
-            log.warning("device read error: %s", e)
-            if not done.done():
-                done.set_result(3)
-            return
-        if not b:
-            loop.remove_reader(fd)
-            log.warning("device EOF")
-            if not done.done():
-                done.set_result(3)
-            return
-        ingest.on_chunk(b)
 
     async def flusher() -> None:
         # the flush/fsync cadence also applies when the bus goes quiet
         while True:
             await asyncio.sleep(1.0)
             rawlog.maybe_flush()
+
+    async def heartbeat() -> None:
+        # independent of byte arrival: a silent bus or a missing device is still reported
+        while True:
+            ingest.send_heartbeat()
+            await asyncio.sleep(HEARTBEAT_S)
 
     def on_signal(signum: int) -> None:
         sdnotify.notify("STOPPING=1")
@@ -197,13 +360,18 @@ async def _run(args: argparse.Namespace) -> int:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, on_signal, signum)
 
-    loop.add_reader(fd, on_readable)
-    log.info("reading %s (fd %d) receive-only", args.device, fd)
-    tasks = [asyncio.create_task(flusher(), name="rawlog-flush")]
+    # first attempt before READY=1, so READY means "device open" whenever the device is present
+    if not reader.try_open():
+        log.warning("%s unavailable (%s): retrying every 1-2 s", args.device, ingest.last_error)
+    tasks = [
+        asyncio.create_task(flusher(), name="rawlog-flush"),
+        asyncio.create_task(heartbeat(), name="heartbeat"),
+        asyncio.create_task(reader.run(), name="device"),
+    ]
     interval = sdnotify.watchdog_interval()
     if interval is not None:
         tasks.append(asyncio.create_task(sdnotify.watchdog_loop(interval), name="watchdog"))
-    sdnotify.notify("READY=1")  # device open + UDP socket exist
+    sdnotify.notify("READY=1")  # UDP socket + heartbeat running; device open if present
     try:
         rc = await done
     finally:
@@ -211,11 +379,7 @@ async def _run(args: argparse.Namespace) -> int:
             t.cancel()
         for signum in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(signum)
-        try:
-            loop.remove_reader(fd)
-        except Exception:
-            pass
-        ser.close()
+        reader.close()
         rawlog.close()  # final flush + fsync
         sock.close()
     return rc
