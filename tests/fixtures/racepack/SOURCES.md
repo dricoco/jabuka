@@ -69,3 +69,27 @@ python -m jabuka.prep.cli waves --out var/racepack-sample --cache var/cache/prep
 - The committed files are the pack files re-written under their fixture stem (24 steps kept,
   nothing else changed) so the sidecar `file`/`sha256` match the committed bytes. Tests copy them
   to wind.npz/wind.json and waves.npz/waves.json.
+
+## grib/sample_grib1.grb (168 bytes, synthetic GRIB edition 1)
+
+Built once with eccodes 2.50.0 (dev-only, in a throwaway venv; tests never need eccodes) from the
+`regular_ll_sfc_grib1` sample, then read back with pygrib 2.1.8:
+
+- two messages: `indicatorOfParameter` 33 (u, value 4.0 m/s) then 34 (v, 3.0 m/s), i.e. wind FROM
+  about 233 deg at 5 m/s; `indicatorOfTypeOfLevel 105` (height above ground), `level 10`;
+- `centre 7`, `table2Version 50`: a WMO-range table eccodes has no definitions for, so pygrib
+  decodes `shortName = "unknown"` (not `10u`). In GRIB1 tables < 128, parameters 1-127 are the
+  WMO standard ones, which is what `prep/grib.py` relies on (RESEARCH Pitfall 14: the ECMWF table
+  128 decodes the same number 33 as `rsn`, snow density);
+- regular lat/lon 9 x 8 at 0.25 deg, 44.5N -> 42.75N (rows NORTH TO SOUTH,
+  `jScansPositively = 0`), 14.5E -> 16.5E, `bitsPerValue 12`;
+- `dataDate 20261113`, `dataTime 1200`, `step 6` (hours) -> valid 2026-11-13 18Z. pygrib's
+  `validDate` returns the analysis time (12Z) for this GRIB1 message; the importer uses eccodes'
+  `validityDate`/`validityTime` (18Z).
+- sha256 `ba8a7fb77b62d7a12631ce8c88d70af941a595501e4e60d5b8a0e097b535e31e`.
+
+Recipe (eccodes python API), per message: `h = codes_grib_new_from_samples("regular_ll_sfc_grib1")`,
+`codes_set` of `centre`, `table2Version`, `indicatorOfParameter`, `indicatorOfTypeOfLevel`,
+`level`, `dataDate`, `dataTime`, `stepUnits`, `step`, `timeRangeIndicator 0`, `Ni`, `Nj`,
+`jScansPositively`, first/last grid points, increments, `bitsPerValue`, then `codes_set_values`
+and `codes_get_message`; the two messages are concatenated.

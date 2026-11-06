@@ -92,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from-files", default=None, help="importer des fichiers GRIB locaux")
     p.add_argument("--listing-dir", default=None, help="listes DWD enregistrées (tests)")
 
+    p = sub.add_parser("grib", help="n'importe quel GRIB1/GRIB2 de vent 10 m -> wind.npz")
+    _common(p)
+    p.add_argument("file", help="fichier GRIB (prévision de l'organisateur, OpenSkiron, ...)")
+    p.add_argument("--name", default="wind", help="nom du fichier écrit (défaut wind)")
+
+    p = sub.add_parser("current", help="courant Copernicus (NetCDF) -> current.npz")
+    _common(p)
+    p.add_argument("file", help="fichier NetCDF téléchargé avec copernicusmarine")
+
     p = sub.add_parser("check", help="vérifier le pack et la couverture météo")
     _common(p)
 
@@ -279,6 +288,51 @@ def _cmd_waves(args: argparse.Namespace) -> int:
     return EXIT_INCOMPLETE if choice is not None and choice.incomplete else rc
 
 
+def _cmd_grib(args: argparse.Namespace) -> int:
+    import re
+
+    from jabuka.prep.grib import import_generic
+    from jabuka.prep.wxpack import default_crop, iso_utc, write_cube
+
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", args.name):
+        raise PrepError(f"nom refusé : {args.name!r} (lettres minuscules, chiffres, _)")
+    window = _window(args)
+    out = Path(args.out)
+    src = Path(args.file)
+    try:
+        cube = import_generic(src, default_crop())
+    except ValueError as exc:
+        raise PrepError(str(exc)) from exc
+    model = src.name.split(".")[0] or "organiser"
+    run = iso_utc(cube.run) if cube.run is not None else iso_utc(int(cube.t[0]))
+    path = write_cube(out, args.name, cube, model=model, source=f"GRIB {src.name}", run=run)
+    print(
+        f"Vent ({src.name}) : {cube.t.size} échéances {iso_utc(cube.t[0])} -> "
+        f"{iso_utc(cube.t[-1])}, grille {cube.lat.size}x{cube.lon.size} -> {path}"
+    )
+    if args.name != "wind":
+        print(f"Écrit sous {path.name} : renommer en wind.npz/wind.json pour l'utiliser.")
+    return run_check(out, args.marks, window)
+
+
+def _cmd_current(args: argparse.Namespace) -> int:
+    from jabuka.prep.current import SOURCE, import_copernicus
+    from jabuka.prep.wxpack import default_crop, iso_utc, write_cube
+
+    window = _window(args)
+    out = Path(args.out)
+    try:
+        cube = import_copernicus(Path(args.file), default_crop())
+    except ValueError as exc:
+        raise PrepError(str(exc)) from exc
+    path = write_cube(out, "current", cube, model="MEDSEA", source=SOURCE, run="")
+    print(
+        f"Courant : {cube.t.size} échéances {iso_utc(cube.t[0])} -> {iso_utc(cube.t[-1])}, "
+        f"grille {cube.lat.size}x{cube.lon.size} -> {path}"
+    )
+    return run_check(out, args.marks, window)
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     return run_check(Path(args.out), args.marks, _window(args))
 
@@ -298,7 +352,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv and argv[0] == "land":
         return _cmd_land(argv[1:])
     args = build_parser().parse_args(argv)
-    handlers = {"wind": _cmd_wind, "waves": _cmd_waves, "check": _cmd_check}
+    handlers = {
+        "wind": _cmd_wind,
+        "waves": _cmd_waves,
+        "grib": _cmd_grib,
+        "current": _cmd_current,
+        "check": _cmd_check,
+    }
     try:
         return handlers[args.cmd](args)
     except PrepError as exc:

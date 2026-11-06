@@ -17,6 +17,7 @@ import contextlib
 import os
 import tempfile
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,8 +90,25 @@ def open_grib_path(path: str | Path, tmp_dir: str | Path | None = None) -> Itera
             os.unlink(tmp)
 
 
+def _key(g: Any, name: str, default: Any = None) -> Any:
+    try:
+        return g[name]
+    except Exception:  # noqa: BLE001 - pygrib raises RuntimeError/KeyError for absent keys
+        return default
+
+
 def valid_epoch(g: Any) -> int:
-    """UTC epoch seconds of the message's valid time (never forecastTime arithmetic)."""
+    """UTC epoch seconds of the message's valid time (never forecastTime arithmetic).
+
+    eccodes' computed ``validityDate``/``validityTime`` first: they honour the time unit of
+    every edition (ICON-EU codes forecastTime in minutes; GRIB1 uses P1 + unit, where pygrib's
+    ``validDate`` falls back to the analysis time). ``g.validDate`` only if those keys are absent.
+    """
+    vd, vt = _key(g, "validityDate"), _key(g, "validityTime")
+    if vd is not None and vt is not None:
+        d, t = int(vd), int(vt)
+        dt = datetime(d // 10000, d // 100 % 100, d % 100, t // 100, t % 100, tzinfo=UTC)
+        return int(dt.timestamp())
     return calendar.timegm(g.validDate.timetuple())
 
 
@@ -267,3 +285,214 @@ def decode_wave_files(
             filled = np.mod(filled, 360.0)
         cube.fields[name] = filled.astype(np.float32)
     return cube
+
+
+# --------------------------------------------------------------------------- generic GRIB import
+
+REGRID_STEP = 0.025  # deg, target grid for projected / rotated sources
+_U_NAMES, _V_NAMES = {"u", "UGRD"}, {"v", "VGRD"}
+_WS_NAMES, _WD_NAMES = {"ws", "wind", "si"}, {"wdir", "dir"}
+# GRIB1: with table2Version < 128, parameters 1-127 are the WMO standard (31 dir, 32 speed, 33 u,
+# 34 v) whatever the centre; local tables (>= 128) reuse those numbers for other fields (ECMWF
+# 128/33 is snow density "rsn"), so they are only trusted through eccodes' own names.
+_GRIB1_WMO = {33: "u", 34: "v", 32: "ws", 31: "wd"}
+
+
+def _at_10m(g: Any) -> bool:
+    level = _key(g, "level")
+    if level is None or float(level) != 10.0:
+        return False
+    tol = str(_key(g, "typeOfLevel", ""))
+    return tol in ("heightAboveGround", "") or "height" in tol.lower()
+
+
+def wind_kind(g: Any) -> str | None:
+    """'u' | 'v' | 'ws' | 'wd' for a 10 m wind message, else None (several key families)."""
+    sn = str(_key(g, "shortName", ""))
+    if sn == "10u":
+        return "u"
+    if sn == "10v":
+        return "v"
+    if sn == "10si":
+        return "ws"
+    if sn == "10wdir":
+        return "wd"
+    pid = _key(g, "paramId")
+    if pid in (165, 166):
+        return "u" if pid == 165 else "v"
+    if not _at_10m(g):
+        return None
+    for names, kind in ((_U_NAMES, "u"), (_V_NAMES, "v"), (_WS_NAMES, "ws"), (_WD_NAMES, "wd")):
+        if sn in names:
+            return kind
+    if _key(g, "edition") == 1:
+        table = _key(g, "table2Version")
+        iop = _key(g, "indicatorOfParameter")
+        if table is not None and int(table) < 128 and iop is not None:
+            return _GRIB1_WMO.get(int(iop))
+    return None
+
+
+def _field_label(g: Any) -> str:
+    sn = str(_key(g, "shortName", "?"))
+    if sn in ("unknown", "?", ""):
+        iop = _key(g, "indicatorOfParameter", _key(g, "parameterNumber", "?"))
+        return f"{sn}(param {iop})"
+    return sn
+
+
+def uv_from_speed_dir(speed: Any, direction_deg: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised twin of conventions.uv_from_wind_from (direction FROM in degrees)."""
+    rad = np.radians(np.asarray(direction_deg, dtype=np.float64))
+    spd = np.asarray(speed, dtype=np.float64)
+    return -spd * np.sin(rad), -spd * np.cos(rad)
+
+
+def idw_regrid(
+    src_lat: np.ndarray,
+    src_lon: np.ndarray,
+    vals: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    k: int = 4,
+    max_dist: float | None = None,
+) -> np.ndarray:
+    """Inverse-distance (1/d^2) regrid of scattered points onto the regular (lat, lon) grid using
+    the ``k`` nearest sources (brute force in chunks). ``vals`` [K, N] -> [K, NY, NX]; targets
+    farther than ``max_dist`` (default 2 x median source spacing) from any source are NaN."""
+    vals = np.atleast_2d(np.asarray(vals, dtype=np.float64))
+    src_lat = np.asarray(src_lat, dtype=np.float64).ravel()
+    src_lon = np.asarray(src_lon, dtype=np.float64).ravel()
+    n = src_lat.size
+    coslat = np.cos(np.radians(np.mean(src_lat))) if n else 1.0
+    sx, sy = src_lon * coslat, src_lat
+    tlat, tlon = np.meshgrid(lat, lon, indexing="ij")
+    tx, ty = tlon.ravel() * coslat, tlat.ravel()
+    out = np.full((vals.shape[0], tx.size), np.nan)
+    if n == 0:
+        return out.reshape(vals.shape[0], lat.size, lon.size)
+    if max_dist is None:
+        if n > 1:
+            sample = np.linspace(0, n - 1, min(n, 400)).astype(int)
+            d2 = (sx[sample, None] - sx[None, :]) ** 2 + (sy[sample, None] - sy[None, :]) ** 2
+            d2[np.arange(sample.size), sample] = np.inf
+            max_dist = 2.0 * float(np.median(np.sqrt(d2.min(axis=1))))
+        else:
+            max_dist = np.inf
+    kk = min(k, n)
+    for start in range(0, tx.size, 512):
+        sl = slice(start, min(start + 512, tx.size))
+        d2 = (tx[sl, None] - sx[None, :]) ** 2 + (ty[sl, None] - sy[None, :]) ** 2
+        idx = (
+            np.argpartition(d2, kk - 1, axis=1)[:, :kk]
+            if kk < n
+            else np.tile(np.arange(n), (d2.shape[0], 1))
+        )
+        d = np.sqrt(np.take_along_axis(d2, idx, axis=1))
+        exact = d < 1e-9
+        w = np.where(
+            exact.any(axis=1, keepdims=True), exact.astype(float), 1.0 / np.maximum(d, 1e-12) ** 2
+        )
+        v = vals[:, idx]  # [K, chunk, kk]
+        good = np.isfinite(v)
+        wk = np.where(good, w[None], 0.0)
+        num = np.sum(np.where(good, v, 0.0) * wk, axis=2)
+        den = np.sum(wk, axis=2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            res = num / den
+        res[:, d.min(axis=1) > max_dist] = np.nan
+        out[:, sl] = res
+    return out.reshape(vals.shape[0], lat.size, lon.size)
+
+
+def _target_axes(crop: Crop, lats: np.ndarray, lons: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    lat_lo, lat_hi = max(crop.lat1, float(lats.min())), min(crop.lat2, float(lats.max()))
+    lon_lo, lon_hi = max(crop.lon1, float(lons.min())), min(crop.lon2, float(lons.max()))
+    if lat_hi - lat_lo < REGRID_STEP or lon_hi - lon_lo < REGRID_STEP:
+        raise ValueError("la grille du fichier ne recouvre pas la zone de course")
+    lat = np.arange(np.ceil(lat_lo / REGRID_STEP), np.floor(lat_hi / REGRID_STEP) + 1) * REGRID_STEP
+    lon = np.arange(np.ceil(lon_lo / REGRID_STEP), np.floor(lon_hi / REGRID_STEP) + 1) * REGRID_STEP
+    return np.round(lat, 6), np.round(lon, 6)
+
+
+def import_generic(path: str | Path, crop: Crop | None = None) -> Cube:
+    """Any GRIB1/GRIB2 file with 10 m wind (u/v or speed/direction; regular, rotated or projected
+    grid) -> wind Cube (u, v). ValueError (French) when unusable."""
+    pygrib = _pygrib()
+    crop = crop or default_crop()
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"fichier introuvable : {path}")
+    check_size(path)
+    found: list[str] = []
+    # t -> kind -> ("reg", arr2d, lat, lon) | ("pts", vals1d, lats1d, lons1d)
+    recs: dict[int, dict[str, tuple[Any, ...]]] = {}
+    run: int | None = None
+    sel = 0.3  # deg kept around the crop for projected grids (IDW neighbours at the edges)
+    with open_grib_path(path) as gp:
+        try:
+            grbs = pygrib.open(gp)
+        except Exception as exc:  # noqa: BLE001 - not a GRIB file
+            raise ValueError(f"fichier GRIB illisible : {path.name} ({exc})") from exc
+        try:
+            for g in grbs:
+                found.append(_field_label(g))
+                kind = wind_kind(g)
+                if kind is None:
+                    continue
+                t = valid_epoch(g)
+                run = run if run is not None else run_epoch(g)
+                gtype = str(_key(g, "gridType", ""))
+                if gtype in ("regular_ll", "regular_gg"):
+                    arr, la, lo = crop_regular(g, crop) or (None, None, None)
+                    if arr is None:
+                        raise ValueError(f"grille {gtype} illisible")
+                    recs.setdefault(t, {})[kind] = ("reg", arr, la, lo)
+                    continue
+                try:
+                    lats, lons = g.latlons()
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(f"type de grille non pris en charge : {gtype}") from exc
+                lats = np.asarray(lats, dtype=np.float64).ravel()
+                lons = _wrap_lon(np.asarray(lons, dtype=np.float64).ravel())
+                vals = np.ma.filled(np.ma.asarray(g.values, dtype=np.float64), np.nan).ravel()
+                keep = (
+                    (lats >= crop.lat1 - sel)
+                    & (lats <= crop.lat2 + sel)
+                    & (lons >= crop.lon1 - sel)
+                    & (lons <= crop.lon2 + sel)
+                )
+                if not keep.any():
+                    raise ValueError("la grille du fichier ne recouvre pas la zone de course")
+                recs.setdefault(t, {})[kind] = ("pts", vals[keep], lats[keep], lons[keep])
+        finally:
+            grbs.close()
+    print(f"GRIB {path.name} : champs trouvés : {', '.join(dict.fromkeys(found)) or 'aucun'}")
+    st = _Stack()
+    st.run = run
+    st.found = found
+    for t in sorted(recs):
+        r = recs[t]
+        if "u" in r and "v" in r:
+            ru, rv, from_sd = r["u"], r["v"], False
+        elif "ws" in r and "wd" in r:
+            ru, rv, from_sd = r["ws"], r["wd"], True
+        else:
+            continue
+        if ru[0] != rv[0] or ru[2].shape != rv[2].shape or not np.allclose(ru[2], rv[2]):
+            raise ValueError("composantes du vent sur des grilles différentes")
+        a, b = ru[1], rv[1]
+        if from_sd:
+            a, b = uv_from_speed_dir(a, b)
+        if ru[0] == "reg":
+            st.add(t, "u", a, ru[2], ru[3])
+            st.add(t, "v", b, ru[2], ru[3])
+        else:
+            lat, lon = _target_axes(crop, ru[2], ru[3])
+            out = idw_regrid(ru[2], ru[3], np.vstack([a, b]), lat, lon)
+            st.add(t, "u", out[0], lat, lon)
+            st.add(t, "v", out[1], lat, lon)
+    if not st.by_t:
+        present = ", ".join(dict.fromkeys(found)) or "aucun"
+        raise ValueError(f"aucun champ de vent 10 m trouvé ; champs présents : {present}")
+    return st.cube(("u", "v"))

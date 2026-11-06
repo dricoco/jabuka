@@ -132,13 +132,20 @@ def test_idw_regrid_interpolates_between_source_points() -> None:
     src_lat = np.array([43.0, 43.0, 43.1, 43.1])
     src_lon = np.array([15.0, 15.1, 15.0, 15.1])
     vals = np.array([[0.0, 1.0, 0.0, 1.0]])
-    lat = np.array([43.05])
-    lon = np.array([15.0, 15.05, 15.1])
-    out = gribmod.idw_regrid(src_lat, src_lon, vals, lat, lon)
+    out = gribmod.idw_regrid(
+        src_lat, src_lon, vals, np.array([43.05]), np.array([15.0, 15.05, 15.1])
+    )
     assert out.shape == (1, 1, 3)
-    assert out[0, 0, 0] == pytest.approx(0.0, abs=1e-6)
-    assert out[0, 0, 1] == pytest.approx(0.5, abs=1e-6)
-    assert out[0, 0, 2] == pytest.approx(1.0, abs=1e-6)
+    # 4-point inverse distance: symmetric, midpoint exact, edges pulled towards the near column
+    assert out[0, 0, 1] == pytest.approx(0.5, abs=1e-9)
+    assert out[0, 0, 0] < 0.5 < out[0, 0, 2]
+    assert out[0, 0, 0] + out[0, 0, 2] == pytest.approx(1.0, abs=1e-9)
+    # a target on a source point takes that value exactly
+    hit = gribmod.idw_regrid(src_lat, src_lon, vals, np.array([43.0]), np.array([15.1]))
+    assert hit[0, 0, 0] == pytest.approx(1.0, abs=1e-12)
+    # far from every source -> NaN, never extrapolated
+    far = gribmod.idw_regrid(src_lat, src_lon, vals, np.array([44.0]), np.array([15.05]))
+    assert np.isnan(far).all()
 
 
 def test_no_wind_field_exits_2_listing_fields(rp, write_grib, tmp_path, capsys) -> None:
