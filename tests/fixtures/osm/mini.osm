@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-written OSM fixture for tests/prep/test_prep_seamarks.py (02-02).
+     Positions of the Plić Sestre beacon (node 498394251) and the Blitvenica light are the OSM
+     positions verified in 02-RESEARCH.md "Race Marks" (© OpenStreetMap contributors, ODbL 1.0);
+     the coastline ways, the mooring and the off-bbox light are synthetic.
+     Expected with the default race bbox 15.0,42.8,16.3,44.0: 2 seamarks (the beacon node and the
+     way-mapped light), 2 coastline features (1 Polygon from the closed way, 1 LineString). -->
+<osm version="0.6" generator="hand-written">
+  <!-- Plić Sestre: isolated-danger beacon; the name carries a TAB that must be stripped -->
+  <node id="498394251" version="1" lat="43.684627" lon="15.811626">
+    <tag k="seamark:type" v="beacon_isolated_danger"/>
+    <tag k="seamark:name" v="Plicina Sestre,&#9; in Zlarinski Kanal."/>
+    <tag k="seamark:light:character" v="Fl"/>
+    <tag k="seamark:light:group" v="2"/>
+    <tag k="seamark:light:colour" v="white"/>
+    <tag k="seamark:light:period" v="10"/>
+    <tag k="seamark:light:range" v="4"/>
+  </node>
+  <!-- mooring buoy inside the bbox: dropped (not a night hazard) -->
+  <node id="900000001" version="1" lat="43.7300000" lon="15.8500000">
+    <tag k="seamark:type" v="mooring"/>
+    <tag k="seamark:name" v="Mooring"/>
+  </node>
+  <!-- light outside the bbox (Zadar area): dropped -->
+  <node id="900000002" version="1" lat="44.1200000" lon="15.2200000">
+    <tag k="seamark:type" v="light_minor"/>
+  </node>
+  <!-- a natural=* node that is not a coastline nor a seamark: ignored -->
+  <node id="900000003" version="1" lat="43.7000000" lon="15.9000000">
+    <tag k="natural" v="peak"/>
+  </node>
+  <!-- Blitvenica light mapped as a small closed way (untagged nodes) -->
+  <node id="900000101" version="1" lat="43.6252000" lon="15.5743000"/>
+  <node id="900000102" version="1" lat="43.6252000" lon="15.5747000"/>
+  <node id="900000103" version="1" lat="43.6248000" lon="15.5747000"/>
+  <node id="900000104" version="1" lat="43.6248000" lon="15.5743000"/>
+  <way id="900000100" version="1">
+    <nd ref="900000101"/>
+    <nd ref="900000102"/>
+    <nd ref="900000103"/>
+    <nd ref="900000104"/>
+    <nd ref="900000101"/>
+    <tag k="seamark:type" v="light_major"/>
+    <tag k="seamark:name" v="Otocic Blitvenica"/>
+    <tag k="seamark:light:character" v="Fl"/>
+    <tag k="seamark:light:group" v="2"/>
+    <tag k="seamark:light:colour" v="white"/>
+    <tag k="seamark:light:period" v="30"/>
+    <tag k="seamark:light:range" v="24"/>
+  </way>
+  <!-- closed coastline way: an islet near Zlarin (more than 5 decimals on purpose) -->
+  <node id="900000201" version="1" lat="43.6900001" lon="15.8300001"/>
+  <node id="900000202" version="1" lat="43.6900004" lon="15.8320004"/>
+  <node id="900000203" version="1" lat="43.6880006" lon="15.8320006"/>
+  <node id="900000204" version="1" lat="43.6880009" lon="15.8300009"/>
+  <way id="900000200" version="1">
+    <nd ref="900000201"/>
+    <nd ref="900000204"/>
+    <nd ref="900000203"/>
+    <nd ref="900000202"/>
+    <nd ref="900000201"/>
+    <tag k="natural" v="coastline"/>
+  </way>
+  <!-- open coastline way: a stretch of the mainland shore near Vodice -->
+  <node id="900000301" version="1" lat="43.7600000" lon="15.7700000"/>
+  <node id="900000302" version="1" lat="43.7580000" lon="15.7750000"/>
+  <node id="900000303" version="1" lat="43.7580000" lon="15.7750000"/>
+  <node id="900000304" version="1" lat="43.7550000" lon="15.7800000"/>
+  <way id="900000300" version="1">
+    <nd ref="900000301"/>
+    <nd ref="900000302"/>
+    <nd ref="900000303"/>
+    <nd ref="900000304"/>
+    <tag k="natural" v="coastline"/>
+  </way>
+</osm>
