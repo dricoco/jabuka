@@ -159,6 +159,22 @@ def test_countdown_falls_back_to_polar_when_slow() -> None:
     assert res.layline["countdown_s"] == pytest.approx(A_H * 3600.0, abs=1.0)
 
 
+def test_countdown_does_not_spike_while_the_cog_swings_through_a_tack() -> None:
+    # just tacked onto port (heading 045, TWA -45) but the GPS COG is still swinging round from
+    # 315: a ray along a mid-turn COG meets the starboard layline far away (+40..75 % here)
+    polar = A_H * 3600.0
+    w = _wind(twa_deg=-45.0)
+    for cog_deg in (315.0, 330.0, 350.0, 0.0, 10.0, 20.0):
+        boat = _boat_at(180.0, 5.0, hdg=R(45.0), cog=R(cog_deg), sog_kn=6.0)
+        lay = solve(boat, w, TARGETS, ANCHOR).layline
+        assert lay["tack"] == "port" and lay["state"] == "normal"
+        assert lay["countdown_s"] == pytest.approx(polar, abs=1.0), cog_deg
+    # settled on the new tack (within 20 deg of the port track): the actual track again
+    boat = _boat_at(180.0, 5.0, hdg=R(45.0), cog=R(35.0), sog_kn=6.0)
+    lay = solve(boat, w, TARGETS, ANCHOR).layline
+    assert abs(lay["countdown_s"] - polar) > 5.0
+
+
 # -- overstood / fetching -------------------------------------------------------------------------
 def test_overstood_time() -> None:
     # D = a * g_stbd + b * g_port with a = -0.118 h, b = 2 h (anchor bears ~048: a beat within
