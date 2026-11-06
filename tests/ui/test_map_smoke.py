@@ -128,6 +128,29 @@ def test_absolutize_style() -> None:
     assert out["sources"]["ext"]["tiles"] == ["http://other/{z}/{x}/{y}.mvt"]
 
 
+def test_style_maxzoom_follows_a_degraded_pack() -> None:
+    """WR-06: a race pack extracted at maxzoom 10 (prep fallback) overzooms z10 tiles instead
+    of going blank above it: every vector source gets the pack's maxzoom."""
+    style = json.loads((STATIC / "style-day.json").read_text())
+    code = (
+        f"import {{ fitStyleToPack }} from {json.dumps((STATIC / 'map.js').as_uri())};\n"
+        f"const s = {json.dumps(style)};\n"
+        "const out = [fitStyleToPack(structuredClone(s), {tiles: true, maxzoom: 10}),\n"
+        "  fitStyleToPack(structuredClone(s), {tiles: true, maxzoom: null}),\n"
+        "  fitStyleToPack(structuredClone(s), {tiles: false, maxzoom: 10})]\n"
+        "  .map((st) => Object.values(st.sources).filter((x) => x.type === 'vector')\n"
+        "  .map((x) => x.maxzoom));\n"
+        "process.stdout.write(JSON.stringify(out));\n"
+    )
+    proc = subprocess.run(
+        [NODE, "--input-type=module", "-e", code], capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == 0, proc.stderr
+    degraded, unknown, no_tiles = json.loads(proc.stdout)
+    assert degraded and set(degraded) == {10}
+    assert set(unknown) == {14} and set(no_tiles) == {14}  # untouched
+
+
 # -- browser -----------------------------------------------------------------------------------
 def test_map_renders_offline_with_overlays(page, feeder) -> None:
     _near_plic_sestre(feeder)

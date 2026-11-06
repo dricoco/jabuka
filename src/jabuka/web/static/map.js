@@ -99,9 +99,21 @@ async function fetchJson(url) {
   return res.json();
 }
 
+// The vendored styles declare the full extract's maxzoom (14). A degraded race pack (prep fallback
+// to maxzoom 12 or 10) must say its real maxzoom, or MapLibre asks for tiles the core answers 204
+// and draws nothing above it instead of overzooming the last level (WR-06).
+export function fitStyleToPack(style, info) {
+  const z = info?.maxzoom;
+  if (!info?.tiles || !Number.isInteger(z) || z < 0) return style;
+  for (const src of Object.values(style.sources ?? {})) {
+    if (src.type === "vector") src.maxzoom = z;
+  }
+  return style;
+}
+
 async function loadStyle(theme) {
   let style;
-  if (racepack.tiles) style = await fetchJson(`/style-${theme}.json`);
+  if (racepack.tiles) style = fitStyleToPack(await fetchJson(`/style-${theme}.json`), racepack);
   else if (racepack.coastline) style = coastlineStyle(theme);
   else style = backgroundStyle(theme);
   return absolutizeStyle(style, location.origin);
