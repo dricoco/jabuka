@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 1
-current_phase_name: Foundation, Data Backbone & Bus-Test Kit
-status: verifying
+current_phase: 2
+current_phase_name: Helm MVP — Laylines, Marks & Map
+status: executing
 stopped_at: Roadmap and state initialized; ready to plan Phase 1
-last_updated: "2026-11-06T01:19:24.577Z"
+last_updated: "2026-11-06T03:11:32.094Z"
 last_activity: 2026-11-06
-last_activity_desc: Phase 1 execution started
-state_head: 29c7e62bd7485d2332d4b83da0bf344e75527dc9
+last_activity_desc: Phase 2 execution started
+state_head: 69c3f736a9aa3ecd604e4b162d27f2deeaff0d46
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 9
+  completed_plans: 5
   percent: 0
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-05)
 
 **Core value:** At the helm, during the race, the screen shows a trustworthy, continuously updated "steer this / tack here" (optimal course to the next mark + laylines) computed from live boat data — even if parts of the data chain fail.
-**Current focus:** Phase 1 — Foundation, Data Backbone & Bus-Test Kit
+**Current focus:** Phase 2 — Helm MVP — Laylines, Marks & Map
 
 ## Current Position
 
-Phase: 1 (Foundation, Data Backbone & Bus-Test Kit) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-11-06 — Phase 1 execution started
+Phase: 2 (Helm MVP — Laylines, Marks & Map) — EXECUTING
+Plan: 2 of 5
+Status: Ready to execute
+Last activity: 2026-11-06 — Phase 2 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
