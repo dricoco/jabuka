@@ -74,6 +74,13 @@ POOL_STUCK_S = 2.0 * POOL_TIMEOUT_S  # one job "running" longer than this: the p
 POOL_RETRY_S = 30.0  # no pool (creation failed): try again after this
 MAX_ROUTE_POINTS = 300
 RETRY_NO_ROUTE_S = 60.0  # no route yet and the last request failed: retry after this
+# Route expiry (03-REVIEW CR-02): a displayed route goes stale, then is withdrawn ("outdated":
+# no target, no countdown, so the helm falls back to the Phase 2 laylines).
+ROUTE_STALE_S = 2.0 * ROUTE_MAX_AGE_S  # not confirmed by any routing cycle this long: withdrawn
+FAIL_WITHDRAW_N = 2  # this many consecutive failed cycles ...
+ROUTE_FAIL_AGE_S = 600.0  # ... and the route unconfirmed this long: withdrawn
+MISSED_MAX_S = 180.0  # "Route mise à jour…" (missed-tack reroute) at most this long
+ROUNDING_TOL_S = 600.0  # course advanced by a rounding: the boat is this close to the leg's end
 PRIMARY_TWA_UP_DEG = 70.0  # |target TWA| below: steer the TWA (upwind)
 PRIMARY_TWA_DOWN_DEG = 110.0  # above: steer the TWA (downwind); between: the heading
 
@@ -83,6 +90,10 @@ REASON_NO_COURSE = "plus de marque à rejoindre"
 REASON_NO_POSITION = "pas de position GPS"
 REASON_NOT_LOADED = "pack de course non chargé"
 REASON_STAY_NO_TACK = "amure inconnue : On reste impossible"
+REASON_OUT_COURSE = "parcours modifié : recalcul en cours"
+REASON_OUT_MISSED = "virement manqué : nouvelle route impossible"
+REASON_OUT_AGE = "route périmée"
+REASON_OUT_FAIL = "le routeur échoue"
 
 ROUTE_FILE = "route.json"
 BIAS_FILE = "bias.json"
@@ -146,6 +157,12 @@ class Adopted:
     start_in_margin: bool = False
     force_released_at: float | None = None
     course_version: int = 0
+    # the marks it was computed for: (mark_id, lat, lon, side, radius_nm), see _course_changed
+    marks: tuple[tuple[str, float, float, str, float], ...] = ()
+
+
+def _mark_key(m: CourseMark) -> tuple[str, float, float, str, float]:
+    return (m.mark_id, round(m.lat, 6), round(m.lon, 6), m.side, round(float(m.radius_nm), 4))
 
 
 class RouterService:
@@ -213,6 +230,12 @@ class RouterService:
         self.missed_watch = MissedTackWatch()
         self.stay = StayOnTack()
         self.missed = False  # a missed tack asked for a reroute: "Route mise à jour…"
+        self._missed_t: float | None = None  # UTC s when the missed tack was flagged
+        self._missed_req: str | None = None  # request id of the reroute it asked for
+        self._missed_failed = False  # ... and that reroute failed
+        self._fail_streak = 0  # consecutive failed routing cycles
+        self._route_conf_t: float | None = None  # UTC t0 of the last cycle confirming the route
+        self.withdrawn: str | None = None  # why the displayed route is withdrawn (CR-02)
         self.cost_s: float | None = None
         self._cycle_n = 0
         self._force_carry = False
@@ -375,6 +398,9 @@ class RouterService:
             ):
                 self.missed = True
                 self._missed_edge = True
+                self._missed_t = now
+                self._missed_failed = False
+            self.withdrawn = self._withdrawal(now, f)
             self._maybe_request(now, msg, off)
             self._missed_edge = False
             block["off_route"] = bool(off)
@@ -493,7 +519,7 @@ class RouterService:
             trigs.append(Trigger(self._soft, False))
         if (
             not trigs
-            and self.route is None
+            and (self.route is None or self._fail_streak > 0 or self.withdrawn is not None)
             and self._inflight == 0
             and self._last_req_t is not None
             and now - self._last_req_t >= RETRY_NO_ROUTE_S
@@ -511,6 +537,8 @@ class RouterService:
         reasons = tuple(t.reason for t in trigs)
         self.request_log.append((now, reasons))
         self.last_request = req
+        if self.missed:  # this request (or a newer one) is the missed-tack reroute
+            self._missed_req = req.base.request_id
         self._submit(req, forced, reasons)
 
     def _build_request(self, now: float, msg: dict, rs: Any) -> CycleRequest | None:
@@ -823,7 +851,7 @@ class RouterService:
             return
         if out.status != "ok" or not isinstance(out.value, CycleResult):
             self._counts["failed"] += 1
-            self._last_fail = f"{out.status}: {out.error}" if out.error else out.status
+            self._failed(req, f"{out.status}: {out.error}" if out.error else out.status)
             return
         res: CycleResult = out.value
         if req.want_forced:  # cost of not tacking: every forced routing (kept between, L5)
@@ -832,18 +860,19 @@ class RouterService:
         if not opt.ok:
             reason = opt.reason or "échec du routage"
             if any(w in reason.lower() for w in MASK_WORDS):
-                self._invalid(reason)
+                self._invalid(reason, req)
             else:
                 self._counts["failed"] += 1
-                self._last_fail = reason
+                self._failed(req, reason)
             return
         if not opt.valid or not opt.path:
-            self._invalid(opt.reason or "route non validée")
+            self._invalid(opt.reason or "route non validée", req)
             return
         if course_version != self.nav.course.version:  # the course changed meanwhile
             self._counts["superseded"] += 1
             return
         self._last_fail = None
+        self._fail_streak = 0
         shown, kind = opt, "optimal"
         f = res.forced
         if req.stay_active and self.stay.active:
@@ -851,6 +880,8 @@ class RouterService:
                 shown, kind = f, "stay"
         forced_eff = forced or self._force_carry
         if self.route is not None and self.route.kind != kind:
+            forced_eff = True
+        if self.withdrawn is not None:  # the displayed route is withdrawn: anything valid wins
             forced_eff = True
         now = float(req.base.t0)
         replace, why = True, "no_route"
@@ -868,15 +899,67 @@ class RouterService:
             )
         if not replace:
             self._counts["kept"] += 1
+            if res.old_valid is not False:  # the cycle re-checked the displayed route: still good
+                self._route_conf_t = max(self._route_conf_t or 0.0, now)
             return
         self._adopt(req, shown, kind, course_version)
 
-    def _invalid(self, reason: str) -> None:
+    def _failed(self, req: CycleRequest, reason: str) -> None:
+        """A routing cycle that produced no usable route (CR-02 bookkeeping)."""
+        self._last_fail = reason
+        self._fail_streak += 1
+        if self.missed and req.base.request_id == self._missed_req:
+            self._missed_failed = True  # the missed-tack reroute failed: stop "mise à jour…"
+
+    def _invalid(self, reason: str, req: CycleRequest | None = None) -> None:
         """A worker route that failed validation: discarded, alert for 5 min (ROUT-11)."""
         self._counts["invalid"] += 1
-        self._last_fail = reason
+        if req is not None:
+            self._failed(req, reason)
+        else:
+            self._last_fail = reason
         self._invalid_alert = (ALERT_INVALID + reason, self.clock.monotonic() + INVALID_ALERT_S)
         log.warning("worker route discarded: %s", reason)
+
+    # -- route expiry (03-REVIEW CR-02) ------------------------------------------------------
+    def _course_changed(self, r: Adopted, f: Follow | None) -> bool:
+        """True when the displayed route was computed for other marks than the ones left to
+        sail. A course advanced by rounding (the route's first marks dropped while the boat is
+        at the end of those legs) keeps the route; a skipped, moved or added mark does not."""
+        if r.course_version == self.nav.course.version:
+            return False
+        if not r.marks:
+            return True  # restored from an older route.json: no mark snapshot
+        cur = tuple(_mark_key(m) for m in self._remaining_marks())
+        n = len(r.marks) - len(cur)
+        if n < 0 or r.marks[n:] != cur:
+            return True
+        if n == 0:
+            return False  # same marks: an unrelated course edit
+        if n > len(r.legs) or f is None:
+            return True
+        return f.t_route_here < r.legs[n - 1][1] - ROUNDING_TOL_S
+
+    def _withdrawal(self, now: float, f: Follow | None) -> str | None:
+        """Why the displayed route must not be steered any more (None = still good)."""
+        r = self.route
+        if r is None:
+            return None
+        if self._course_changed(r, f):
+            return REASON_OUT_COURSE
+        if self.missed and (
+            self._missed_failed
+            or (self._missed_t is not None and now - self._missed_t > MISSED_MAX_S)
+        ):
+            return REASON_OUT_MISSED + (f" ({self._last_fail})" if self._last_fail else "")
+        conf = max(r.t0, self._route_conf_t or r.t0)
+        age = now - conf
+        if age > ROUTE_STALE_S:
+            why = self._last_fail or "recalcul en cours"
+            return f"{REASON_OUT_AGE} ({int(age // 60)} min) : {why}"
+        if self._fail_streak >= FAIL_WITHDRAW_N and age > ROUTE_FAIL_AGE_S:
+            return f"{REASON_OUT_FAIL} : {self._last_fail}"
+        return None
 
     def _adopt(self, req: CycleRequest, shown: RouteResult, kind: str, course_version: int):
         now = self.now()
@@ -896,10 +979,16 @@ class RouterService:
             start_in_margin=bool(shown.start_in_margin),
             force_released_at=shown.force_released_at,
             course_version=course_version,
+            marks=tuple(_mark_key(m) for m in req.base.marks),
         )
         self._on_new_route()
         self._force_carry = False
+        self._fail_streak = 0
+        self._route_conf_t = float(req.base.t0)
+        self.withdrawn = None
         self.missed = False
+        self._missed_failed = False
+        self._missed_t = None
         self._restore_alert = False
         self.save()
         text = self.route_text()
@@ -936,7 +1025,21 @@ class RouterService:
             else:
                 self._set_state(block, "computing", None)
             return
+        if self.withdrawn is not None:
+            # withdrawn (CR-02): what it was, but nothing to steer -> Phase 2 laylines
+            self._set_state(block, "outdated", self.withdrawn)
+            block.update(
+                version=r.version,
+                kind=r.kind,
+                age_s=_r(max(0.0, now - r.t0), 0),
+                computed_utc=iso_utc(r.t0),
+                level=r.level,
+            )
+            return
         self._set_state(block, "ok", None)
+        if self._fail_streak > 0:  # still steerable, but the last recompute failed
+            block["stale"] = True
+            block["last_fail"] = self._last_fail
         if r.kind == "stay" and r.force_released_at is not None:
             block["stay"]["released_land"] = True
             block["stay"]["release_in_s"] = _r(r.force_released_at - now, 0)
@@ -990,7 +1093,7 @@ class RouterService:
             block["stay"]["released_land"] = False
             block["stay"]["release_in_s"] = None
         block["missed"] = self.missed
-        block["updating"] = self.missed
+        block["updating"] = self.missed and block.get("state") == "ok"
         if self.route is not None and block.get("state") == "ok":
             block["cost_s"] = _r(self.cost_s, 0)
             block["cost_text"] = cost_text(self.cost_s)
@@ -1082,6 +1185,7 @@ class RouterService:
             "start_in_margin": r.start_in_margin,
             "force_released_at": r.force_released_at,
             "course_version": r.course_version,
+            "marks": [list(m) for m in r.marks],
             "message": self.route_message(),
         }
         try:
@@ -1137,6 +1241,14 @@ class RouterService:
         kind = raw["kind"]
         if kind not in ("optimal", "stay"):
             raise ValueError("type de route invalide")
+        raw_marks = raw.get("marks") or []
+        marks = tuple(
+            (str(m[0]), num(m[1]), num(m[2]), str(m[3]), num(m[4]))
+            for m in raw_marks
+            if len(m) == 5
+        )
+        if len(marks) != len(raw_marks):
+            raise ValueError("marques invalides")
         version = raw["version"]
         cv = raw["course_version"]
         if not isinstance(version, int) or not isinstance(cv, int):
@@ -1155,6 +1267,7 @@ class RouterService:
             start_in_margin=bool(raw["start_in_margin"]),
             force_released_at=opt_num(raw["force_released_at"]),
             course_version=cv,
+            marks=marks,
         )
 
     # -- message pieces ----------------------------------------------------------------------
@@ -1184,6 +1297,8 @@ class RouterService:
             "tack_lon": None,
             "missed": False,
             "updating": False,
+            "stale": False,
+            "last_fail": None,
             "cost_s": None,
             "cost_text": None,
             "stay": {"active": False, "tack": None, "released_land": False, "release_in_s": None},
