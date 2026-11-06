@@ -1,4 +1,5 @@
-"""FastAPI app: GET /api/state, WS /ws (1 Hz diag push), static diagnostics page (mounted last)."""
+"""FastAPI app: GET /api/state, nav/settings/course REST, WS /ws (1 Hz diag + nav push), the helm
+app shell and the diagnostics page (static files, mounted last)."""
 
 from __future__ import annotations
 
@@ -12,6 +13,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from jabuka.core import course_api, nav_api
+from jabuka.core.tiles import racepack_router
 
 if TYPE_CHECKING:
     from jabuka.core.main import CoreContext
@@ -108,6 +112,9 @@ def create_app(ctx: CoreContext) -> FastAPI:
         try:
             # immediate snapshot so a fresh page does not wait for the next tick
             Hub._put_drop_oldest(q, json.dumps(ctx.diag_message(), separators=(",", ":")))
+            nav_text = ctx.nav_text(ctx.nav.last if ctx.nav.last is not None else ctx.update_nav())
+            if nav_text is not None:
+                Hub._put_drop_oldest(q, nav_text)
             while True:
                 await websocket.send_text(await q.get())
         except WebSocketDisconnect:
@@ -116,6 +123,10 @@ def create_app(ctx: CoreContext) -> FastAPI:
             pass
         finally:
             ctx.hub.unregister(q)
+
+    app.include_router(nav_api.router(ctx))
+    app.include_router(course_api.router(ctx))
+    app.include_router(racepack_router(ctx))  # tile index built once, here
 
     # Static files LAST so they never shadow the API routes.
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

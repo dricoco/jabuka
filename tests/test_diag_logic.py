@@ -63,7 +63,7 @@ def test_diag_page_scripts_parse_as_modules(tmp_path: Path) -> None:
         copy.write_text((LOGIC.parent / name).read_text())
         proc = subprocess.run([NODE, "--check", str(copy)], capture_output=True, text=True)
         assert proc.returncode == 0, (name, proc.stderr)
-    assert 'id="alerts"' in (LOGIC.parent / "index.html").read_text()
+    assert 'id="alerts"' in (LOGIC.parent / "diag.html").read_text()
 
 
 def test_link_watchdog_thresholds() -> None:

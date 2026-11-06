@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jabuka diagnostics</title>
+  <link rel="stylesheet" href="diag.css">
+  <script type="module" src="diag.js"></script>
+</head>
+<body>
+  <header>
+    <a href="/" target="_top" class="back">← Barre</a>
+    <h1>Jabuka diagnostics</h1>
+    <span id="conn" class="conn conn-down">connecting…</span>
+  </header>
+
+  <section id="alerts" class="alerts" role="alert" hidden></section>
+
+  <section class="panel event-panel">
+    <input id="event-label" type="text" maxlength="200" placeholder="label (optional)" autocomplete="off">
+    <button id="event-btn" type="button">Event marker</button>
+    <span id="event-ack" aria-live="polite"></span>
+  </section>
+
+  <section id="clock-panel" class="panel">
+    <div id="gate" class="gate gate-blocked">routing: blocked</div>
+    <table id="clock-table" class="kv"></table>
+  </section>
+
+  <section class="panel">
+    <h2>Values</h2>
+    <table id="values">
+      <thead>
+        <tr>
+          <th>path</th><th>value (SI)</th><th>display</th><th>unit</th><th>src</th>
+          <th>ref</th><th>ch</th><th>disp</th><th>age s</th>
+        </tr>
+      </thead>
+      <tbody id="values-body"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Health</h2>
+    <div id="health"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Core</h2>
+    <table id="core-table" class="kv"></table>
+  </section>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [15.811626, 43.684627]},
+      "properties": {
+        "osm_id": "node/498394251",
+        "seamark:type": "beacon_isolated_danger",
+        "name": "Plicina Sestre, in Zlarinski Kanal.",
+        "light": "Fl(2)W 10s"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [15.574467, 43.625032]},
+      "properties": {
+        "osm_id": "node/1377046673",
+        "seamark:type": "light_major",
+        "name": "Otocic Blitvenica",
+        "light": "Fl(2)W 30s 24M"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [15.918543, 43.514478]},
+      "properties": {
+        "osm_id": "node/498383293",
+        "seamark:type": "landmark",
+        "name": "Hrid Mulo",
+        "light": "Fl W 5s 21M"
+      }
+    }
+  ]
+}

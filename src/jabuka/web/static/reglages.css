@@ -1,0 +1,15 @@
+/* Réglages tab: one row per setting, 48 px controls. */
+#tab-reglages { padding: 12px 16px 40px; }
+#tab-reglages h2 { margin: 4px 0 8px; }
+.reglages-status { color: var(--warn); min-height: 1.4em; font-weight: 600; }
+.reglages-form { display: grid; gap: 6px; max-width: 720px; }
+.reglages-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 18px;
+}
+.reglages-row input, .reglages-row select {
+  min-height: 48px; min-width: 140px; font-size: 18px;
+  color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 6px;
+  padding: 0 8px;
+}
+.reglages-row input[type="checkbox"] { min-width: 48px; width: 48px; height: 48px; }

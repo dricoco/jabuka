@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent dev bootstrap: creates .venv (Python 3.14) and .venv313 (/usr/bin/python3.13)
-# and installs this checkout editable with the dev extra into both.
+# and installs this checkout editable with the dev and prep extras into both (prep = osmium,
+# laptop race-pack tooling; skipped with a warning where no wheel exists).
 # Safe in git worktrees: an existing venv is only reused when jabuka resolves inside THIS src/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -14,7 +15,7 @@ ensure_venv() {
     fi
     if "$venv/bin/python" - "$ROOT/src" <<'PY' >/dev/null 2>&1
 import os, sys
-import fastapi, fastnet_decoder, pytest  # noqa: F401
+import fastapi, fastnet_decoder, pmtiles, playwright, pytest  # noqa: F401
 import jabuka
 src = os.path.realpath(sys.argv[1])
 ok = os.path.realpath(jabuka.__file__).startswith(src + os.sep)
@@ -23,8 +24,11 @@ PY
     then
         echo "bootstrap: $venv already up to date"
     else
-        echo "bootstrap: installing jabuka[dev] into $venv"
-        uv pip install --python "$venv/bin/python" -e ".[dev]"
+        echo "bootstrap: installing jabuka[dev,prep] into $venv"
+        if ! uv pip install --python "$venv/bin/python" -e ".[dev,prep]"; then
+            echo "bootstrap: WARNING: prep extra (osmium) not installable here, installing [dev] only"
+            uv pip install --python "$venv/bin/python" -e ".[dev]"
+        fi
     fi
 }
 

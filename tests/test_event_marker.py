@@ -99,13 +99,15 @@ def test_event_empty_body_defaults_label(core) -> None:
 
 def test_page_has_event_controls(core) -> None:
     client, *_ = core
-    html = client.get("/").text
+    html = client.get("/diag.html").text  # diagnostics page (moved off / in Phase 2)
     assert 'id="event-btn"' in html
     assert 'id="event-label"' in html
     assert 'maxlength="200"' in html
     js = client.get("/diag.js").text
     assert "/api/event" in js
     assert "event-ack" in js
+    shell = client.get("/").text  # / is the helm app shell
+    assert 'id="tab-barre"' in shell and 'id="primary"' in shell
 
 
 def test_event_write_failure_is_503_and_counted(core, monkeypatch: pytest.MonkeyPatch) -> None:
