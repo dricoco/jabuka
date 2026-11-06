@@ -550,9 +550,17 @@ def angle_diff(a: float, b: float) -> float:
     return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
-def write_boat_pack(pack: Path, start: datetime) -> Path:
+def write_boat_pack(
+    pack: Path,
+    start: datetime,
+    *,
+    twd: float = BOAT_TWD,
+    tws: float = BOAT_TWS,
+    shift_deg_h: float = 0.0,
+) -> Path:
     """Rehearsal race pack: the committed 25 m land mask plus a uniform wind (the synth's wind)
-    covering start - 1 day .. start + 3 days, written with the race-pack writer."""
+    covering start - 1 day .. start + 3 days, written with the race-pack writer. shift_deg_h veers
+    the wind linearly from start (the synth's --shift; the local demo uses it), 0 = constant."""
     import numpy as np
 
     from jabuka.common.units import kn_to_ms
@@ -568,16 +576,17 @@ def write_boat_pack(pack: Path, start: datetime) -> Path:
     t = np.arange(t0, t0 + 4 * 86400 + 1, 3600, dtype=np.int64)
     lat = np.arange(42.5, 44.3, 0.25, dtype=np.float64)
     lon = np.arange(14.75, 16.6, 0.25, dtype=np.float64)
-    ms = kn_to_ms(BOAT_TWS)
-    u = -ms * math.sin(math.radians(BOAT_TWD))
-    v = -ms * math.cos(math.radians(BOAT_TWD))
+    ms = kn_to_ms(tws)
     shape = (t.size, lat.size, lon.size)
+    dirs = np.radians(twd + shift_deg_h * (t - start.timestamp()) / 3600.0)
+    u = (-ms * np.sin(dirs))[:, None, None]
+    v = (-ms * np.cos(dirs))[:, None, None]
     arrays = {
         "t": t,
         "lat": lat,
         "lon": lon,
-        "u": np.full(shape, u, np.float32),
-        "v": np.full(shape, v, np.float32),
+        "u": np.broadcast_to(u, shape).astype(np.float32),
+        "v": np.broadcast_to(v, shape).astype(np.float32),
         "model": "uniform",
         "run": start.strftime("%Y-%m-%dT%H:%MZ"),
     }
@@ -586,17 +595,84 @@ def write_boat_pack(pack: Path, start: datetime) -> Path:
     )
 
 
+def synth_args(
+    link: Path,
+    gpsd_port: int,
+    start_ll: tuple[float, float],
+    start_utc: datetime,
+    *,
+    speed: float,
+    variation: float,
+    twd: float = BOAT_TWD,
+    tws: float = BOAT_TWS,
+    twa: float = BOAT_TWA,
+    duration_s: float = 36000,
+    shift_deg_h: float = 0.0,
+    follow: str | None = None,
+    follow_route: bool = False,
+    faults: tuple[str, ...] | list[str] = (),
+) -> list[str]:
+    """jabuka-sim arguments of the synthetic boat: pty mode with the embedded fake gpsd (shared by
+    the rehearsal boat and the local demo)."""
+    lat, lon = start_ll
+    args = [
+        "--mode",
+        "pty",
+        "--link",
+        str(link),
+        "--speed",
+        f"{speed:g}",
+        "--duration",
+        f"{duration_s:g}",
+        "--twd",
+        f"{twd:g}",
+        "--tws",
+        f"{tws:g}",
+        "--twa",
+        f"{twa:g}",
+        "--start",
+        f"{lat:.6f},{lon:.6f}",
+        "--start-utc",
+        start_utc.isoformat(),
+        "--variation",
+        f"{variation:g}",
+        "--gpsd-port",
+        str(gpsd_port),
+        "--wait-reader",
+        "30",
+        "--seed",
+        "1",
+    ]
+    if shift_deg_h:
+        args += ["--shift", f"{shift_deg_h:g}"]
+    if follow:
+        args += ["--follow", follow]
+        if follow_route:
+            args.append("--follow-route")
+    return args + [x for f in faults for x in ("--fault", f)]
+
+
 class BoatStack:
     """jabuka-sim (pty, fake gpsd) -> jabuka-ingest-fastnet -> jabuka-core (--clock sim, the
-    synth's gpsd, the rehearsal race pack). Started once, on the first step that needs it."""
+    synth's gpsd, the rehearsal race pack). Started once, on the first step that needs it.
+    root / http_port / http_host default to the rehearsal's (OUT/boat, a free port, loopback);
+    the local demo (jabuka.tools.demo) passes its own."""
 
-    def __init__(self, ctx: Context) -> None:
+    def __init__(
+        self,
+        ctx: Context,
+        *,
+        root: Path | None = None,
+        http_port: int | None = None,
+        http_host: str = "127.0.0.1",
+    ) -> None:
         self.ctx = ctx
-        self.dir = ctx.out / "boat"
+        self.dir = root if root is not None else ctx.out / "boat"
         self.data = self.dir / "data"
         self.pack = self.dir / "racepack"
         self.link = self.dir / "fastnet-pty"
-        self.http = free_port()
+        self.http_host = http_host
+        self.http = http_port if http_port is not None else free_port()
         self.udp = free_port(socket.SOCK_DGRAM)
         self.gpsd = free_port()
         self.base = f"http://127.0.0.1:{self.http}"
@@ -612,7 +688,7 @@ class BoatStack:
     def _core_args(self) -> list[str]:
         return [
             "--http-host",
-            "127.0.0.1",
+            self.http_host,
             "--http-port",
             str(self.http),
             "--udp-port",
@@ -665,33 +741,15 @@ class BoatStack:
         self.synth = self.ctx.spawn(
             "boat-synth",
             "jabuka.sim.synth",
-            "--mode",
-            "pty",
-            "--link",
-            str(self.link),
-            "--speed",
-            f"{BOAT_SPEED:g}",
-            "--duration",
-            "36000",
-            "--twd",
-            f"{BOAT_TWD:g}",
-            "--tws",
-            f"{BOAT_TWS:g}",
-            "--twa",
-            f"{BOAT_TWA:g}",
-            "--start",
-            f"{lat:.6f},{lon:.6f}",
-            "--start-utc",
-            BOAT_START_UTC.isoformat(),
-            "--variation",
-            f"{self.variation:g}",
-            "--gpsd-port",
-            str(self.gpsd),
-            "--wait-reader",
-            "30",
-            "--seed",
-            "1",
-            *[x for f in faults for x in ("--fault", f)],
+            *synth_args(
+                self.link,
+                self.gpsd,
+                (lat, lon),
+                BOAT_START_UTC,
+                speed=BOAT_SPEED,
+                variation=self.variation,
+                faults=faults,
+            ),
         )
         if not wait_for(self.link.is_symlink, 15):
             raise StackError("jabuka-sim n'a pas créé le pty")

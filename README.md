@@ -16,6 +16,24 @@ Requirements: `uv` (0.6+), Python 3.14 for the main venv and `/usr/bin/python3.1
 bash scripts/bootstrap-dev.sh     # creates .venv (3.14) and .venv313 (3.13), installs -e ".[dev]"
 ```
 
+## Tester en local (démo en une commande)
+
+```bash
+bash scripts/demo.sh              # ou : .venv/bin/python -m jabuka.tools.demo
+```
+
+Puis ouvrir <http://127.0.0.1:8080/> dans le navigateur. La démo lance tout sur ce portable :
+jabuka-core (horloge simulée), un X35 de synthèse qui remonte au près vers Plić Sestre en
+suivant la route calculée (vent de 12 nds du 161°, qui tourne lentement), et l'ingest Fastnet.
+On voit la route et les lay-lines sur la carte, le compte à rebours de virement, ON RESTE, et
+Réglages > Langue FR / EN / SL. Ctrl-C arrête tout.
+
+- `--speed 1` pour le temps réel (défaut ×2), `--port 8081` si 8080 est pris.
+- `--lan` pour l'ouvrir depuis un téléphone ou une tablette sur le même Wi-Fi : les adresses
+  sont affichées au démarrage.
+- La carte réelle vient de `var/racepack/` si elle est là, sinon la carte de test de Šibenik.
+  Les données de la démo vont dans `var/demo/`, effacé à chaque lancement.
+
 ## Run the whole pipeline locally (three terminals)
 
 ```bash
