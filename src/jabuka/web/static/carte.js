@@ -7,8 +7,8 @@
 //   it (one PATCH on release), tap a mark for its sheet: name, side, radius, Monter / Descendre,
 //   Supprimer (confirmed), "Finir ici", "Rendre active".
 // - Typed coordinates (quick 003, coord_logic.js): the add sheet and the mark sheet edit the
-//   position in degrees + decimal minutes (VHF format), validated live against the race area the
-//   map is clamped to; a valid entry shows the pending marker and eases the map there; the land
+//   position in degrees + decimal minutes (VHF format), validated live against the race area (RACE_AREA,
+//   not the padded map bounds); a valid entry shows the pending marker and eases the map there; the land
 //   check runs on typed positions before "Ajouter" / "Déplacer ici". "＋ Marque (coordonnées)"
 //   opens the add sheet at the boat (else the map centre). The list shows every mark's position.
 // - Every write carries base_version; a 409 shows "Parcours modifié ailleurs — rechargé" and
@@ -422,11 +422,10 @@ export function mount(ctx) {
   }
 
   // -- typed coordinates (quick 003) -----------------------------------------------------------
-  // The race area is the one the map is clamped to (clipped to what the core accepts).
-  const area = () => {
-    const b = map?.getMaxBounds?.();
-    return areaFrom(b ? b.toArray() : null);
-  };
+  // The race area itself (clipped to what the core accepts). Not the map's maxBounds: since
+  // quick 002 those carry a camera margin of up to 1° around the area, for the helm column's
+  // padding, so a mark typed 50 nm outside the area would have passed.
+  const area = () => areaFrom(null);
 
   // Camera offset that puts the target in the middle of the largest map area left free by the
   // side panel and the sheet: above the sheet, or beside it when the sheet is tall.
