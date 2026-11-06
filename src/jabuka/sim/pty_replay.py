@@ -13,9 +13,11 @@ import errno
 import fcntl
 import os
 import pty
+import random
 import sys
 import time
 import tty
+from collections.abc import Sequence
 from pathlib import Path
 
 from jabuka.ingest.fastnet_framing import load_capture
@@ -121,23 +123,80 @@ async def replay_bytes(
     speed: float = 1.0,
     chunk: int = 64,
     wire_rate: float = WIRE_RATE,
+    invert: bool = False,
+    garbage_rate: float = 0.0,
+    silences: Sequence[tuple[float, float]] = (),
+    rng: random.Random | None = None,
 ) -> None:
-    """Write data in chunks paced at wire_rate * speed bytes/s (speed <= 0: as fast as possible)."""
+    """Write data in chunks paced at wire_rate * speed bytes/s (speed <= 0: as fast as possible).
+
+    Fault injection (all off by default):
+    - invert: XOR every byte with 0xFF (what A/B swapped wires look like: zero valid frames).
+    - garbage_rate: probability per chunk of inserting 1-32 random bytes before it (noise).
+    - silences: (start_s, dur_s) windows in replay time (seconds since this call started)
+      during which nothing is written; pacing resumes after the window without bursting.
+    - rng: random.Random for deterministic garbage (default: a fresh unseeded one).
+    """
     loop = asyncio.get_running_loop()
     rate = wire_rate * speed if speed > 0 else 0.0
+    rng = rng if rng is not None else random.Random()
+    pending = sorted((float(s), float(d)) for s, d in silences)
     t0 = loop.time()
+    shift = 0.0  # total silence inserted, so pacing does not catch up in a burst
     sent = 0
     for i in range(0, len(data), chunk):
+        while pending and loop.time() - t0 >= pending[0][0]:
+            _start, dur = pending.pop(0)
+            if dur > 0:
+                await asyncio.sleep(dur)
+                shift += dur
         part = data[i : i + chunk]
+        if invert:
+            part = bytes(b ^ 0xFF for b in part)
+        if garbage_rate > 0 and rng.random() < garbage_rate:
+            part = rng.randbytes(rng.randint(1, 32)) + part
         await feeder.awrite(part)
         sent += len(part)
         if rate > 0:
-            due = t0 + sent / rate
+            due = t0 + shift + sent / rate
             delay = due - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
         else:
             await asyncio.sleep(0)
+
+
+class _UnplugAwareFeeder:
+    """Wraps a PtyFeeder for the CLI's --unplug-at: while unplugged, writes are dropped (as on a
+    real unplugged cable) instead of raising."""
+
+    def __init__(self, feeder: PtyFeeder) -> None:
+        self.feeder = feeder
+        self.dropped = 0
+
+    async def awrite(self, b: bytes) -> None:
+        if self.feeder.master is None:
+            self.dropped += len(b)
+            return
+        try:
+            await self.feeder.awrite(b)
+        except OSError:
+            if self.feeder.master is not None:
+                raise
+            self.dropped += len(b)
+
+
+def _parse_silence(text: str) -> tuple[float, float]:
+    start, sep, dur = text.partition(":")
+    try:
+        if not sep:
+            raise ValueError
+        out = (float(start), float(dur))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected START:DUR seconds, got {text!r}") from None
+    if out[0] < 0 or out[1] < 0:
+        raise argparse.ArgumentTypeError(f"START and DUR must be >= 0, got {text!r}")
+    return out
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -149,19 +208,84 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--link", type=Path, default=None, help="stable symlink to the pty slave")
     p.add_argument("--loop", action="store_true", help="replay forever")
     p.add_argument("--chunk", type=int, default=64)
+    faults = p.add_argument_group("fault injection")
+    faults.add_argument(
+        "--invert", action="store_true", help="XOR every byte with 0xFF (A/B swapped wires)"
+    )
+    faults.add_argument(
+        "--garbage-rate",
+        type=float,
+        default=0.0,
+        metavar="P",
+        help="probability per chunk of inserting 1-32 random bytes (noise)",
+    )
+    faults.add_argument("--seed", type=int, default=None, help="seed for --garbage-rate")
+    faults.add_argument(
+        "--silence",
+        type=_parse_silence,
+        action="append",
+        default=[],
+        metavar="START:DUR",
+        help="write nothing for DUR s starting START s into each pass (repeatable)",
+    )
+    faults.add_argument(
+        "--unplug-at",
+        type=float,
+        default=None,
+        metavar="T",
+        help="close the pty T s after start (reader sees EOF/EIO, --link is removed)",
+    )
+    faults.add_argument(
+        "--replug-after",
+        type=float,
+        default=None,
+        metavar="D",
+        help="reopen a fresh pty D s after --unplug-at (--link re-pointed); default: never",
+    )
     return p
+
+
+async def _unplug(feeder: PtyFeeder, at: float, replug_after: float | None) -> None:
+    await asyncio.sleep(at)
+    feeder.close()
+    print("unplugged", flush=True)
+    if replug_after is None:
+        return
+    await asyncio.sleep(replug_after)
+    feeder.reopen()
+    print(f"replugged {feeder.slave_path}", flush=True)
 
 
 async def _run(args: argparse.Namespace) -> int:
     data = load_capture(args.capture)
+    rng = random.Random(args.seed)
     with PtyFeeder(args.link) as feeder:
         print(feeder.slave_path, flush=True)
         if feeder.link_path is not None:
             print(feeder.link_path, flush=True)
-        while True:
-            await replay_bytes(feeder, data, speed=args.speed, chunk=args.chunk)
-            if not args.loop:
-                break
+        writer = _UnplugAwareFeeder(feeder)
+        unplug_task = None
+        if args.unplug_at is not None:
+            unplug_task = asyncio.create_task(_unplug(feeder, args.unplug_at, args.replug_after))
+        try:
+            while True:
+                await replay_bytes(
+                    writer,  # type: ignore[arg-type]  # duck-typed: only awrite() is used
+                    data,
+                    speed=args.speed,
+                    chunk=args.chunk,
+                    invert=args.invert,
+                    garbage_rate=args.garbage_rate,
+                    silences=args.silence,
+                    rng=rng,
+                )
+                if not args.loop:
+                    break
+            if unplug_task is not None and not unplug_task.done():
+                await unplug_task  # finish the unplug/replug scenario before exiting
+        finally:
+            if unplug_task is not None and not unplug_task.done():
+                unplug_task.cancel()
         # give the reader a moment to drain before the pty disappears
         await asyncio.sleep(0.5)
     return 0
