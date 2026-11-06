@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -73,6 +74,26 @@ def _wrap_pi(a):
     return (np.asarray(a) + math.pi) % (2.0 * math.pi) - math.pi
 
 
+CACHE_MAX = 8  # on-demand geofields (~0.7 MB) and polar grids (~0.6 MB) kept per worker
+
+
+def _lru_get(cache: dict, key: Any) -> Any:
+    val = cache.get(key)
+    if val is not None and isinstance(cache, OrderedDict):
+        cache.move_to_end(key)
+    return val
+
+
+def _lru_put(cache: dict, key: Any, val: Any, cap: int = CACHE_MAX) -> None:
+    """Insert and evict the least recently used entries beyond ``cap`` (03-REVIEW LO-03: one
+    entry per moved mark or efficiency change, never evicted, over 36 h)."""
+    cache[key] = val
+    if isinstance(cache, OrderedDict):
+        cache.move_to_end(key)
+        while len(cache) > cap:
+            cache.popitem(last=False)
+
+
 @dataclass
 class RouterEnv:
     """Everything a routing call needs that does not change between requests."""
@@ -80,8 +101,8 @@ class RouterEnv:
     mask: LandMask
     fields: Fields
     geofields: dict[tuple[float, float, float], GeoField] = field(default_factory=dict)
-    geo_cache: dict[Any, GeoField] = field(default_factory=dict)
-    polar_cache: dict[Any, PolarGrid] = field(default_factory=dict)
+    geo_cache: dict[Any, GeoField] = field(default_factory=OrderedDict)  # LRU, CACHE_MAX
+    polar_cache: dict[Any, PolarGrid] = field(default_factory=OrderedDict)  # LRU, CACHE_MAX
     on_demand_gcell_nm: float = 400.0 / NM_M
     on_demand_mode: str = "any"
 
@@ -97,7 +118,7 @@ class RouterEnv:
         if pre is not None:
             return pre
         ckey = (key, round(self.on_demand_gcell_nm, 6), self.on_demand_mode)
-        geo = self.geo_cache.get(ckey)
+        geo = _lru_get(self.geo_cache, ckey)
         if geo is None:
             x, y = self.frame.to_xy(mark.lat, mark.lon)
             geo = compute_geofield(
@@ -107,16 +128,16 @@ class RouterEnv:
                 self.on_demand_mode,
                 seed_radius_nm=float(mark.radius_nm) + self.on_demand_gcell_nm,
             )
-            self.geo_cache[ckey] = geo
+            _lru_put(self.geo_cache, ckey, geo)
         return geo
 
     def polar_for(self, curves, eff: float, eff_up=None, eff_down=None) -> PolarGrid:
         cv = normalize_curves(curves)
         key = (cv, float(eff), eff_up, eff_down)
-        pg = self.polar_cache.get(key)
+        pg = _lru_get(self.polar_cache, key)
         if pg is None:
             pg = PolarGrid.from_curves(cv, eff, eff_up, eff_down)
-            self.polar_cache[key] = pg
+            _lru_put(self.polar_cache, key, pg)
         return pg
 
 
