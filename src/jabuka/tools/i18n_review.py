@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import jabuka
+from jabuka.common.atomicio import atomic_write_bytes
 
 STATIC = Path(jabuka.__file__).resolve().parent / "web" / "static"
 I18N = STATIC / "i18n.js"
@@ -145,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.out}: {'à jour' if ok else 'PAS À JOUR (relancer sans --check)'}")
         return 0 if ok else 1
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(text, encoding="utf-8")
+    atomic_write_bytes(args.out, text.encode("utf-8"))
     print(f"écrit : {args.out}")
     return 0
 

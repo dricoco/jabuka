@@ -38,6 +38,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from jabuka.common.atomicio import atomic_write_bytes
 from jabuka.tools.rehearsal import (
     BOAT_START_UTC,
     BOAT_TWA,
@@ -78,7 +79,7 @@ def reset_out(out: Path) -> None:
             )
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    (out / MARKER).write_text("jabuka demo data, wiped on every start\n", encoding="utf-8")
+    atomic_write_bytes(out / MARKER, b"jabuka demo data, wiped on every start\n")
 
 
 def build_pack(
