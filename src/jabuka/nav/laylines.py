@@ -18,6 +18,9 @@ the mark, Pitfall 17), x east / y north in nm, velocities in kn (nm/h):
   polar a (slow, or mid-manoeuvre: no spike while the GPS COG swings round after a tack).
 
 Reach legs have no laylines: the primary number is the course to steer (to A, current-corrected).
+On beat/run legs the TWA target follows the leg (up on a beat, down on a run) and a boat reaching
+across the leg gets the current tack's polar heading as its course to steer (the fetch CTS when
+fetching), never the bearing to A, which lies in the no-go zone on a beat.
 Inputs in radians/knots; the result dicts are already in display units (degrees TRUE, kn, nm, s).
 """
 
@@ -181,6 +184,15 @@ def _cts_helm(boat: BoatState, cts: float) -> dict:
     }
 
 
+def _sailable(heading: float, twd: float, leg: str, tack_twa_deg: float) -> bool:
+    """A heading no higher than the target TWA on a beat (outside the no-go zone) and no deeper
+    than it on a run (CR-03)."""
+    off = abs(math.degrees(wrap_pi(heading - twd)))
+    if leg == "beat":
+        return off >= tack_twa_deg - 0.5
+    return off <= tack_twa_deg + 0.5
+
+
 def _track_to_layline(
     d: tuple[float, float], cog: float, g_other: tuple[float, float]
 ) -> float | None:
@@ -278,9 +290,19 @@ def solve(
         if twa_abs is not None
         else ("twa_up" if leg == "beat" else "twa_down")
     )
-    if primary == "cts":
-        res.helm = _cts_helm(boat, course_to_steer(btw, current, bsp or reach_bsp_kn))
-        res.target_bsp_kn = reach_bsp_kn
+    # CR-03: the TWA target follows the leg (never a downwind target on a beat, or the reverse),
+    # and the course to steer on a beat/run leg is a sailable heading: the current tack's polar
+    # heading (or the fetch CTS when fetching, below), never the bearing to the mark, which lies
+    # in the no-go zone on a beat.
+    if leg == "beat" and primary == "twa_down":
+        primary = "twa_up"
+    elif leg == "run" and primary == "twa_up":
+        primary = "twa_down"
+    tack_cts = primary == "cts"
+    if tack_cts:
+        h_tack = wrap_2pi(twd - math.radians(tack_twa) if on_stbd else twd + math.radians(tack_twa))
+        res.helm = _cts_helm(boat, h_tack)
+        res.target_bsp_kn = tack_bsp
     else:
         tgt = targets_eff.up_twa if primary == "twa_up" else targets_eff.down_twa
         res.helm = {
@@ -326,7 +348,11 @@ def solve(
         vmc = math.hypot(*g_cur) if sog is None else max(sog, math.hypot(*g_cur))
         time_h = dtw / vmc if vmc > 0 else math.nan
     if state == "fetching":
-        res.helm["cts_t"] = _r(_deg360(course_to_steer(btw, current, bsp or tack_bsp)), 1)
+        fetch = course_to_steer(btw, current, bsp or tack_bsp)
+        if tack_cts and _sailable(fetch, twd, leg, tack_twa):
+            res.helm = _cts_helm(boat, fetch)
+        else:
+            res.helm["cts_t"] = _r(_deg360(fetch), 1)
     res.ttw_s = time_h * 3600.0
     length = max(1.5 * dtw, MIN_LINE_NM)
     res.layline = {

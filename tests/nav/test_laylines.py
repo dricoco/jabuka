@@ -199,6 +199,65 @@ def test_fetching_gives_the_course_to_steer() -> None:
     assert res.helm["primary"] == "twa_up"
 
 
+def _no_go(cts_deg: float, twd_deg: float = 0.0) -> float:
+    return abs((cts_deg - twd_deg + 180.0) % 360.0 - 180.0)
+
+
+@pytest.mark.parametrize("twa_deg", [90.0, -90.0, 100.0, -80.0])
+def test_beat_leg_reaching_boat_gets_its_tack_heading_not_the_mark(twa_deg: float) -> None:
+    """CR-03: wind from 000, mark due north, boat reaching at TWA ~90: the course to steer is
+    the current tack's close-hauled heading, never the bearing to the mark (head to wind)."""
+    hdg = (0.0 - twa_deg) % 360.0
+    boat = _boat_at(180.0, 5.0, hdg=R(hdg), bsp_kn=7.0)
+    res = solve(boat, _wind(twa_deg=twa_deg), TARGETS, ANCHOR, reach_bsp_kn=7.0)
+    assert res.leg == "beat"
+    assert res.helm["primary"] == "cts"
+    cts = res.helm["cts_t"]
+    assert _no_go(cts) >= TARGETS.up_twa - 0.5  # outside the no-go zone
+    expected = 315.0 if twa_deg > 0 else 45.0  # starboard: TWD - TWA, port: TWD + TWA
+    assert cts == pytest.approx(expected, abs=0.1) and res.helm["target"] == cts
+    # starboard tack heading 270 must head up to 315 (turn right), port 090 to 045 (turn left)
+    assert (res.helm["deviation"] < 0) == (twa_deg > 0)
+    assert res.target_bsp_kn == TARGETS.up_bsp
+
+
+def test_beat_leg_never_shows_a_downwind_target() -> None:
+    """CR-03: right after rounding a leeward mark onto a beat (|TWA| 150, previous primary
+    twa_down) the target is the upwind TWA with a LOFER deviation."""
+    boat = _boat_at(180.0, 5.0, hdg=R(210.0))
+    for prev in (None, "twa_down", "cts", "twa_up"):
+        res = solve(boat, _wind(twa_deg=150.0), TARGETS, ANCHOR, prev_primary=prev)
+        assert res.leg == "beat"
+        assert res.helm["primary"] == "twa_up", prev
+        assert res.helm["target"] == TARGETS.up_twa
+        assert res.helm["deviation"] == pytest.approx(105.0, abs=0.1)  # > 0: LOFER
+        assert res.target_bsp_kn == TARGETS.up_bsp
+
+
+def test_run_leg_never_shows_an_upwind_target_or_a_dead_run_cts() -> None:
+    """CR-03 on a run leg (mark due south, wind from 000): an upwind |TWA| gets the downwind
+    target; a reaching boat gets its gybe heading, not the dead-run bearing to the mark."""
+    boat = _boat_at(0.0, 5.0, hdg=R(315.0))
+    res = solve(boat, _wind(twa_deg=45.0), TARGETS, ANCHOR, prev_primary="twa_up")
+    assert res.leg == "run" and res.helm["primary"] == "twa_down"
+    assert res.helm["target"] == TARGETS.down_twa
+    res = solve(_boat_at(0.0, 5.0, hdg=R(270.0)), _wind(twa_deg=90.0), TARGETS, ANCHOR)
+    assert res.leg == "run" and res.helm["primary"] == "cts"
+    assert res.helm["cts_t"] == pytest.approx(210.0, abs=0.1)  # TWD - 150 on starboard
+    assert _no_go(res.helm["cts_t"]) <= TARGETS.down_twa + 0.5
+
+
+def test_fetching_reaching_boat_on_a_beat_steers_the_fetch_cts() -> None:
+    """Fetching on a beat leg while reaching: the (sailable) course to the mark."""
+    boat = _boat_at(132.0, 3.0, hdg=R(270.0))  # anchor bears 312, TWA 90 on starboard
+    res = solve(boat, _wind(twa_deg=90.0), TARGETS, ANCHOR, prev_leg="beat")
+    assert res.layline["state"] == "fetching"
+    assert res.helm["primary"] == "cts"
+    assert res.helm["cts_t"] == pytest.approx(312.0, abs=0.1)
+    assert res.helm["target"] == res.helm["cts_t"]
+    assert res.helm["deviation"] == pytest.approx(-42.0, abs=0.1)
+
+
 def test_fetching_cts_is_current_corrected() -> None:
     boat = _boat_at(132.0, 3.0, hdg=R(315.0), bsp_kn=6.0)
     res = solve(boat, _wind(), TARGETS, ANCHOR, prev_leg="beat", current_kn=EAST_1KN)
