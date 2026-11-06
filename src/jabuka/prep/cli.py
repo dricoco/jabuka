@@ -1,6 +1,7 @@
 """jabuka-prep: laptop race-pack builder (weather + land), ``python -m jabuka.prep.cli``.
 
-Subcommands: wind, waves, grib FILE, current FILE.nc, land ... (jabuka.prep.land), check.
+Subcommands: wind, waves, grib FILE, current FILE.nc, land ... (jabuka.prep.land), geofields
+(precomputed router pruning fields per mark), check.
 Exit codes: 0 ok, 3 coverage incomplete (files still written), 2 usage/input error.
 """
 
@@ -103,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("check", help="vérifier le pack et la couverture météo")
     _common(p)
+
+    p = sub.add_parser(
+        "geofields", help="champs de distance par l'eau vers chaque marque -> geofields.npz"
+    )
+    p.add_argument("--marks", required=True, help="marks.json (format Phase 2)")
+    p.add_argument("--out", default="var/racepack", help="dossier du pack (avec landmask.npz)")
+    p.add_argument(
+        "--gcell-m", type=float, default=200.0, help="maille du champ en m (défaut %(default)s)"
+    )
 
     sub.add_parser("land", help="masque terre (jabuka.prep.land)", add_help=False)
     return ap
@@ -337,6 +347,65 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return run_check(Path(args.out), args.marks, _window(args))
 
 
+def _cmd_geofields(args: argparse.Namespace) -> int:
+    """One 200 m centre-mode geodesic field per mark, seeded within radius + one coarse cell;
+    written as geofields.npz + sidecar (sha256) next to landmask.npz."""
+    import numpy as np
+
+    from jabuka.prep.wxpack import write_npz
+    from jabuka.route.frame import NM_M
+    from jabuka.route.landmask import LandMask, compute_geofield
+
+    out = Path(args.out)
+    if not (50.0 <= args.gcell_m <= 2000.0):
+        raise PrepError(f"maille invalide : {args.gcell_m} m (50 à 2000)")
+    mask_path = out / "landmask.npz"
+    if not mask_path.is_file():
+        raise PrepError(f"landmask.npz absent de {out} : lancer d'abord « jabuka-prep land build »")
+    try:
+        mask = LandMask.load(mask_path)
+        doc = read_marks_file(args.marks)
+    except ValueError as exc:
+        raise PrepError(str(exc)) from exc
+    g = args.gcell_m / NM_M
+    fields, keys, marks = [], [], []
+    geo0 = None
+    for m in doc.marks.values():
+        t0 = time.perf_counter()
+        x, y = mask.frame.to_xy(m.lat, m.lon)
+        geo = compute_geofield(mask, [(x, y)], g, "centre", seed_radius_nm=m.radius_nm + g)
+        geo0 = geo
+        fields.append(geo.dist.astype(np.float32))
+        keys.append((m.lat, m.lon, m.radius_nm))
+        reach = float(np.isfinite(geo.dist).mean())
+        marks.append({"id": m.id, "name": m.name, "lat": m.lat, "lon": m.lon, "r": m.radius_nm})
+        print(
+            f"Champ {m.name} : {geo.dist.shape[0]}x{geo.dist.shape[1]} mailles, "
+            f"{reach:.0%} atteignables ({time.perf_counter() - t0:.1f} s)"
+        )
+    if geo0 is None:
+        raise PrepError(f"aucune marque dans {args.marks}")
+    path = write_npz(
+        out,
+        "geofields",
+        {
+            "fields": np.stack(fields),
+            "keys": np.array(keys, dtype=np.float64),
+            "x0_nm": np.float64(geo0.x0_nm),
+            "y0_nm": np.float64(geo0.y0_nm),
+            "gcell_nm": np.float64(geo0.gcell_nm),
+        },
+        {
+            "source": f"jabuka-prep geofields ({mask_path.name})",
+            "gcell_m": float(args.gcell_m),
+            "mode": "centre",
+            "marks": marks,
+        },
+    )
+    print(f"Champs : {len(fields)} marques -> {path}")
+    return EXIT_OK
+
+
 def _cmd_land(argv: Sequence[str]) -> int:
     try:
         land = importlib.import_module("jabuka.prep.land")
@@ -358,6 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "grib": _cmd_grib,
         "current": _cmd_current,
         "check": _cmd_check,
+        "geofields": _cmd_geofields,
     }
     try:
         return handlers[args.cmd](args)
