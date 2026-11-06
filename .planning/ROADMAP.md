@@ -76,7 +76,15 @@ Plans:
   4. Every direction is handled as TRUE, with a configurable variation (~+5°E) and heading offset. True wind is computed and damped from AWA/AWS/BSP/HDG when available. When the bus provides nothing, the user types in TWD/TWS read off the B&G displays and the laylines keep working, with a badge showing the active source (LIVE / MANUAL). Within the configured Jabuka radius, heading is flagged untrusted and GPS COG is used instead.
   5. At night the helm view runs in true-black/red mode without spoiling night vision, a lock mode ignores spray and rain touches, and the tablet screen stays awake for the whole race.
 
-**Plans**: TBD
+**Plans:** 5 plans (wave 1: 01; wave 2: 02 ‖ 03 ‖ 04 ‖ 05)
+
+Plans:
+
+- [ ] 02-01-PLAN.md — Helm tracer + every shared seam: live wind → polar targets → laylines → nav WS message → Barre numbers; course A/B + settings REST with atomic persistence; PMTiles tile server + race-pack router; vendored MapLibre 5.24.0/glyphs/sprites + day/night styles + map.js; app shell (diag moved to /diag.html); Pi lock + pyproject declarations; Playwright harness
+- [ ] 02-02-PLAN.md — Laptop race-pack prep: `jabuka-prep-map` (Protomaps extract, seamarks + coastline from Geofabrik, fallback chain, manifest, `--check`), `jabuka-prep-polar` (grid/Expedition/ORC CSV/JSON → polar.json), docs/RACE-PACK.md
+- [ ] 02-03-PLAN.md — Wind & laylines complete: manual TWD/TWS (°M/°T) + LIVE > MANUEL > NONE, TRUE boundary + vector damping + Hercules cross-check, Jabuka zone → COG, sailed tacking angles, set/drift opt-in, actual-track countdown, efficiency up/down, Réglages manual-wind form
+- [ ] 02-04-PLAN.md — Course & marks complete: tap/drag/sheet editing with land warning, reorder/delete/side/radius, "Finir ici", 409 concurrency, kill-safe persistence, auto-advance FSM + banner/Annuler, closed-loop `jabuka-sim --follow`
+- [ ] 02-05-PLAN.md — Helm view complete: red-on-black night mode end to end, full map overlays (course, marks + radii, laylines, boat, seamarks), course-up/north-up, big numbers ≥ 20% vh with PERTE DONNÉES, lock mode, Wake Lock/NoSleep, docs/TABLET-SETUP.md
 **UI hint**: yes
 **Notes**: Includes the PMTiles basemap + seamark extract (prep step) needed for the offline map, and the L2 closed-loop simulator extension so the boat can be steered to its targets. The Jabuka untrusted-heading flag from WIND-07 is also used by the Phase 3 bias estimator, which freezes inside the zone. Tablet WebGL support must be checked early (fallback: Leaflet + protomaps-leaflet).
 
@@ -124,7 +132,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
-| 2. Helm MVP — Laylines, Marks & Map | 0/TBD | Not started | - |
+| 2. Helm MVP — Laylines, Marks & Map | 0/5 | Planned | - |
 | 3. Weather Routing & Tack Advice | 0/TBD | Not started | - |
 | 4. Race Readiness — Hardening & Commissioning | 0/TBD | Not started | - |
 
