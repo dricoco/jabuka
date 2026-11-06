@@ -105,3 +105,28 @@ def test_load_racepack_polar_prefers_valid_polar_json(tmp_path: Path) -> None:
     assert p.source == "racepack:polar.json"
     assert p.name == "mine"
     assert p.speed(12.0, 90.0) == pytest.approx(7.0)
+
+
+def test_polar_needs_a_curve_above_0_kn() -> None:
+    """IN-04: a polar whose only curve is TWS 0 made targets() raise StopIteration every tick."""
+    with pytest.raises(ValueError, match="above 0 kn"):
+        Polar("zero", [(0.0, [(40.0, 0.0), (90.0, 0.0)])])
+    with pytest.raises(ValueError, match="above 0 kn"):
+        polar_from_json({"curves": [[0, [[45, 0], [90, 0]]]]})
+
+
+def test_racepack_polar_that_breaks_targets_falls_back_to_builtin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """IN-04: the racepack smoke check runs targets() like the nav tick does; any failure there
+    gives the builtin polar instead of a nav crash every second."""
+    (tmp_path / "polar.json").write_text('{"curves": [[0, [[45, 0], [90, 0]]]]}')
+    assert load_racepack_polar(tmp_path).source.startswith("builtin:")
+    own = parse_expedition("8 40 5.0 90 6.0 150 5.0\n12 40 6.0 90 7.0 160 6.0", "mine")
+    (tmp_path / "polar.json").write_text(json.dumps(polar_to_json(own)))
+
+    def boom(self, tws_kn):
+        raise StopIteration
+
+    monkeypatch.setattr(Polar, "targets", boom)
+    assert load_racepack_polar(tmp_path).source.startswith("builtin:")
