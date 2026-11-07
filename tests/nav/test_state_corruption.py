@@ -169,3 +169,107 @@ def test_core_shows_the_course_restored_alert(tmp_data_dir: Path, free_udp_port:
     clock = SimClock(start_utc=1_794_600_000.0)
     ctx = CoreContext.create(clock, tmp_data_dir, udp_port=free_udp_port)
     assert COURSE_FROM_BAK in ctx.nav.update()["alerts"]
+
+
+# -- settings.json ---------------------------------------------------------------------------------
+SETTINGS_FROM_BAK = "Réglages restaurés depuis la sauvegarde : vérifier les réglages"
+
+
+def _settings_two_writes(data_dir: Path) -> SettingsStore:
+    st = SettingsStore(data_dir)
+    st.update({"efficiency": 0.85}, base_version=0)
+    st.update({"efficiency": 0.80}, base_version=1)  # settings.json.bak = 0.85, version 1
+    return st
+
+
+def test_settings_garbage_main_restored_from_bak_with_alert(tmp_path: Path) -> None:
+    _settings_two_writes(tmp_path)
+    (tmp_path / "settings.json").write_bytes(GARBAGE)
+    again = SettingsStore(tmp_path)
+    assert again.settings.efficiency == 0.85
+    assert again.version == 1
+    assert again.alerts == [SETTINGS_FROM_BAK]
+
+
+def test_settings_schema_invalid_main_falls_through_to_bak(tmp_path: Path) -> None:
+    _settings_two_writes(tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"version": 5, "settings": {"efficiency": 7}})
+    )
+    again = SettingsStore(tmp_path)
+    assert again.settings.efficiency == 0.85
+    assert again.version == 1
+    assert again.alerts == [SETTINGS_FROM_BAK]
+
+
+def test_settings_both_invalid_gives_defaults_with_illisible(tmp_path: Path) -> None:
+    _settings_two_writes(tmp_path)
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"version": 5, "settings": {"efficiency": 7}})
+    )
+    (tmp_path / "settings.json.bak").write_bytes(GARBAGE)
+    again = SettingsStore(tmp_path)
+    assert again.settings == Settings()
+    assert again.version == 0
+    assert again.alerts == ["Réglages illisibles : valeurs par défaut"]
+
+
+def test_settings_valid_main_loads_unchanged_without_alert(tmp_path: Path) -> None:
+    st = _settings_two_writes(tmp_path)
+    again = SettingsStore(tmp_path)
+    assert again.settings == st.settings
+    assert again.settings.efficiency == 0.80
+    assert again.version == 2
+    assert again.alerts == []
+
+
+# -- wind_manual.json ------------------------------------------------------------------------------
+MANUAL_FROM_BAK = "Vent manuel restauré depuis la sauvegarde : vérifier le vent"
+
+
+def _manual_two_writes(data_dir: Path) -> ManualWindStore:
+    ms = ManualWindStore(data_dir)
+    ms.set(160.0, 12.0, "T", 4.7, None)
+    ms.set(170.0, 14.0, "T", 4.7, None)  # wind_manual.json.bak = 160°
+    return ms
+
+
+def test_manual_garbage_main_restored_from_bak_with_alert(tmp_path: Path) -> None:
+    _manual_two_writes(tmp_path)
+    (tmp_path / "wind_manual.json").write_bytes(GARBAGE)
+    again = ManualWindStore(tmp_path)
+    assert again.entry is not None
+    assert again.entry.twd_t_deg == 160.0
+    assert again.alerts == [MANUAL_FROM_BAK]
+
+
+def test_manual_schema_invalid_main_falls_through_to_bak(tmp_path: Path) -> None:
+    _manual_two_writes(tmp_path)
+    (tmp_path / "wind_manual.json").write_text('{"twd_t_deg": 999}')
+    again = ManualWindStore(tmp_path)
+    assert again.entry is not None
+    assert again.entry.twd_t_deg == 160.0
+    assert again.alerts == [MANUAL_FROM_BAK]
+
+
+def test_manual_schema_invalid_main_without_bak_is_ignored_with_illisible(tmp_path: Path) -> None:
+    (tmp_path / "wind_manual.json").write_text('{"twd_t_deg": 999}')
+    again = ManualWindStore(tmp_path)
+    assert again.entry is None
+    assert again.alerts == ["Vent manuel illisible : ignoré"]
+
+
+def test_manual_cleared_is_silent(tmp_path: Path) -> None:
+    ms = _manual_two_writes(tmp_path)
+    ms.clear()  # wind_manual.json = {}
+    again = ManualWindStore(tmp_path)
+    assert again.entry is None
+    assert again.alerts == []
+
+
+def test_manual_valid_main_loads_unchanged_without_alert(tmp_path: Path) -> None:
+    ms = _manual_two_writes(tmp_path)
+    again = ManualWindStore(tmp_path)
+    assert again.entry == ms.entry
+    assert again.entry is not None and again.entry.twd_t_deg == 170.0
+    assert again.alerts == []
