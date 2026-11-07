@@ -298,3 +298,37 @@ def test_run_soak_refuses_system_scope_without_a_code_identity(
     assert not list(out.iterdir())  # the run dir it created is gone
     verbs = {json.loads(ln)[1] for ln in log.read_text().splitlines()}
     assert verbs <= {"cat", "show"}, verbs
+
+
+# -- the docs quote the one fingerprint definition (plan 04-04 Task 3) ----------------------------
+DOCS = REPO / "docs"
+
+
+def _doc(name: str) -> str:
+    return (DOCS / name).read_text(encoding="utf-8")
+
+
+def test_docs_quote_the_fingerprint_command() -> None:
+    for name in ("SPARE-SD.md", "FREEZE.md", "SOAK.md"):
+        assert rep.FINGERPRINT_SH in _doc(name), name
+    pi_dir = "/opt/jabuka/venv/lib/python3.13/site-packages/jabuka"
+    assert f"cd {pi_dir} && {rep.FINGERPRINT_SH}" in _doc("SPARE-SD.md")
+    assert f"cd {pi_dir} && {rep.FINGERPRINT_SH}" in _doc("SOAK.md")
+
+
+def test_pi_soak_procedure_describes_the_code_identity() -> None:
+    text = _doc("SOAK.md")
+    pi = text[text.index("## Soak sur le Pi 3B") : text.index("## Budgets Pi à confirmer")]
+    for word in ("code.sha256", "sans .git", "jabuka-soak: code", "tmpfs", "--logs-fs none"):
+        assert word in pi, word
+    step2 = pi[pi.index("2. Lancer") : pi.index("3. ")]
+    assert "--logs-fs loop:512M" in step2
+    cleanup = text[text.index("- **Nettoyage, toujours**") : text.index("- **Chien de garde**")]
+    assert cleanup.index("relancées") < cleanup.index("démontage")
+    assert "--systemd-cleanup" in cleanup and "oom_score_adj" in cleanup
+    freeze = _doc("FREEZE.md")
+    for word in ("empreinte", "code.sha256", "## Empreinte du code", "différent de src/jabuka"):
+        assert word in freeze, word
+    pi_setup = (REPO / "deploy" / "PI-SETUP.md").read_text(encoding="utf-8")
+    sec3 = pi_setup[pi_setup.index("## 3. Install") : pi_setup.index("## 4.")]
+    assert "code.sha256" in sec3 and "--exclude '.git'" in sec3
