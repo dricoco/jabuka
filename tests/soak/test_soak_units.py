@@ -276,3 +276,94 @@ def test_traceback_classifier(tmp_path: Path) -> None:
     assert [e["t_wall"] for e in exp] == [105.0]
     # inside a window but no rule for that kind, and ENOSPC outside every window: unexpected
     assert [u["t_wall"] for u in unexp] == [200.0, 300.0]
+
+
+# -- measured vs budget table (plan 04-03) -------------------------------------------------------
+def _samples() -> list:
+    from jabuka.soak.probes import Sample
+
+    out = []
+    for i in range(0, 4 * 3600 + 1, 60):  # one core segment over 4 sim-h, worker beside it
+        t = float(i)
+        out.append(Sample(1000.0 + i / 60, t, "core", 11, 70_000 + i // 36, 40, 9, i * 0.002))
+        out.append(Sample(1000.0 + i / 60, t, "worker", 12, 150_000, 12, 1, i * 0.001))
+        out.append(Sample(1000.0 + i / 60, t, "ingest", 13, 30_000, 10, 3, i * 0.0005))
+    return out
+
+
+def test_budget_table_lists_each_measure_next_to_its_context_budget() -> None:
+    from jabuka.soak import probes
+
+    s = _samples()
+    r = _report(4.2)
+    r["budgets"] = {"bus": 10.0, "gps": 10.0, "process": 30.0, "power": 60.0, "route": 60.0}
+    r["budgets"].update({"disk_resume": 30.0})
+    r["faults"] += [
+        {"id": "f02", "kind": "bus-silent", "recovery_s": 0.5, "budget_s": 10.0, "ok": True},
+        {"id": "f03", "kind": "unplug", "recovery_s": 1.5, "budget_s": 10.0, "ok": True},
+        {"id": "f04", "kind": "power-pull", "recovery_s": 0.6, "budget_s": 60.0, "ok": True},
+        {"id": "f05", "kind": "watchdog-hang", "recovery_s": 36.0, "budget_s": 60.0, "ok": True},
+    ]
+    r["checks"].update(
+        {
+            "rss_core": probes.max_rss_check(s, "core", 250.0),
+            "rss_worker": probes.max_rss_check(s, "worker", 250.0),
+            "leak_slope": probes.leak_check(
+                s, "core", budget_mb_36h=20.0, min_segment_s=3 * 3600.0, warmup_s=1800.0
+            ),
+            "fd_growth": probes.growth_check(s, ("core", "ingest"), "fds", 8.0, 1800.0),
+            "thread_growth": probes.growth_check(s, ("core", "ingest"), "threads", 4.0, 1800.0),
+            "cpu_per_sim_s": probes.cpu_check(s, "core", 0.10),
+            "tick_ratio": rep.check(True, 0.99, 0.95),
+            "log_disk": rep.check(True, 30 * 1024 * 1024, 64 * 1024 * 1024, "state ok"),
+            "tracebacks": rep.check(True, 0, 0, ""),
+            "land": rep.check(True, 40, 0, "40 adopted routes re-validated"),
+        }
+    )
+    r["routes"] = [{"version": 1, "land_ok": True}, {"version": 2, "land_ok": True}]
+    rows = {row["item"]: row for row in rep.budget_rows(rep.finalize(r))}
+    bus = rows["recovery bus (s)"]
+    assert bus["measured"] == "worst 1.5, p95 1.5 (2 faults)" and bus["budget"] == "10"
+    assert bus["ok"] is True
+    assert rows["recovery process restart (s)"]["measured"].startswith("worst 4.2")
+    assert rows["recovery watchdog hang (s)"]["budget"] == "60"  # WatchdogSec + process
+    assert rows["recovery power pull (s)"]["budget"] == "60"
+    assert rows["recovery GPS (s)"]["measured"] == "no fault"
+    assert rows["max RSS core (MB)"]["measured"] == "68.8"
+    assert rows["max RSS worker (MB)"]["measured"] == "146.5"
+    leak = rows["leak slope core (MB/36 h)"]
+    assert leak["ok"] is True and float(leak["measured"]) == pytest.approx(3.52, abs=0.05)
+    assert rows["CPU per sim s (CPU s)"]["budget"] == "0.1"
+    assert rows["log usage (MB)"]["measured"] == "30" and rows["log usage (MB)"]["budget"] == "64"
+    assert rows["land crossings"]["measured"] == "0 of 2 routes"
+    assert rows["unexpected tracebacks"]["measured"] == "0"
+    assert rows["tick ratio"]["budget"] == "≥ 0.95"
+    md = rep.render_md(rep.finalize(r))
+    assert "## Mesures et budgets" in md
+    assert "| recovery bus (s) | worst 1.5, p95 1.5 (2 faults) | 10 | oui |" in md
+
+
+def test_logs_fs_loop_is_capped_at_1g() -> None:
+    assert parse_logs_fs("loop:512M") == ("loop", 512 * 1024 * 1024)
+    assert parse_logs_fs("loop:1G") == ("loop", 1024**3)
+    with pytest.raises(ValueError, match="1G"):
+        parse_logs_fs("loop:2G")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="bash wrapper")
+def test_soak_sh_refuses_system_scope_without_root(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    if os.geteuid() == 0:
+        pytest.skip("needs a non-root user")
+    for flags in (["--systemd", "system"], ["--systemd=system"]):
+        r = subprocess.run(
+            ["bash", str(REPO / "scripts" / "soak.sh"), *flags, "--scenario", "tracer"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode == 2, r.stdout + r.stderr
+        err = [ln for ln in r.stderr.splitlines() if ln.strip()]
+        assert len(err) == 1 and "sudo" in err[0], r.stderr
