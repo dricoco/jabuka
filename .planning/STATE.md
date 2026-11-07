@@ -4,10 +4,10 @@ current_phase: 04
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
 stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-07T20:16:34.485Z"
+last_updated: "2026-11-07T20:32:57.450Z"
 last_activity: 2026-11-07
 last_activity_desc: Resumed after crash; merged 04-01, quick-002, quick-003; master gate green (1464 passed x2)
-state_head: cf2be6085a64e74087b9990f532ac4c390a1cbd6
+state_head: fdb0bb9453cc433617b617316786a4b957df16f2
 progress:
   total_phases: 4
   completed_phases: 0
@@ -84,6 +84,7 @@ Recent decisions affecting current work:
 | 5 | STL support tablette X35 (v5) + boîte tablette dans stl/ | 2026-11-07 | b831ec3 | — |
 | 6 | Sources FreeCAD support + boîte tablette dans cad/ | 2026-11-07 | d8a1c1d | — |
 | 7 | Jeu queue d'aronde support X35 0.6 -> 0.8 mm/flanc | 2026-11-07 | cf2be60 | — |
+| 8 | Support X35 : écrous M6 captifs au lieu d'inserts | 2026-11-07 | fdb0bb9 | — |
 
 ### Blockers/Concerns
 
