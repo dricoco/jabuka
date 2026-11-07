@@ -3,6 +3,7 @@
 # Local frame: x = width (same as mount x), y = 0 on the VESA face (back), +y towards the
 # screen/helmsman, z = up, (0,0,0) = VESA centre = box centre. Units mm.
 import os
+import math
 import FreeCAD as App
 import Part
 from FreeCAD import Vector as V
@@ -42,8 +43,10 @@ USBC_IN_X = -1.5
 SLOT_X = (USB_A_X, USBC_IN_X)    # cap slots: USB-A -> tablet, USB-C In/Out <- boat charging (pass-through to test)
 
 VESA = 100.0
-R_M3_INS, D_M3_INS = 2.05, 6.0
-R_M4_INS, D_M4_INS = 2.8, 8.0
+# captive hex nuts (no heat-set inserts): bore radius, nut pocket width (across flats + 0.4), pocket height, wall above nut
+R_M3, N3_W, N3_T = 1.7, 5.9, 2.6
+R_M4, N4_W, N4_T = 2.25, 7.4, 3.6
+N_WALL = 3.5
 
 
 def box(x0, x1, y0, y1, z0, z1):
@@ -66,6 +69,12 @@ def csk(x, y_face, z, d_out, r_hole=1.7, r_head=3.1, L=12):
     cone = Part.makeCone(r_head, r_hole, r_head - r_hole, V(x, y_face, z), V(0, -d_out, 0))
     ext = cyl(r_head, 2, V(x, y_face, z), V(0, d_out, 0))
     return h.fuse(cone).fuse(ext)
+
+
+def nut_slot_x(x, pw, y0, y1, z, w):
+    """nut pocket at (x, z) between y0..y1, slid in along x from the bank cavity (|x| < pw)"""
+    xo, xi = math.copysign(abs(x) + w / 2 + 0.5, x), math.copysign(pw - 1.0, x)
+    return box(min(xo, xi), max(xo, xi), y0, y1, z - w / 2, z + w / 2)
 
 
 # ---- derived ----
@@ -102,7 +111,10 @@ def build():
         body = body.cut(cyl(2.0, 20, V(xd, (Y_B1 + Y_RIM) / 2, -OZ - 1), V(0, 0, 1)))       # drain holes
     for x in FR_X:
         for z in (-Z_SCREW, Z_SCREW):
-            body = body.cut(cyl(R_M3_INS, D_M3_INS, V(x, Y_RIM - D_M3_INS, z), V(0, 1, 0)))
+            body = body.cut(cyl(R_M3, 9.0, V(x, Y_RIM - 9.0, z), V(0, 1, 0)))          # M3 bore, frame screws
+            zo, zi = math.copysign(Z_SCREW + 3.35, z), math.copysign(PZ - 1.0, z)
+            body = body.cut(box(x - N3_W / 2, x + N3_W / 2, Y_RIM - N_WALL - N3_T, Y_RIM - N_WALL,
+                                min(zo, zi), max(zo, zi)))                              # M3 nut slot, opens into the tablet pocket
     for x in (-VESA / 2, VESA / 2):
         for z in (-75.0, 75.0):
             body = body.cut(csk(x, Y_B1, z, 1, r_hole=2.25, r_head=4.4, L=8))   # M4 csk into pod
@@ -133,10 +145,15 @@ def build():
     pod = pod.cut(box(-pw, pw, MOD_SKIN, MOD_D + 1, -OZ - 1, OZ - 3))      # open to body side and downwards
     for x in (-VESA / 2, VESA / 2):
         for z in (-VESA / 2, VESA / 2):
-            pod = pod.cut(cyl(R_M4_INS, D_M4_INS, V(x, -0.01, z), V(0, 1, 0)))         # VESA 100 inserts
+            pod = pod.cut(cyl(R_M4, 12.0, V(x, -0.01, z), V(0, 1, 0)))                # VESA 100 bore
+            pod = pod.cut(nut_slot_x(x, pw, N_WALL, N_WALL + N4_T, z, N4_W))          # M4 nut, opens into the bank cavity
         for z in (-75.0, 75.0):
-            pod = pod.cut(cyl(R_M4_INS, D_M4_INS, V(x, MOD_D - D_M4_INS, z), V(0, 1, 0)))  # body bolts
-        pod = pod.cut(cyl(R_M3_INS, D_M3_INS, V(x, 7.0, -OZ - 0.01), V(0, 0, 1)))     # cap inserts
+            pod = pod.cut(cyl(R_M4, 10.0, V(x, MOD_D - 10.0, z), V(0, 1, 0)))         # body bolt bore
+            pod = pod.cut(nut_slot_x(x, pw, MOD_D - N_WALL - N4_T, MOD_D - N_WALL, z, N4_W))
+        pod = pod.cut(cyl(R_M3, 10.0, V(x, 7.0, -OZ - 0.01), V(0, 0, 1)))             # cap screw bore
+        xo, xi = math.copysign(abs(x) + N3_W / 2 + 0.5, x), math.copysign(pw - 1.0, x)
+        pod = pod.cut(box(min(xo, xi), max(xo, xi), 7.0 - N3_W / 2, 7.0 + N3_W / 2,
+                          -OZ + N_WALL, -OZ + N_WALL + N3_T))                         # M3 nut slot, opens into the bank cavity
     parts["Module_powerbank"] = pod
 
     # ---------------- bottom cap (holds the inverted power bank, cables exit down) ----------------
