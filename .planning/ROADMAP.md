@@ -132,15 +132,15 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 3/5 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05)
+**Plans:** 5/5 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05)
 
 Plans:
 **Wave 1**
 
 - [x] 04-01-PLAN.md — Soak harness: `jabuka-soak` (real ingest on a pty, core under SimClock ~60×, router worker, fake gpsd, closed-loop synthetic boat), supervisor shim mirroring the units' restart/watchdog policy, the full CONTEXT fault catalogue plus a GPS-clock leg, tablet WS client with recovery budgets and route land re-validation, memory/fd/thread/CPU/log/disk checks, a CI soak in the normal gate, `scripts/soak.sh`, docs/SOAK.md, and the fixes the soak finds
 - [x] 04-02-PLAN.md — French commissioning runbook for 12–13 Nov (docs/COMMISSIONING.md + Slovenian skipper card), `scripts/commissioning-rehearsal.sh` dry run against a replayed capture and the synthetic boat (PASS/FAIL/HUMAN per step), docs bound to the code by tests, docs/FREEZE.md + `scripts/freeze-check.sh`, docs/SPARE-SD.md (clone, verification, swap at sea, optional overlay FS)
-- [ ] 04-04-PLAN.md — Gap closure (freeze path + soak safety): the soak report records a sha256 fingerprint of the jabuka package (and unit files) the units actually ran, and freeze-check F3/F4 accept a git-less Pi report only when it equals HEAD (VERIFICATION gap, WR-03). The harness warns or refuses at start without a code identity, refuses a tmpfs log fs in system scope (WR-02), and its cleanup restarts production before unmounting and is retryable (WR-01). SOAK/FREEZE/SPARE-SD/PI-SETUP docs updated
-- [ ] 04-05-PLAN.md — Gap closure (race-path robustness): course/settings/manual wind restored from .bak raise a visible "restauré" alert, and a schema-invalid main falls through to a valid .bak (WR-04). A routing cycle lost to a recycled wedged pool counts as a failure, so the route turns stale and is withdrawn on a repeated wedge (WR-05)
+- [x] 04-04-PLAN.md — Gap closure (freeze path + soak safety): the soak report records a sha256 fingerprint of the jabuka package (and unit files) the units actually ran, and freeze-check F3/F4 accept a git-less Pi report only when it equals HEAD (VERIFICATION gap, WR-03). The harness warns or refuses at start without a code identity, refuses a tmpfs log fs in system scope (WR-02), and its cleanup restarts production before unmounting and is retryable (WR-01). SOAK/FREEZE/SPARE-SD/PI-SETUP docs updated
+- [x] 04-05-PLAN.md — Gap closure (race-path robustness): course/settings/manual wind restored from .bak raise a visible "restauré" alert, and a schema-invalid main falls through to a valid .bak (WR-04). A routing cycle lost to a recycled wedged pool counts as a failure, so the route turns stale and is withdrawn on a repeated wedge (WR-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -158,7 +158,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 3/3 | In Progress|  |
+| 4. Race Readiness — Hardening & Commissioning | 5/5 | In Progress|  |
 
 ---
 *Roadmap created: 2026-11-06*
