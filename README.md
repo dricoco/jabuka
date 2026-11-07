@@ -8,6 +8,9 @@ diagnostics page (later: helm view, laylines, routing) over Wi-Fi.
 Phase 1 is the data backbone: ingest, core state store, logs, replay/simulation and the bus
 test kit.
 
+Installation sur le Raspberry Pi : voir [docs/INSTALL-PI.md](docs/INSTALL-PI.md) (guide complet
+en français, de la carte SD vierge à la tablette).
+
 ## Dev setup
 
 Requirements: `uv` (0.6+), Python 3.14 for the main venv and `/usr/bin/python3.13` (the Pi runs 3.13).
