@@ -4,10 +4,10 @@ current_phase: 4
 current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
 stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-07T00:00:00Z"
+last_updated: "2026-11-07T09:25:49.444Z"
 last_activity: 2026-11-07
 last_activity_desc: Resumed after crash; merged 04-01, quick-002, quick-003; master gate green (1464 passed x2)
-state_head: 69c3f736a9aa3ecd604e4b162d27f2deeaff0d46
+state_head: 5d02b525023214387220b0064a9a7e1fd7ad3458
 progress:
   total_phases: 4
   completed_phases: 0
@@ -78,6 +78,7 @@ Recent decisions affecting current work:
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 261107-1ow | Heavy-weather polar reduction (18→25 kn, 5 %, Réglages) | 2026-11-07 | 995eb1c | [261107-1ow-heavy-weather-polar-reduction](./quick/261107-1ow-heavy-weather-polar-reduction/) |
+| 2 | Night map: land/islands visible (toRed applied twice; coastline added) | 2026-11-07 | 5d02b52 | — |
 
 ### Blockers/Concerns
 
