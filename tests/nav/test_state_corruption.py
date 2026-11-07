@@ -115,7 +115,7 @@ def test_load_json_status_validate_main_and_missing(tmp_path: Path) -> None:
     )
 
 
-# -- course.json ------------------------------------------------------------------------------------
+# -- course.json -----------------------------------------------------------------------------------
 def _course_two_writes(data_dir: Path) -> CourseStore:
     cs = CourseStore(data_dir)
     cs.select("B")  # version 1, active 1

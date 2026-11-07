@@ -344,6 +344,7 @@ Terms chosen (to confirm first):
 | `srv.settingsUnreadable` | Réglages illisibles : valeurs par défaut | Settings unreadable: defaults used | Nastavitve neberljive: privzete vrednosti |
 | `srv.manualUnreadable` | Vent manuel illisible : ignoré | Manual wind unreadable: ignored | Ročni veter neberljiv: prezrt |
 | `srv.courseUnreadable` | Parcours illisible : Parcours A par défaut | Course unreadable: Course A used | Proga neberljiva: privzeta proga A |
+| `srv.courseFromBak` | Parcours restauré depuis la sauvegarde : vérifier la marque active | Course restored from backup: check the active mark | Proga obnovljena iz varnostne kopije: preveri aktivno bojo |
 | `srv.courseWrite` | Écriture du parcours impossible | Cannot write the course | Proge ni mogoče zapisati |
 | `srv.routeRestore` | Route sauvegardée illisible : ignorée | Saved route unreadable: ignored | Shranjena pot neberljiva: prezrta |
 | `srv.packChanged` | PACK DE COURSE MODIFIÉ : redémarrer jabuka-core | RACE PACK CHANGED: restart jabuka-core | PAKET REGATE SPREMENJEN: znova zaženi jabuka-core |
