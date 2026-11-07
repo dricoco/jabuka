@@ -78,6 +78,57 @@ def test_userns_probe_follows_unshare(tmp_path: Path, monkeypatch) -> None:
     assert soak.userns_available() is False
 
 
+class _FinishedCourseHarness:
+    """04-03 full-run finding (f92 clock-jump): the boat finished the course inside the fault
+    window, the route state became "no_course" and stayed there until the run loop's course
+    upkeep (which only ran between faults) selected the next template: the fault waited for a
+    route that no router could compute."""
+
+    def __init__(self) -> None:
+        import threading
+
+        class Sc:
+            def budget(self, key: str) -> float:
+                return 1.5
+
+        class Tablet:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.routes: list[dict] = []
+                self.last_nav = {"route": {"state": "no_course"}, "course": {"finished": True}}
+
+            def routes_after(self, t: float) -> list[dict]:
+                return [r for r in self.routes if r["t_wall"] >= t]
+
+            def route_block(self) -> dict:
+                return dict(self.last_nav["route"])
+
+        self.sc = Sc()
+        self.tablet = Tablet()
+        self.upkeeps = 0
+
+    def poll_abort(self) -> None:
+        pass
+
+    def course_upkeep(self) -> None:
+        import time
+
+        if self.tablet.last_nav["course"]["finished"]:
+            self.upkeeps += 1
+            self.tablet.last_nav = {"route": {"state": "ok"}, "course": {"finished": False}}
+            self.tablet.routes.append({"version": 206, "t_wall": time.time()})
+
+
+def test_route_wait_selects_the_next_course_when_the_boat_finished_during_a_fault() -> None:
+    import time
+
+    h = _FinishedCourseHarness()
+    rec: dict = {"notes": ""}
+    assert faults._route_after(h, rec, time.time(), 205)  # type: ignore[arg-type]
+    assert rec["route_version"] == 206 and h.upkeeps == 1
+    assert "course finished" in rec["notes"]
+
+
 class _NoTmpfs:
     tmpfs = False
 
