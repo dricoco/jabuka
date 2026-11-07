@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 Phase: 4 (Race Readiness — Hardening & Commissioning) — EXECUTING
 Plan: 04-01 and 04-02 complete; 04-03 (Pi soak) next
 Status: Phases 1–3 executed; quick 001–003 done; master gate green 2026-11-07
-Last activity: 2026-11-07 — resumed after a PC crash, merged 04-01 + quick-002 + quick-003 (one post-merge fix: typed marks checked against RACE_AREA)
+Last activity: 2026-11-07 — Completed quick task 261107-1ow: heavy-weather polar reduction; master gate 1512 passed ×2
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -72,6 +72,12 @@ Recent decisions affecting current work:
 ### Pending Todos
 
 - [docs, minor] Fiche réglages débutant et calibration instruments (.planning/todos/pending/2026-11-06-fiche-reglages-debutant-et-calibration-instruments.md)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 261107-1ow | Heavy-weather polar reduction (18→25 kn, 5 %, Réglages) | 2026-11-07 | 995eb1c | [261107-1ow-heavy-weather-polar-reduction](./quick/261107-1ow-heavy-weather-polar-reduction/) |
 
 ### Blockers/Concerns
 
