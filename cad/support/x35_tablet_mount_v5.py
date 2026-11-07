@@ -52,6 +52,7 @@ VESA_T = 6.0
 TILT_ARM = 35.0      # tilt axis -> back of VESA plate
 TILT_MAX = 15.0
 YAW_MAX = 45.0       # physical stop
+STEM_SWEEP = 76.0    # half angle of the fwd stop-ring cut-out (yaw 45 + stem half width 24 + margin)
 N_TEETH = 24         # Hirth, 15 deg steps
 Z_Y = H_T - 130.0    # yaw mating plane
 
@@ -282,7 +283,10 @@ def build():
     wedge = wedge.extrude(V(0, 0, 1)).copy()
     wedge = baked(Part.Face(Part.makePolygon([V(0, YA, Z_Y - 3)] + [V(60 * math.cos(math.radians(a)), YA + 60 * math.sin(math.radians(a)), Z_Y - 3)
                   for a in (a0, (a0 + a1) / 2 - 20, (a0 + a1) / 2, (a0 + a1) / 2 + 20, a1)] + [V(0, YA, Z_Y - 3)])).extrude(V(0, 0, 20)), Placement())
-    col = col.fuse(ring.cut(wedge))
+    f0, f1 = 270 - STEM_SWEEP, 270 + STEM_SWEEP                                     # fwd sector swept by the tower stem
+    wedge_f = Part.Face(Part.makePolygon([V(0, YA, Z_Y - 3)] + [V(60 * math.cos(math.radians(a)), YA + 60 * math.sin(math.radians(a)), Z_Y - 3)
+                        for a in (f0, (f0 + f1) / 2 - 40, (f0 + f1) / 2, (f0 + f1) / 2 + 40, f1)] + [V(0, YA, Z_Y - 3)])).extrude(V(0, 0, 20))
+    col = col.fuse(ring.cut(wedge).cut(wedge_f))                                       # ring kept only at the two stop sectors
     col = col.cut(cyl(4.25, 60, V(0, YA, Z_Y - 50)))                                   # M8 yaw bolt
     col = col.cut(hexprism(13, 7, V(0, YA, Z_Y - 32), V(0, 0, 1)))                    # nut pocket
     col = col.cut(box(-7.7, 40, YA - 6.8, YA + 6.8, Z_Y - 32, Z_Y - 25))              # nut insert slot (+x)
@@ -295,7 +299,7 @@ def build():
     tw = hirth(28, 3.0, 14, V(0, YA, Z_Y), V(0, 0, -1), twist=180.0 / N_TEETH)
     tw = tw.fuse(box(-6, 6, YA + 27.5, YA + 36, Z_Y + 1.8, Z_Y + 15))                   # yaw stop lug (aft)
     tw = tw.fuse(box(-14, 14, YA - 41, YA - 17, Z_Y + 17, H_T + 36))                  # stem (fwd of axis, above stop ring)
-    tw = tw.fuse(box(-14, 14, YA - 27, YA - 17, Z_Y + 2, Z_Y + 18))                   # stem root on disc
+    tw = tw.fuse(box(-14, 14, YA - 41, YA - 17, Z_Y + 2, Z_Y + 18))                   # stem root: full stem section down onto the disc
     for zs in (1, -1):                                                                # tilt stop blocks
         z0, z1 = sorted((H_T + zs * 17, H_T + zs * 35))
         tw = tw.fuse(box(13, 28, YA - 41, YA - 24, z0, z1))
