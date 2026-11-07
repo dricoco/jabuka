@@ -4,10 +4,10 @@ current_phase: 4
 current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
 stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-07T16:51:03.594Z"
+last_updated: "2026-11-07T17:00:04.221Z"
 last_activity: 2026-11-07
 last_activity_desc: Resumed after crash; merged 04-01, quick-002, quick-003; master gate green (1464 passed x2)
-state_head: b831ec3bc9bbad25ad8ce13fe87765245c1b96f0
+state_head: d8a1c1d157c882ace67a721990bf823d0c5a26ff
 progress:
   total_phases: 4
   completed_phases: 0
@@ -82,6 +82,7 @@ Recent decisions affecting current work:
 | 3 | Map: boat hull icon on top + live heading ray | 2026-11-07 | 2ea6847 | — |
 | 261107-i6x | Guide d'installation FR du Pi 3B (docs/INSTALL-PI.md) + lien README | 2026-11-07 | 24c87d0 | [261107-i6x-guide-d-installation-fr-raspberry-pi-3b-](./quick/261107-i6x-guide-d-installation-fr-raspberry-pi-3b-/) |
 | 5 | STL support tablette X35 (v5) + boîte tablette dans stl/ | 2026-11-07 | b831ec3 | — |
+| 6 | Sources FreeCAD support + boîte tablette dans cad/ | 2026-11-07 | d8a1c1d | — |
 
 ### Blockers/Concerns
 
