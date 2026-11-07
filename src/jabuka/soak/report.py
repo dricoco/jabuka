@@ -251,6 +251,105 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+# (row label, fault kinds, budget key; None: each fault's own budget_s, e.g. WatchdogSec + process)
+RECOVERY_CLASSES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
+    ("recovery bus (s)", ("bus-silent", "garbage", "noise", "unplug"), "bus"),
+    ("recovery GPS (s)", ("gps-loss",), "gps"),
+    ("recovery process restart (s)", ("kill-core", "kill-ingest", "sigterm-storm"), "process"),
+    ("recovery watchdog hang (s)", ("watchdog-hang",), None),
+    ("recovery power pull (s)", ("power-pull",), "power"),
+    (
+        "route after fault (s)",
+        ("kill-worker", "clock-jump", "course-change", "stay-toggle"),
+        "route",
+    ),
+    ("restart with a short GRIB (s)", ("grib-gap",), "process"),
+    ("log writes resume after disk full (s)", ("disk-full",), "disk_resume"),
+)
+
+
+def _num(v: Any, nd: int = 3) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, float):
+        return f"{round(v, nd):g}"
+    return str(v)
+
+
+def _p95(xs: list[float]) -> float:
+    s = sorted(xs)
+    return s[max(0, -(-95 * len(s) // 100) - 1)]  # nearest rank
+
+
+def _row(item: str, measured: str, budget: str, ok: bool | None) -> dict[str, Any]:
+    return {"item": item, "measured": measured, "budget": budget, "ok": ok}
+
+
+def budget_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The measured value next to each CONTEXT budget (report.md "Mesures et budgets")."""
+    budgets = report.get("budgets") or {}
+    faults = report.get("faults") or []
+    checks = report.get("checks") or {}
+    rows: list[dict[str, Any]] = []
+    for label, kinds, key in RECOVERY_CLASSES:
+        fs = [f for f in faults if f.get("kind") in kinds]
+        if key is not None:
+            b = budgets.get(key)
+        else:
+            b = max((f["budget_s"] for f in fs if f.get("budget_s") is not None), default=None)
+        if not fs:
+            rows.append(_row(label, "no fault", _num(b), None))
+            continue
+        rec = [float(f["recovery_s"]) for f in fs if f.get("recovery_s") is not None]
+        missing = len(fs) - len(rec)
+        measured = (
+            f"worst {_num(max(rec), 2)}, p95 {_num(_p95(rec), 2)} ({len(fs)} faults)"
+            if rec
+            else f"none recovered ({len(fs)} faults)"
+        )
+        if missing and rec:
+            measured += f", {missing} without recovery"
+        rows.append(_row(label, measured, _num(b), all(fault_ok(f) for f in fs)))
+
+    def from_check(item: str, name: str, *, scale: float = 1.0, fmt: int = 3, ge: bool = False):
+        c = checks.get(name) or {}
+        v, b = c.get("value"), c.get("budget")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            v = v / scale
+        if isinstance(b, (int, float)) and not isinstance(b, bool):
+            b = b / scale
+        measured = _num(float(v), fmt) if isinstance(v, (int, float)) else str(c.get("detail"))
+        budget = ("≥ " if ge else "") + _num(b if b is None else float(b), fmt)
+        rows.append(_row(item, measured, budget, c.get("ok")))
+
+    from_check("max RSS core (MB)", "rss_core", fmt=1)
+    from_check("max RSS worker (MB)", "rss_worker", fmt=1)
+    leak = checks.get("leak_slope") or {}
+    from_check("leak slope core (MB/36 h)", "leak_slope", fmt=2)
+    w = leak.get("worker") or {}
+    if w:
+        rows.append(
+            _row(
+                "leak slope worker (MB/36 h)",
+                _num(w.get("value"), 2) if w.get("value") is not None else str(w.get("detail")),
+                _num(w.get("budget")),
+                w.get("ok"),
+            )
+        )
+    from_check("fd growth", "fd_growth", fmt=1)
+    from_check("thread growth", "thread_growth", fmt=1)
+    from_check("CPU per sim s (CPU s)", "cpu_per_sim_s", fmt=4)
+    from_check("tick ratio", "tick_ratio", ge=True)
+    from_check("log usage (MB)", "log_disk", scale=1024 * 1024, fmt=0)
+    routes = report.get("routes") or []
+    bad = [r for r in routes if r.get("land_ok") is False]
+    land = checks.get("land") or {}
+    rows.append(_row("land crossings", f"{len(bad)} of {len(routes)} routes", "0", land.get("ok")))
+    tb = checks.get("tracebacks") or {}
+    rows.append(_row("unexpected tracebacks", _num(tb.get("value")), "0", tb.get("ok")))
+    return rows
+
+
 def render_md(report: dict[str, Any]) -> str:
     host, git = report.get("host") or {}, report.get("git") or {}
     lines = [
@@ -266,8 +365,38 @@ def render_md(report: dict[str, Any]) -> str:
     shim = report.get("shim") or {}
     if shim.get("overrides"):
         lines.append(f"- Shim : {shim['overrides']} (raison : {shim.get('why')})")
+    sysd = report.get("systemd") or {}
+    if sysd:
+        lines.append(
+            f"- systemd : portée {sysd.get('scope')}, unités {sysd.get('units')}, NRestarts "
+            f"{sysd.get('n_restarts')}, chiens de garde {sysd.get('watchdog_kills')}"
+        )
+        cl = sysd.get("cleanup") or {}
+        if cl.get("scope") == "system":
+            lines.append(
+                f"- Nettoyage : drop-ins retirés {len(cl.get('removed') or [])}, démontés "
+                f"{len(cl.get('unmounted') or [])}, lignes 50-jabuka-soak restantes "
+                f"{cl.get('soak_lines_left')} (attendu 0)"
+            )
+    pi = report.get("pi") or {}
+    if pi:
+        lines.append(
+            f"- Raspberry Pi : température max {_fmt(pi.get('temp_c_max'))} °C, throttling vu "
+            f"{pi.get('throttled_bits_seen')} {pi.get('throttled_flags_seen') or ''}"
+        )
     if report.get("fail_reasons"):
         lines += ["", "## Échecs", ""] + [f"- {r}" for r in report["fail_reasons"]]
+    lines += [
+        "",
+        "## Mesures et budgets",
+        "",
+        "| mesure | mesuré | budget | ok |",
+        "|---|---|---|---|",
+    ]
+    for row in budget_rows(report):
+        ok = {True: "oui", False: "NON", None: "—"}[row["ok"]]
+        measured = str(row["measured"]).replace("|", "/").replace("\n", " ")
+        lines.append(f"| {row['item']} | {measured} | {row['budget']} | {ok} |")
     lines += [
         "",
         "## Chronologie des pannes",
