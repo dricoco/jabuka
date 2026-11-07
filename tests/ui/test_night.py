@@ -226,18 +226,20 @@ def test_night_toggle_is_red_only_and_persists(page, feeder) -> None:
     for lay in layers:
         _colors(lay["paint"], colors)
         icon = lay["layout"].get("icon-image")
-        assert icon in (None, "jabuka-boat-night"), lay["id"]
-    pg.wait_for_function("() => window.jabuka.map.hasImage('jabuka-boat-night')", timeout=15000)
-    non_red = pg.evaluate(
-        """() => { const d = window.jabuka.map.style.getImage('jabuka-boat-night').data.data;
-          let bad = 0, red = 0;
-          for (let i = 0; i < d.length; i += 4) {
-            if (d[i + 3] === 0) continue;
-            if (d[i + 1] !== 0 || d[i + 2] !== 0) bad++; else if (d[i] > 0) red++;
-          }
-          return {bad, red}; }"""
-    )
-    assert non_red["bad"] == 0 and non_red["red"] > 100, non_red
+        assert icon in (None, "jabuka-boat-night", "jabuka-heading-night"), lay["id"]
+    for image in ("jabuka-boat-night", "jabuka-heading-night"):
+        pg.wait_for_function(f"() => window.jabuka.map.hasImage('{image}')", timeout=15000)
+        non_red = pg.evaluate(
+            """(id) => { const d = window.jabuka.map.style.getImage(id).data.data;
+              let bad = 0, red = 0;
+              for (let i = 0; i < d.length; i += 4) {
+                if (d[i + 3] === 0) continue;
+                if (d[i + 1] !== 0 || d[i + 2] !== 0) bad++; else if (d[i] > 0) red++;
+              }
+              return {bad, red}; }""",
+            image,
+        )
+        assert non_red["bad"] == 0 and non_red["red"] > 100, (image, non_red)
     assert colors
     assert sorted({c for c in colors if not _pure_red_or_black(c)}) == []
     labels = [lay for lay in layers if "text-field" in lay["layout"]]
@@ -250,7 +252,7 @@ BOAT_JS = """() => {
   const m = window.jabuka.map;
   const ids = m.getStyle().layers.map((l) => l.id);
   const lay = m.getStyle().layers.find((l) => l.id === "helm-boat");
-  return {tail: ids.slice(-2), type: lay && lay.type, image: lay && lay.layout["icon-image"],
+  return {tail: ids.slice(-3), type: lay && lay.type, image: lay && lay.layout["icon-image"],
           loaded: m.hasImage("jabuka-boat-day") || m.hasImage("jabuka-boat-night")};
 }"""
 
@@ -260,7 +262,7 @@ def _assert_boat_icon_on_top(pg, theme: str) -> None:
     its image is re-added after a day/night style switch."""
     pg.wait_for_function(f"() => window.jabuka.map.hasImage('jabuka-boat-{theme}')", timeout=15000)
     info = pg.evaluate(BOAT_JS)
-    assert sorted(info["tail"]) == ["helm-boat", "helm-boat-dot"]
+    assert info["tail"] == ["helm-heading-ray", "helm-boat-dot", "helm-boat"]
     assert info["type"] == "symbol"
     assert info["image"] == f"jabuka-boat-{theme}"
 

@@ -258,6 +258,24 @@ export function liveLayers(theme) {
       paint: { "line-color": c.heading, "line-width": 3 },
     },
     {
+      // live heading: a fixed-length ray ahead of the bow (screen px, so readable at any zoom;
+      // the 0.3 nm helm-heading line above vanishes under the hull below zoom ~13)
+      id: "helm-heading-ray",
+      metadata: { "jabuka:top": true },
+      type: "symbol",
+      source: "boat",
+      filter: ["has", "hdg"],
+      layout: {
+        "icon-image": `jabuka-heading-${theme === "night" ? "night" : "day"}`,
+        "icon-anchor": "bottom",
+        "icon-rotate": ["get", "hdg"],
+        "icon-rotation-alignment": "map",
+        "icon-pitch-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
+    },
+    {
       // no heading yet: a plain dot (bigger than a seamark's)
       id: "helm-boat-dot",
       metadata: { "jabuka:top": true },
@@ -283,6 +301,27 @@ export function liveLayers(theme) {
       },
     },
   ];
+}
+
+// Heading ray: a 3 px line in the heading colour with a halo edge, from the boat centre (icon
+// bottom) RAY_LEN CSS px forward. Drawn at 2x like the hull.
+const RAY_LEN = 140;
+const RAY_W = 7;
+
+export function headingImage(theme) {
+  const c = palette(theme);
+  const w = RAY_W * BOAT_RATIO;
+  const h = RAY_LEN * BOAT_RATIO;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const g = canvas.getContext("2d");
+  g.fillStyle = c.halo;
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = c.heading;
+  const lw = 3 * BOAT_RATIO;
+  g.fillRect((w - lw) / 2, BOAT_RATIO * 2, lw, h - BOAT_RATIO * 2);
+  return { data: g.getImageData(0, 0, w, h), pixelRatio: BOAT_RATIO };
 }
 
 // Boat icon: a hull seen from above, bow up, filled with the boat colour and outlined with the
@@ -479,6 +518,8 @@ export async function mount(ctx) {
   });
   registerImage("jabuka-boat-day", () => boatImage("day"));
   registerImage("jabuka-boat-night", () => boatImage("night"));
+  registerImage("jabuka-heading-day", () => headingImage("day"));
+  registerImage("jabuka-heading-night", () => headingImage("night"));
   registerOverlay("helm-live", {
     sources: { laylines: src(), anchor: src(), "helm-heading": src(), boat: src() },
     layers: liveLayers,
