@@ -9,8 +9,10 @@ Two scopes:
   (same binary and flags as the shipped unit, except --data-dir, --device, --racepack, --clock
   sim and --gpsd on a fake port). Every other directive (User=, hardening, Restart=, WatchdogSec=)
   is the production one. Cleanup always runs (finally, atexit, signal handlers, and
-  ``--systemd-cleanup`` alone): drop-ins removed, daemon-reload, the soak log fs unmounted, both
-  units restarted on their production configuration. /run is cleared at reboot anyway.
+  ``--systemd-cleanup`` alone): drop-ins removed, daemon-reload, both units restarted on their
+  production configuration, then the soak log fs unmounted. It counts as done only once all of
+  that ran (an interrupted cleanup is redone by the next call) and signals are deferred while it
+  runs. /run is cleared at reboot anyway.
 - **user** (the laptop, no sudo): transient units through ``systemd-run --user`` with the shipped
   Type=, Restart=, RestartSec= and WatchdogSec= (and StartLimitIntervalSec=0). The hardening
   directives (User=, ProtectSystem=, PrivateDevices=, ...) are NOT applied: a user manager cannot
@@ -46,6 +48,8 @@ SOAK_PARENT = Path("/var/lib/jabuka")
 RUN_LINK_DIR = Path("/run/jabuka-soak")
 REAL_GPSD_PORT = 2947
 SCOPES = ("user", "system")
+DEFERRED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+OOM_SCORE_ADJ = Path("/proc/self/oom_score_adj")
 SUDO_HINT = (
     "--systemd system drives the installed units and needs root: run "
     "`sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python ...`"
@@ -243,6 +247,7 @@ class SystemdBackend:
         self.dropins: list[Path] = []
         self.cleaned = False
         self.cleanup_report: dict[str, Any] = {}
+        self._removed: list[str] = []  # drop-ins removed, across retried cleanups
         self._installed = False
         self._pre_inv: dict[str, str] = {}
         self._stopped = False
@@ -710,45 +715,83 @@ class SystemdBackend:
         if self.user:
             self._ctl("reset-failed", *[self.unit(r) for r in roles])
 
+    @contextlib.contextmanager
+    def _deferred_signals(self) -> Iterator[None]:
+        """SIGINT, SIGTERM and SIGHUP that arrive inside the block are held back: the first one
+        is re-raised (so its original handler runs, e.g. soak._on_signal -> SystemExit) only once
+        the block has completed. Main thread only (signal handlers cannot be set elsewhere)."""
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+        got: list[int] = []
+
+        def record(signum: int, _frame: Any) -> None:
+            if not got:
+                got.append(signum)
+
+        prev: dict[int, Any] = {}
+        for s in DEFERRED_SIGNALS:
+            with contextlib.suppress(ValueError, OSError):
+                prev[s] = signal.signal(s, record)
+        done = False
+        try:
+            yield
+            done = True
+        finally:
+            for s, handler in prev.items():
+                with contextlib.suppress(ValueError, OSError, TypeError):
+                    signal.signal(s, handler if handler is not None else signal.SIG_DFL)
+            if done and got:
+                signal.raise_signal(got[0])
+
     def cleanup(self) -> dict[str, Any]:
-        """Always safe to call (idempotent). System scope: drop-ins removed, daemon-reload,
-        unmount, production units restarted; user scope: transient units stopped."""
+        """Always safe to call; idempotent once it has completed. System scope, in this order:
+        drop-ins removed, daemon-reload, the production units restarted, then the soak log fs
+        unmounted (the restarted units no longer hold it). It is marked done only at the very
+        end, so an interrupted cleanup (exception, second Ctrl-C) is redone by the next call
+        (atexit, ``--systemd-cleanup``); SIGINT/SIGTERM/SIGHUP arriving meanwhile are deferred
+        until it ends (review WR-01). User scope: transient units stopped."""
         if self.cleaned:
             return self.cleanup_report
-        self.cleaned = True
         self._stop.set()
-        if self.user:
-            units = [self.unit(r) for r in self.services]
-            if units:
-                self._ctl("stop", *units)
-                self._ctl("reset-failed", *units)
-            self.cleanup_report = {"scope": "user", "units": units}
-            return self.cleanup_report
-        removed = []
+        with self._deferred_signals():
+            report = self._cleanup_user() if self.user else self._cleanup_system()
+            self.cleanup_report = report
+            self.cleaned = True
+        return self.cleanup_report
+
+    def _cleanup_user(self) -> dict[str, Any]:
+        units = [self.unit(r) for r in self.services]
+        if units:
+            self._ctl("stop", *units)
+            self._ctl("reset-failed", *units)
+        return {"scope": "user", "units": units}
+
+    def _cleanup_system(self) -> dict[str, Any]:
         for path in self.dropins:
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
-                removed.append(str(path))
+                self._removed.append(str(path))
             with contextlib.suppress(OSError):
                 path.parent.rmdir()
         self._ctl("daemon-reload")
+        r = self._ctl("restart", *[UNITS[r] for r in ("ingest", "core")], timeout=180.0)
         unmounted = [str(m) for m in self.mounts if unmount(m)]
-        self._ctl("restart", *[UNITS[r] for r in ("ingest", "core")], timeout=180.0)
         left = soak_lines_in(self._ctl("cat", UNITS["core"]).stdout)
         with contextlib.suppress(OSError, ValueError):  # SSH gone: stdout may be a dead pipe
             print(
-                f"jabuka-soak: systemd cleanup: drop-ins removed {len(removed)}, unmounted "
-                f"{len(unmounted)}, production units restarted; `systemctl cat jabuka-core | "
-                f"grep -c 50-jabuka-soak` = {left} (expected 0)",
+                f"jabuka-soak: systemd cleanup: drop-ins removed {len(self._removed)}, production "
+                f"units restarted (rc {r.returncode}), unmounted {len(unmounted)}; `systemctl cat "
+                f"jabuka-core | grep -c 50-jabuka-soak` = {left} (expected 0)",
                 flush=True,
             )
-        self.cleanup_report = {
+        return {
             "scope": "system",
-            "removed": removed,
+            "removed": list(self._removed),
+            "restarted": r.returncode == 0,
             "unmounted": unmounted,
             "soak_lines_left": left,
         }
-        return self.cleanup_report
 
     def info(self) -> dict[str, Any]:
         return {
@@ -761,6 +804,17 @@ class SystemdBackend:
             "hardening_applied": not self.user,
             "cleanup": self.cleanup_report,
         }
+
+
+def protect_from_oom(path: Path = OOM_SCORE_ADJ, value: int = -900) -> int | None:
+    """System scope: make the root harness an unlikely OOM victim (review WR-02); an OOM kill
+    would skip its cleanup and leave the production units on the soak drop-ins. Returns the
+    value written, None when it could not be written."""
+    try:
+        Path(path).write_text(f"{value}\n", encoding="ascii")
+    except OSError:
+        return None
+    return value
 
 
 def soak_lines_in(text: str) -> int:

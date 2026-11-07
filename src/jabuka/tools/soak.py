@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -144,6 +145,10 @@ class Harness:
         self.gpsd_port = _free(socket.SOCK_STREAM)
         self.control_port: int | None = None
         self.scope: str | None = getattr(args, "systemd", None)
+        self.code: dict[str, Any] | None = None  # report "code": the package that runs (04-04)
+        self.code_error: str | None = None
+        self.git: dict[str, Any] | None = None
+        self.oom_adj: int | None = None  # system scope: the harness's own oom_score_adj
         self.state_root = run_dir  # every harness write into the stack's files stays inside it
         self.owner: tuple[int, int] | None = None  # system scope: the units' User=/Group=
         self.logs_fs_info: dict[str, Any] | None = None
@@ -389,6 +394,45 @@ class Harness:
         assert isinstance(self.sup, sd.SystemdBackend)
         return shlex.split(sd.unit_execstart(self.sup.installed_unit_text(UNITS[role])))
 
+    def _unit_file_sha256(self, unit: str) -> str:
+        """System scope: sha256 of the installed unit file (FragmentPath, drop-ins excluded)."""
+        assert isinstance(self.sup, sd.SystemdBackend)
+        shown = self.sup._show_many([unit], ("FragmentPath",))
+        path = (shown[0].get("FragmentPath") or "") if shown else ""
+        if not path:
+            raise rep.CodeIdentityError(f"{unit}: systemctl show gives no FragmentPath")
+        try:
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError as exc:
+            raise rep.CodeIdentityError(f"{unit}: cannot read {path}: {exc}") from exc
+
+    def compute_code_identity(self) -> None:
+        """Fill self.code (report "code") with the fingerprint of the jabuka package the services
+        run, or self.code_error. System scope: the installed units' own venv (found statically
+        from their ExecStart binary, nothing executed as root) plus the sha256 of each installed
+        unit file; never the harness interpreter or the ~/jabuka copy (WR-03). Shim and user
+        scope: the package the children's interpreter imports. Never raises."""
+        try:
+            units: dict[str, str] | None = None
+            if self.scope == "system":
+                core_bin = self._installed_argv("core")[0]
+                ingest_bin = self._installed_argv("ingest")[0]
+                a, b = Path(core_bin).parent.parent, Path(ingest_bin).parent.parent
+                if a != b:
+                    self.code_error = f"the units run from two venvs: {a} / {b}"
+                    return
+                pkg = rep.venv_package(core_bin)
+                units = {u: self._unit_file_sha256(u) for u in UNITS.values()}
+                python, source = None, "units"
+            else:
+                pkg = rep.locate_package(self.py)
+                python, source = self.py, "children"
+            self.code = rep.code_identity(pkg, python=python, source=source, units=units)
+            self.code_error = None
+        except (rep.CodeIdentityError, OSError, ValueError, sd.SetupError) as exc:
+            self.code = None
+            self.code_error = str(exc)
+
     def _system_argv(self, role: str) -> list[str]:
         return sd.soak_argv(
             role,
@@ -446,6 +490,11 @@ class Harness:
         import pwd
 
         assert isinstance(self.sup, sd.SystemdBackend)
+        # the root harness must not be the OOM victim: SIGKILL skips its cleanup (WR-02). Its
+        # small children (synth, fake gpsd, logcheck) inherit -900; the units keep their own
+        # OOMScoreAdjust= from the installed unit files.
+        self.oom_adj = sd.protect_from_oom()
+        self.log("harness_oom", value=self.oom_adj)
         os.umask(0o022)
         sd.check_soak_dir(self.soak_dir)
         user = self.sup.unit_user(UNITS["core"]) or "root"
@@ -498,6 +547,11 @@ class Harness:
             mode, size = self.logs_fs_mode, self.logs_fs_bytes
             if mode == "auto":
                 mode = "tmpfs" if any(f.kind == "disk-full" for f in self.timeline) else "none"
+            if mode == "tmpfs":  # main() refuses it first; never pin RAM on the Pi (WR-02)
+                raise sd.SetupError(
+                    system_logs_fs_error(self.args.logs_fs or self.sc.logs_fs, self.timeline)
+                    or "--systemd system: a tmpfs log fs is refused, use --logs-fs loop:SIZE"
+                )
             if mode == "none":
                 logs.mkdir(exist_ok=True)
                 if self.owner is not None:
@@ -1008,7 +1062,9 @@ class Harness:
             "scenario": self.sc.name,
             "mode": self.sup.mode,
             "host": rep.host_info(),
-            "git": rep.git_info(self.repo),
+            "git": self.git if self.git is not None else rep.git_info(self.repo),
+            "code": self.code,
+            "code_error": self.code_error,
             "speed_target": self.speed,
             "speed_achieved": round(sim / wall, 2) if wall > 0 else None,
             "sim_s": round(sim, 1),
@@ -1047,6 +1103,7 @@ class Harness:
             report["systemd"] = self.sup.info()
             if self.scope == "system":
                 report["systemd"]["soak_dir"] = str(self.soak_dir)
+                report["systemd"]["harness_oom_score_adj"] = self.oom_adj
         pi = probes.pi_summary(list(self.sampler.samples) if self.sampler is not None else [])
         if pi is not None:
             report["pi"] = pi
@@ -1099,6 +1156,59 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--in-userns", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--run-dir", type=Path, default=None, help=argparse.SUPPRESS)
     return p
+
+
+def system_logs_fs_error(logs_fs: str, timeline: list[FaultSpec]) -> str | None:
+    """--systemd system: the refusal message when the log fs would be a RAM tmpfs (explicit,
+    the scenario's default such as race-36h's tmpfs:256M, or auto with a disk-full fault), else
+    None. On the 1 GB Pi a tmpfs filled by disk-full pins RAM next to the root harness (WR-02)."""
+    mode, _ = parse_logs_fs(logs_fs)
+    if mode == "auto":
+        mode = "tmpfs" if any(f.kind == "disk-full" for f in timeline) else "none"
+    if mode != "tmpfs":
+        return None
+    return (
+        "--systemd system: a tmpfs log fs pins RAM on the 1 GB Pi (scenario/flag gives "
+        f"{logs_fs}): pass --logs-fs loop:SIZE (e.g. loop:512M) or --logs-fs none "
+        "(disk-full then SKIPPED)"
+    )
+
+
+def identity_messages(
+    scope: str | None, code: dict[str, Any] | None, code_error: str | None, git: dict[str, Any]
+) -> list[str]:
+    """The stderr lines that announce what code this run certifies (04-VERIFICATION gap 1).
+    System scope without a package fingerprint raises sd.SetupError: freeze-check F4 could never
+    count such a 2-4 h Pi run. Elsewhere, no fingerprint and no git head gives a WARNING block."""
+    head = (git or {}).get("head")
+    shown_head = str(head)[:12] if head else "none"
+    if code is None:
+        if scope == "system":
+            raise sd.SetupError(
+                "--systemd system: cannot fingerprint the jabuka package the installed units run "
+                f"({code_error}); freeze-check F4 could not count this run: reinstall with "
+                "`sudo deploy/provision.sh` and retry"
+            )
+        if head is None:
+            return [
+                "jabuka-soak: WARNING: this run cannot be identified: no package fingerprint "
+                f"({code_error}) and no git checkout",
+                "jabuka-soak: WARNING: freeze-check F3/F4 will refuse this report "
+                "(no code.sha256, git.head null)",
+                "jabuka-soak: WARNING: run it from a checkout, or with a --python that imports "
+                "jabuka",
+            ]
+        return [f"jabuka-soak: code none ({code_error}); git {shown_head}"]
+    lines = [
+        f"jabuka-soak: code {str(code.get('sha256'))[:12]} ({code.get('files')} files, "
+        f"{code.get('package_dir')}, source {code.get('source')}); git {shown_head}"
+    ]
+    if head is None:
+        lines.append(
+            "jabuka-soak: note: no git checkout here: the report is identified by this package "
+            "fingerprint (freeze-check F3/F4 compare it with src/jabuka at HEAD)"
+        )
+    return lines
 
 
 def _needs_namespace(sc: Scenario, logs_fs: str, timeline: list[FaultSpec]) -> bool:
@@ -1176,6 +1286,20 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
         and any(f.kind == "disk-full" for f in h.timeline)
     ):
         h.findings.append("disk-full: no user namespace on this host, the fault is SKIPPED")
+    h.compute_code_identity()
+    h.git = rep.git_info(h.repo)  # the identity printed now is the one reported
+    try:
+        lines = identity_messages(h.scope, h.code, h.code_error, h.git)
+    except sd.SetupError as exc:
+        # nothing touched yet: Harness() only read the units (systemctl cat/show), and neither
+        # _ACTIVE nor atexit has seen this harness
+        print(f"jabuka-soak: {exc}", file=sys.stderr, flush=True)
+        with contextlib.suppress(Exception):
+            h._tl.close()
+        shutil.rmtree(run_dir, ignore_errors=True)
+        return 2
+    for line in lines:
+        print(line, file=sys.stderr, flush=True)
     _ACTIVE.append(h)
     print(f"jabuka-soak: {sc.name} -> {run_dir}", flush=True)
     try:
@@ -1207,9 +1331,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"jabuka-soak: {exc}", file=sys.stderr)
             return 2
         return 0 if left == 0 else 1
-    if args.systemd == "system" and os.geteuid() != 0:
-        print(f"jabuka-soak: {sd.SUDO_HINT}", file=sys.stderr)
-        return 2
     try:
         sc = load_scenario(args.scenario)
         logs_fs = args.logs_fs or sc.logs_fs
@@ -1217,6 +1338,14 @@ def main(argv: list[str] | None = None) -> int:
         timeline = compile_timeline(sc, args.seed)
     except ValueError as exc:
         print(f"jabuka-soak: {exc}", file=sys.stderr)
+        return 2
+    if args.systemd == "system":  # a pure usage error, reported first for any user (WR-02)
+        err = system_logs_fs_error(logs_fs, timeline)
+        if err is not None:
+            print(f"jabuka-soak: {err}", file=sys.stderr)
+            return 2
+    if args.systemd == "system" and os.geteuid() != 0:
+        print(f"jabuka-soak: {sd.SUDO_HINT}", file=sys.stderr)
         return 2
     if lmode == "loop" and args.systemd != "system":
         print("jabuka-soak: --logs-fs loop:SIZE is for --systemd system", file=sys.stderr)

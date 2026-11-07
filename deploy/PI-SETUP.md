@@ -111,6 +111,10 @@ SSH key there, from any computer, before the first boot.
        ./ <user>@jabuka.local:jabuka/
    ```
 
+   The copy has no `.git` on purpose: the soak report identifies the code by the fingerprint of
+   the installed package (`code.sha256`, docs/SOAK.md), and freeze-check F4 compares it with
+   `src/jabuka` at HEAD.
+
 2. On the Pi, over Ethernet:
 
    ```bash

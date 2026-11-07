@@ -99,10 +99,11 @@ Une copie qui n'a jamais démarré n'est pas une copie de secours.
    deux cartes, noter la dernière ligne :
 
    ```sh
-   cd /opt/jabuka/venv/lib/python3.13/site-packages/jabuka && find . -type f ! -name '*.pyc' -print0 | sort -z | xargs -0 sha256sum | sha256sum
+   cd /opt/jabuka/venv/lib/python3.13/site-packages/jabuka && find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
    ```
 
-   Les deux empreintes doivent être identiques.
+   Les deux empreintes doivent être identiques. C'est la même valeur que `code.sha256` du
+   rapport de soak du Pi et que l'empreinte affichée par `freeze-check` F4.
 6. Éteindre, remettre la **carte de course**, redémarrer, vérifier `active`. Étiqueter la carte de
    secours « JABUKA SECOURS race-2026 + date », la ranger dans le sac étanche.
 

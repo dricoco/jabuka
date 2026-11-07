@@ -1,7 +1,9 @@
 """Soak report: report.json (schema 1), report.md, the verdict, and the log traceback classifier.
 
-Keys read by plan 04-02 scripts/freeze-check.sh (frozen): schema, verdict, scenario, mode,
-host.machine, git.head, git.dirty. Check names are stable (04-03 reads leak_slope).
+Keys read by scripts/freeze-check.sh: schema, verdict, scenario, mode, host.machine, git.head,
+git.dirty (plan 04-02), and code.sha256, code.source, code.units (plan 04-04: the fingerprint of
+the jabuka package that actually ran, see FINGERPRINT_SH; additive, schema stays 1). Check names
+are stable (04-03 reads leak_slope).
 
 Verdict: FAIL when any fault is not ok or any check is ok False. A check that cannot be judged has
 ok None ("insufficient data ..." / "skipped: ...") and never makes the verdict PASS on its own:
@@ -10,13 +12,16 @@ it is listed as such.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
 import re
 import socket
+import stat
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -197,6 +202,124 @@ def git_info(repo: Path | None) -> dict[str, Any]:
     return {"head": head or None, "dirty": bool(status.strip())}
 
 
+# -- code identity (plan 04-04) ----------------------------------------------------------------
+# The fingerprint of a jabuka package directory. Its one definition is this shell pipeline, run
+# inside the package directory (src/jabuka on the laptop, /opt/jabuka/venv/lib/python3.13/
+# site-packages/jabuka on the Pi): every regular file except compiled ones, C-locale byte order,
+# sha256sum of each, sha256sum of that manifest. fingerprint_entries() is the same algorithm in
+# Python, the freeze-check helper re-implements it on `git archive HEAD src/jabuka`, and
+# docs/SOAK.md, docs/FREEZE.md and docs/SPARE-SD.md quote this string verbatim
+# (tests/soak/test_soak_identity.py binds all of them).
+FINGERPRINT_ALGO = "sha256sum-v1"
+FINGERPRINT_SH = (
+    "find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 "
+    "| LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum"
+)
+_LOCATE_PY = (
+    "import importlib.util as u; s = u.find_spec('jabuka'); "
+    "print(list(s.submodule_search_locations)[0])"
+)
+
+
+class CodeIdentityError(Exception):
+    """The jabuka package that runs cannot be located or read."""
+
+
+def _compiled(relpath: str) -> bool:
+    parts = relpath.split("/")
+    return parts[-1].endswith(".pyc") or "__pycache__" in parts[:-1]
+
+
+def fingerprint_entries(entries: Iterable[tuple[str, bytes]]) -> tuple[str, int]:
+    """(sha256 hex, files kept) of (relpath, content) pairs: relpath relative to the package dir,
+    POSIX separators. The manifest is sha256sum's own "<hex>  ./<relpath>\\n" lines sorted by
+    the bytes of "./<relpath>" (LC_ALL=C sort -z), so the hex equals FINGERPRINT_SH's."""
+    lines: list[tuple[bytes, str]] = []
+    for rel, data in entries:
+        if _compiled(rel):
+            continue
+        name = f"./{rel}"
+        lines.append((name.encode("utf-8"), f"{hashlib.sha256(data).hexdigest()}  {name}\n"))
+    lines.sort(key=lambda x: x[0])
+    manifest = "".join(line for _, line in lines)
+    return hashlib.sha256(manifest.encode("utf-8")).hexdigest(), len(lines)
+
+
+def package_fingerprint(pkg_dir: Path) -> dict[str, Any]:
+    """{"sha256", "files", "package_dir"} of a package directory (regular files only, symlinks
+    skipped as `find -type f` does). Raises CodeIdentityError when a file cannot be read."""
+    pkg_dir = Path(pkg_dir)
+    if not pkg_dir.is_dir():
+        raise CodeIdentityError(f"{pkg_dir} is not a directory")
+    entries: list[tuple[str, bytes]] = []
+    try:
+        for root, dirs, files in os.walk(pkg_dir, followlinks=False):
+            dirs.sort()
+            for name in files:
+                path = Path(root) / name
+                if not stat.S_ISREG(path.lstat().st_mode):
+                    continue
+                rel = path.relative_to(pkg_dir).as_posix()
+                if _compiled(rel):
+                    continue
+                entries.append((rel, path.read_bytes()))
+    except OSError as exc:
+        raise CodeIdentityError(f"cannot read {pkg_dir}: {exc}") from exc
+    hexd, n = fingerprint_entries(entries)
+    return {"sha256": hexd, "files": n, "package_dir": str(pkg_dir)}
+
+
+def locate_package(python: str) -> Path:
+    """The jabuka package directory an interpreter imports (shim and user scope). ``-I``: neither
+    the cwd nor PYTHON* variables can redirect it; find_spec does not import the package."""
+    try:
+        r = subprocess.run(
+            [python, "-I", "-c", _LOCATE_PY], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CodeIdentityError(f"{python}: {exc}") from exc
+    if r.returncode != 0 or not r.stdout.strip():
+        why = (r.stderr.strip().splitlines() or ["no output"])[-1]
+        raise CodeIdentityError(f"{python} cannot locate jabuka: {why}")
+    pkg = Path(r.stdout.strip().splitlines()[-1])
+    if not (pkg / "__init__.py").is_file():
+        raise CodeIdentityError(f"{python}: jabuka at {pkg} has no __init__.py")
+    return pkg.resolve()
+
+
+def venv_package(bin_path: str | Path) -> Path:
+    """System scope (root): the jabuka package of the venv an installed unit's ExecStart binary
+    lives in, found statically (one lib/python3*/site-packages/jabuka); nothing is executed."""
+    venv = Path(bin_path).parent.parent
+    found = sorted(venv.glob("lib/python3*/site-packages/jabuka/__init__.py"))
+    if len(found) != 1:
+        raise CodeIdentityError(
+            f"expected one lib/python3*/site-packages/jabuka in {venv}, found {len(found)}"
+        )
+    return found[0].parent
+
+
+def code_identity(
+    pkg_dir: Path,
+    *,
+    python: str | None,
+    source: str,
+    units: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """The report's ``code`` block. source: "units" (system scope: the installed units' venv,
+    with the sha256 of each installed unit file) or "children" (shim / user scope)."""
+    fp = package_fingerprint(pkg_dir)
+    return {
+        "algorithm": FINGERPRINT_ALGO,
+        "sha256": fp["sha256"],
+        "files": fp["files"],
+        "package_dir": fp["package_dir"],
+        "python": python,
+        "source": source,
+        "units": dict(units) if units is not None else None,
+    }
+
+
 def host_info() -> dict[str, Any]:
     return {
         "hostname": socket.gethostname(),
@@ -350,6 +473,17 @@ def budget_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _code_line(report: dict[str, Any]) -> str:
+    code = report.get("code") or {}
+    if not code.get("sha256"):
+        why = report.get("code_error") or "non enregistrée par cette version du harnais"
+        return f"- Code : aucune empreinte ({why})"
+    return (
+        f"- Code : empreinte {str(code['sha256'])[:12]} ({code.get('files')} fichiers, "
+        f"{code.get('package_dir')}, source {code.get('source')})"
+    )
+
+
 def render_md(report: dict[str, Any]) -> str:
     host, git = report.get("host") or {}, report.get("git") or {}
     lines = [
@@ -358,6 +492,7 @@ def render_md(report: dict[str, Any]) -> str:
         f"- Démarré : {report.get('started_utc')} (mode {report.get('mode')})",
         f"- Hôte : {host.get('hostname')} ({host.get('machine')}, Python {host.get('python')})",
         f"- Git : {git.get('head')} (modifié : {git.get('dirty')})",
+        _code_line(report),
         f"- Vitesse : cible {_fmt(report.get('speed_target'))}×, atteinte "
         f"{_fmt(report.get('speed_achieved'))}× ; {_fmt(report.get('sim_s'))} s simulées en "
         f"{_fmt(report.get('wall_s'))} s réelles",
