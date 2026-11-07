@@ -865,6 +865,10 @@ class RouterService:
         self._pool_watch = None
         self._pool_faults_seen = 0
         self._pool_alarm(why)
+        # 04-REVIEW WR-05: the cancelled _run never reaches _on_outcome, count the lost cycle here
+        if self.last_request is not None and self._inflight > 0:
+            self._counts["failed"] += 1
+            self._failed(self.last_request, self._last_fail)
         self.pool = None
         new = self._new_pool()
         self.pool = new
