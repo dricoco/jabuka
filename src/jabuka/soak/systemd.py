@@ -244,6 +244,7 @@ class SystemdBackend:
         self.cleaned = False
         self.cleanup_report: dict[str, Any] = {}
         self._installed = False
+        self._pre_inv: dict[str, str] = {}
         self._stopped = False
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -361,7 +362,11 @@ class SystemdBackend:
         self._ctl("daemon-reload")
         for role in self.services:
             self._flush_restarts(role)
-        self._ctl("restart", "--no-block", *[UNITS[r] for r in ("ingest", "core")])
+            self._pre_inv[role] = self.show(role, "InvocationID").get("InvocationID") or ""
+        # blocking: the units are on the soak ExecStart (READY=1) before the harness talks to
+        # port 80; wait_ready() then also checks the new invocation runs the soak argv, so the
+        # harness never configures the production core (T-04-03-02)
+        self._ctl("restart", *[UNITS[r] for r in ("ingest", "core")], timeout=180.0)
         self._installed = True
         for role in self.services:
             self._after_start(role)
@@ -535,17 +540,31 @@ class SystemdBackend:
     def wait_ready(self, role: str, timeout: float, *, after_n: int = 0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            st = self.show(role, "ActiveState", "SubState", "MainPID")
+            st = self.show(role, "ActiveState", "SubState", "MainPID", "InvocationID")
             if (
                 st.get("ActiveState") == "active"
                 and st.get("SubState") == "running"
                 and st.get("MainPID") not in (None, "", "0")
                 and (not self._want_monitor or self.services[role].starts > after_n)
+                and (st.get("InvocationID") or "") != self._pre_inv.get(role, "-")
+                and self.runs_soak_argv(role, int(st["MainPID"]))
             ):
                 return True
             self._poll_once()
             time.sleep(0.1)
         return False
+
+    def runs_soak_argv(self, role: str, pid: int, proc: Path = Path("/proc")) -> bool:
+        """System scope: the unit's main process carries every soak argument (data dir, pty,
+        sim clock, fake gpsd), not the production ExecStart. Always true in the user scope."""
+        if self.user:
+            return True
+        try:
+            tokens = (proc / str(pid) / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            return False
+        have = {t.decode("utf-8", "replace") for t in tokens}
+        return all(a in have for a in self.services[role].argv[1:])
 
     def watchdog_sec(self, role: str) -> float | None:
         return self.services[role].policy.watchdog_sec
@@ -716,12 +735,13 @@ class SystemdBackend:
         unmounted = [str(m) for m in self.mounts if unmount(m)]
         self._ctl("restart", *[UNITS[r] for r in ("ingest", "core")], timeout=180.0)
         left = soak_lines_in(self._ctl("cat", UNITS["core"]).stdout)
-        print(
-            f"jabuka-soak: systemd cleanup: drop-ins removed {len(removed)}, unmounted "
-            f"{len(unmounted)}, production units restarted; `systemctl cat jabuka-core | grep -c "
-            f"50-jabuka-soak` = {left} (expected 0)",
-            flush=True,
-        )
+        with contextlib.suppress(OSError, ValueError):  # SSH gone: stdout may be a dead pipe
+            print(
+                f"jabuka-soak: systemd cleanup: drop-ins removed {len(removed)}, unmounted "
+                f"{len(unmounted)}, production units restarted; `systemctl cat jabuka-core | "
+                f"grep -c 50-jabuka-soak` = {left} (expected 0)",
+                flush=True,
+            )
         self.cleanup_report = {
             "scope": "system",
             "removed": removed,

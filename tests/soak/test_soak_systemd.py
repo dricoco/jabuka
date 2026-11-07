@@ -289,6 +289,32 @@ def test_systemd_cleanup_alone_removes_stale_dropins(tmp_path: Path, fake_bin: P
     assert {CORE, INGEST} <= set(_ctl(tmp_path, "restart")[-1])
 
 
+def test_harness_never_takes_the_production_core_for_the_soak_one(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """T-04-03-02: before talking to port 80 the harness checks the unit's main process runs the
+    soak argv (data dir, pty, sim clock), so it never configures the production core; the
+    drop-in restart is blocking (not --no-block)."""
+    b = sd.SystemdBackend(
+        "system", run_dir=tmp_path, dropin_root=tmp_path / "rs", assume_root=True, monitor=False
+    )
+    shipped = shlex.split(sd.unit_execstart(_units()[CORE]))
+    soak_argv = sd.soak_argv("core", shipped, soak_dir=SOAK_DIR, pty_link=PTY, gpsd_port=29470)
+    b.add("core", soak_argv, Policy())
+    proc = tmp_path / "proc"
+    for pid, argv in ((10, ["/opt/jabuka/venv/bin/python3", *shipped]), (11, ["py", *soak_argv])):
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / str(pid) / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    assert not b.runs_soak_argv("core", 10, proc)
+    assert b.runs_soak_argv("core", 11, proc)
+    assert not b.runs_soak_argv("core", 12, proc)
+    b.add("ingest", ["/x", "--y"], Policy())
+    b.install({CORE: sd.dropin_text(soak_argv)})
+    restart = _ctl(tmp_path, "restart")[-1]
+    assert "--no-block" not in restart and {CORE, INGEST} <= set(restart)
+    b.cleanup()
+
+
 def test_system_scope_without_root_is_a_setup_error(tmp_path: Path) -> None:
     b = sd.SystemdBackend("system", run_dir=tmp_path, assume_root=False, monitor=False)
     with pytest.raises(sd.SetupError, match="sudo"):
