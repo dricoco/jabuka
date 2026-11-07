@@ -453,6 +453,101 @@ def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
     pools[0].hold = False
 
 
+# 04-05 (04-REVIEW WR-05): a routing cycle lost to a recycled pool is a failed cycle
+def _shown_route_then_wedge(routing_core, rh):
+    """First route adopted (version 1) from an answering pool, then that pool and every later
+    one wedges, and a forced request is submitted. -> (core, pos, made pools)."""
+    made: list = []
+
+    def factory():
+        p = rh.FakePool()
+        p.hold = bool(made)  # every replacement pool wedges too
+        made.append(p)
+        return p
+
+    core = routing_core(pool_factory=factory)
+    pos = rh.boat_near_plic(2.0)
+    core.sail(*pos, 157.0)
+    core.tick(1.0)
+    core.settle()
+    nav = core.tick(1.0)
+    assert nav["route"]["state"] == "ok" and nav["route"]["version"] == 1, nav["route"]
+    made[0].hold = True
+    core.call(core.router.request, "manuel", True)
+    core.sail(*pos, 157.0)
+    core.tick(1.0)  # the forced request is submitted to the wedged pool
+    assert core.router.busy()
+    return core, pos, made
+
+
+def _tick_until_recycled(core, pos, made, n: int) -> dict:
+    from jabuka.core.router_service import POOL_STUCK_S
+
+    nav = None
+    for _ in range(int(POOL_STUCK_S) + 10):
+        core.sail(*pos, 157.0)
+        nav = core.tick(1.0)
+        if len(made) > n:
+            break
+    assert len(made) == n + 1, "the watchdog must replace the wedged pool"
+    return nav
+
+
+def _unwedge(made) -> None:
+    for p in made:
+        p.hold = False
+
+
+def test_wedged_pool_losing_a_shown_routes_cycle_marks_it_stale(routing_core, rh) -> None:
+    core, pos, made = _shown_route_then_wedge(routing_core, rh)
+    _tick_until_recycled(core, pos, made, 1)
+    core.sail(*pos, 157.0)
+    nav = core.tick(1.0)
+    assert nav["route"]["state"] == "ok"
+    assert nav["route"]["stale"] is True
+    assert nav["route"]["last_fail"].startswith("routeur relancé")
+    assert core.router.health()["failed"] >= 1
+    assert core.router.health()["pool_recycled"] == 1
+    _unwedge(made)
+
+
+def test_repeated_wedge_withdraws_the_route_after_10_min(routing_core, rh) -> None:
+    from jabuka.core.router_service import ROUTE_FAIL_AGE_S
+
+    core, pos, made = _shown_route_then_wedge(routing_core, rh)
+    nav = None
+    for _ in range(int(ROUTE_FAIL_AGE_S) + 60):
+        core.sail(*pos, 157.0)
+        nav = core.tick(1.0)
+    assert core.router.health()["pool_recycled"] >= 2
+    assert nav["route"]["state"] == "outdated", nav["route"]
+    _unwedge(made)
+
+
+def test_wedged_missed_tack_reroute_is_released(routing_core, rh) -> None:
+    core, pos, made = _shown_route_then_wedge(routing_core, rh)
+
+    def missed_tack_reroute() -> None:
+        r = core.router
+        r.missed = True
+        r._missed_req = r.last_request.base.request_id
+
+    core.call(missed_tack_reroute)
+    _tick_until_recycled(core, pos, made, 1)
+    assert core.call(lambda: core.router._missed_failed) is True
+    _unwedge(made)
+
+
+def test_recycle_with_no_cycle_in_flight_counts_no_failure(routing_core, fake_pool, rh) -> None:
+    core, _pos = _start(routing_core, fake_pool, rh)
+    assert core.call(lambda: core.router._inflight) == 0
+    failed = core.router.health()["failed"]
+    streak = core.call(lambda: core.router._fail_streak)
+    core.call(core.router._recycle_pool, "test")
+    assert core.router.health()["failed"] == failed
+    assert core.call(lambda: core.router._fail_streak) == streak
+
+
 def test_watchdog_never_recreates_a_pool_after_shutdown(routing_core, fake_pool, rh) -> None:
     made = []
 

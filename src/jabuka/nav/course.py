@@ -3,7 +3,8 @@ active course (CRSE-01..05).
 
 <data-dir>/course.json = {"version": int, "course": Course}. Every change is written with
 atomic_write_json and bumps the version, so every tablet re-fetches it (Pitfall 10). A torn or
-invalid file falls back to NAME.bak, then to Course A with an alert.
+invalid file falls back to NAME.bak with a "restauré" alert (it may hold an older active mark,
+04-REVIEW WR-04), then to Course A with an "illisible" alert.
 
 Index 0 of the sequence is the start and is never active; select() puts the first rounding mark
 (index 1) active. The anchor of the active mark is the point at radius_nm on the rounding side:
@@ -44,7 +45,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from jabuka.common.atomicio import atomic_write_json, load_json_status
 from jabuka.nav import geo
@@ -205,6 +206,18 @@ def _valid(course: Course) -> bool:
     return 1 <= course.active_idx <= last
 
 
+def _parse_course_file(raw: Any) -> tuple[Course, int]:
+    """course.json content -> (course, version). Raises ValueError (pydantic ValidationError
+    included) when it is not a whole, consistent course: load_json_status then tries NAME.bak."""
+    if not isinstance(raw, dict):
+        raise ValueError("not an object")
+    course = Course.model_validate(raw.get("course"))
+    if not _valid(course):
+        raise ValueError("inconsistent course")
+    v = raw.get("version", 0)
+    return course, (v if isinstance(v, int) and not isinstance(v, bool) else 0)
+
+
 class CourseStore:
     def __init__(
         self,
@@ -231,21 +244,13 @@ class CourseStore:
         self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
         self._last_fsm_t: float | None = None  # t_mono of the previous position sample
         self._banner_until: float | None = None  # t_mono end of the banner window
-        raw, source = load_json_status(self.path, None)
-        if source == "unreadable":  # present but neither NAME nor NAME.bak loads (04-01 soak)
+        parsed, source = load_json_status(self.path, None, validate=_parse_course_file)
+        if parsed is not None:  # "main" or "bak"
+            self.course, self.version = parsed
+        if source == "bak":  # an older course may come back: never silent (04-REVIEW WR-04)
+            self.alerts.append("Parcours restauré depuis la sauvegarde : vérifier la marque active")
+        elif source == "unreadable":  # present but neither NAME nor NAME.bak valid (04-01 soak)
             self.alerts.append("Parcours illisible : Parcours A par défaut")
-        if raw is not None:
-            try:
-                if not isinstance(raw, dict):
-                    raise ValueError("not an object")
-                course = Course.model_validate(raw.get("course"))
-                if not _valid(course):
-                    raise ValueError("inconsistent course")
-                self.course = course
-                v = raw.get("version", 0)
-                self.version = v if isinstance(v, int) and not isinstance(v, bool) else 0
-            except (ValidationError, ValueError):
-                self.alerts.append("Parcours illisible : Parcours A par défaut")
 
     # -- accessors ---------------------------------------------------------------------------
     @property

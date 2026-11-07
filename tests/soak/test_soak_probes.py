@@ -121,8 +121,12 @@ def test_corruption_leaves_a_whole_version_or_a_default_with_alert(
     assert desc
     cs, st = CourseStore(data), SettingsStore(data)  # never raises
     if target == "course.json":
-        whole = cs.version in (1, 2) and not cs.alerts
-        assert whole or "Parcours illisible : Parcours A par défaut" in cs.alerts
+        # the main file as written, the .bak announced (04-05 WR-04), or the default announced
+        main = cs.version == 2 and not cs.alerts
+        bak = cs.version == 1 and cs.alerts == [
+            "Parcours restauré depuis la sauvegarde : vérifier la marque active"
+        ]
+        assert main or bak or "Parcours illisible : Parcours A par défaut" in cs.alerts
     if target == "settings.json":
         if st.alerts:
             assert st.settings == Settings()
