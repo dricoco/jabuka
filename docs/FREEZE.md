@@ -28,7 +28,9 @@ pour ne pas relancer la porte (déjà lancée à l'étape 3).
   `heading_offset_deg` dans Réglages ; `--awa-sign -1` de l'ingest seulement par un drop-in
   systemd (`sudo systemctl edit jabuka-ingest-fastnet`, COMMISSIONING.md §4), et seulement si le
   bateau l'exige.
-- `true_wind_source`, `route_level`, `efficiency` (et les autres réglages de l'onglet Réglages).
+- `true_wind_source`, `route_level`, `efficiency`, la réduction en vent fort
+  (`heavy_wind_start_kn`, `heavy_wind_full_kn`, `heavy_wind_reduction`) et les autres réglages de
+  l'onglet Réglages.
 
 Tout le reste (une ligne de code, une version de paquet, une unité) est un **correctif
 d'urgence** (dernière section), jamais une retouche sur le bateau.

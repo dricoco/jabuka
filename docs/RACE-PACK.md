@@ -132,7 +132,9 @@ in the pack:
   (exit 2) and nothing is written.
 - **Sanity check:** the tool prints the VMG target table (TWS | up TWA / BSP | down TWA / BSP, for
   6–20 kn). Compare it with what the boat really sails before you copy it. These speeds are raw
-  polar speeds; the efficiency setting (Réglages, default 0.92) scales them on board.
+  polar speeds; the efficiency setting (Réglages, default 0.92) scales them on board. From 18 kn
+  the heavy-wind reduction (Réglages, `heavy_wind_*`, default 5 % at 25 kn and above) derates them
+  on board before the efficiency, so the printed table stays the raw polar.
 - **Copy:** `polar.json` travels with the pack (same rsync as above). Restart `jabuka-core` and
   check the polar name on Diag. If the core cannot validate `polar.json`, it falls back to the
   interim polar.

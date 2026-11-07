@@ -212,7 +212,10 @@ saute à chaque virement), Pitfall 7 (polaire optimiste).
 Réglages concernés (onglet **Réglages** de la tablette) : `variation_deg` (Déclinaison, 4,7° E
 par défaut), `heading_offset_deg` (Décalage compas), `true_wind_source` (`computed` par défaut :
 vent réel calculé par le Pi depuis AWA/AWS/BSP/cap ; `instrument` : TWD/TWS du Hercules),
-`efficiency` (polaire).
+`efficiency` (polaire), `heavy_wind_start_kn`, `heavy_wind_full_kn` et `heavy_wind_reduction`
+(réduction de polaire en vent fort : par défaut de 18 à 25 nds jusqu'à 5 %, 0 = désactivée ;
+appliquée sur la polaire avant l'efficacité, pour les cibles, le % polaire, les lay-lines et le
+routage).
 
 | Heure (12 nov.) | Action | Repère | On doit voir |
 |---|---|---|---|
