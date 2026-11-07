@@ -35,6 +35,7 @@ DT_D_G, DT_W0, DT_W1, DT_C = 6.0, 10.0, 14.0, 0.8   # dovetail groove depth, hal
 GAP_S = 0.5          # slider body to beam face
 XBEAM, HB, BEAM_T = 124.0, 24.0, 22.0
 SLOT_X = (52.0, 108.0)   # lock slot -> leg spacing c-c 104..216
+NUT_AF, NUT_T, NUT_W = 10.0, 5.5, 10.4   # M6 nut (DIN 934): across flats, pocket height, pocket width
 TBW = 45.0           # centre table half width (column foot)
 COL_ADJ = 30.0       # column aft adjustment range (option 4)
 RUB = 1.5            # TPU liner
@@ -209,7 +210,8 @@ def build():
         for xs_ in (-1, 1):
             cr = cr.cut(box(xs_ * CR_W - 1.0, xs_ * CR_W + 1.0, yf - 1, y_ap + 4.5, zt - 6.5, zt + 6.5))
     cr = cr.fuse(cyl(7.0, 8.0, V(0, yb, 0), V(0, 1, 0)))                     # pivot pin
-    cr = cr.cut(cyl(4.0, 10.01, V(0, yb - 2.0, 0), V(0, 1, 0)))              # M6 heat-set insert in the pin
+    cr = cr.cut(cyl(3.3, yb + 8.01 - (y_ap + 1.0), V(0, y_ap + 1.0, 0), V(0, 1, 0)))  # M6 clearance bore (pin + body)
+    cr = cr.cut(box(-NUT_AF / 2 - 1.0, CR_W + 1, yb - NUT_T, yb, -NUT_W / 2, NUT_W / 2))  # captive M6 nut, side slot (+x)
     # ---- slider (global orientation, origin at (x_slider, LEG_Y, Z_CLAMP)) ----
     ys1 = yb + S_T
     yfb = ys1 + GAP_S                     # beam front face (local)
@@ -249,7 +251,10 @@ def build():
     YB_BOLTS = (YA - 6.0, YA + 18.0)
     for x in (-36.0, 36.0):
         for yb_ in YB_BOLTS:
-            beam = beam.cut(cyl(4.0, 12.0, V(x, yb_, Z_CLAMP + HB - 12.0)))                  # M6 inserts (column foot)
+            beam = beam.cut(cyl(3.3, 14.0, V(x, yb_, Z_CLAMP + HB - 14.0)))                  # M6 bolt bore (column foot)
+            xs0, xs1 = sorted((x - math.copysign(NUT_AF / 2 + 1.0, x), math.copysign(TBW + 1.0, x)))
+            beam = beam.cut(box(xs0, xs1, yb_ - NUT_W / 2, yb_ + NUT_W / 2,
+                                Z_CLAMP + HB - 3.5 - NUT_T, Z_CLAMP + HB - 3.5))       # captive M6 nut, side slot
     parts["Poutre"] = (beam.removeSplitter(), ORA)
     bands = {}
     for sx in (1, -1):
