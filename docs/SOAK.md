@@ -143,12 +143,16 @@ pannes par exécution.
 | 1 (découverte) | `20261107T113002Z-race-36h` | lancée sur b04dae8 (code produit inchangé depuis), rapport daté 0832f7f | 59,96× | **PASS** |
 | 2 | `20261107T120650Z-race-36h` | 0832f7f, arbre propre | 59,96× | FAIL : f92 `clock-jump` (défaut du **banc**, corrigé en 394aa31, voir constats) |
 | 3 | `20261107T124725Z-race-36h` | 394aa31, arbre propre | 60× | **interrompue** à 78 040 s simulées (f80, 79 pannes, aucune en échec) : processus arrêté par Claude Code, mémoire du portable saturée par d'autres tâches (swap plein, charge 23) ; pas de rapport |
+| 4 (finale) | `20261107T133350Z-race-36h` | 0fff60c (merge 04-03 sur main), arbre propre | 59,97× | **PASS** : 94 pannes, 129 641 s simulées en 2 162 s réelles |
 
 Le code **produit** (`src/jabuka/{core,ingest,nav,route,sim,common}`) n'a pas changé pendant ce
 plan : seuls le banc (`src/jabuka/soak/`, `src/jabuka/tools/soak.py`) et `scripts/soak.sh` ont
-changé. Le PASS de l'exécution 1 vaut donc pour le produit. **À refaire** pour freeze-check F3
-(qui exige un rapport PASS sans changement de `src/` jusqu'à HEAD) : `bash scripts/soak.sh`
-sur le HEAD final, machine au calme.
+changé. Le PASS de l'exécution 1 vaut donc pour le produit. L'exécution 4, relancée sur le HEAD
+final (0fff60c, après le merge de 04-03), donne le **PASS** exigé par freeze-check F3 : tous les
+budgets tenus (bus 0,54 s, redémarrage 3,09 s, watchdog 25,9 s, coupure 0,55 s, route 1,26 s,
+RSS core 77 Mo / worker 148,7 Mo, pente de fuite core 15,2 Mo/36 h pour 20, 0 croisement de terre
+sur 303 routes, 0 traceback). La pente de fuite du core (9,8 / 16,6 / 15,2 Mo/36 h selon les
+exécutions) reste sous le budget mais à surveiller sur le Pi.
 
 Mesures et budgets de l'exécution 1 (PASS ; l'exécution 2 donne les mêmes ordres de grandeur, sa
 seule ligne en échec est la route après f92) :

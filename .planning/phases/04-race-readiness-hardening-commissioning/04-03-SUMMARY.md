@@ -2,7 +2,7 @@
 phase: 04-race-readiness-hardening-commissioning
 plan: 03
 subsystem: soak/systemd-backend
-status: partial
+status: complete
 tags: [soak, systemd, reliability, raspberry-pi, REL-02]
 
 requires:
@@ -194,7 +194,11 @@ an artefact of SIGSTOP.
   was not restarted, as instructed. The plan's "at most 3 full runs" cap is reached in count, but
   run 3 never reached a verdict.
 
-## Open item (blocking freeze-check F3, not a product defect)
+## Open item (blocking freeze-check F3, not a product defect) — CLOSED 2026-11-07
+
+**Closed by the orchestrator after merge:** run 4 `var/soak/20261107T133350Z-race-36h` on 0fff60c
+(main after the 04-03 merge, clean tree) — **PASS**, 94 faults, 59.97×, every budget met (core leak
+slope 15.18 MB/36 h for 20). Gate on 0fff60c: 1534 passed ×2, `check: ok`. Original note kept below.
 
 A race-36h PASS report on the final code is still needed: run 1 PASSed but its recorded head
 (0832f7f) differs from HEAD in `src/jabuka/soak/faults.py`, so 04-02 `freeze-check.sh` F3 will
