@@ -244,6 +244,9 @@ Terms chosen (to confirm first):
 | `settings.efficiency` | Efficacité polaire | Polar efficiency | Izkoristek polare |
 | `settings.efficiency_up` | Efficacité au près (optionnel) | Upwind efficiency (optional) | Izkoristek v orcu (neobvezno) |
 | `settings.efficiency_down` | Efficacité au portant (optionnel) | Downwind efficiency (optional) | Izkoristek v krmo (neobvezno) |
+| `settings.heavy_wind_start_kn` | Vent fort : début de réduction (nds) | Heavy wind: reduction starts at (kn) | Močan veter: začetek zmanjšanja (kn) |
+| `settings.heavy_wind_full_kn` | Vent fort : réduction complète (nds) | Heavy wind: full reduction at (kn) | Močan veter: polno zmanjšanje (kn) |
+| `settings.heavy_wind_reduction` | Vent fort : réduction | Heavy wind: reduction | Močan veter: zmanjšanje |
 | `settings.layline_source` | Angles des lay-lines | Layline angles | Koti laylinov |
 | `settings.use_current` | Courant sur les lay-lines | Current on the laylines | Tok na laylinih |
 | `settings.leeway_deg` | Dérive (°) | Leeway (°) | Zanos (°) |

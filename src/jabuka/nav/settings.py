@@ -43,6 +43,10 @@ class Settings(BaseModel):
     efficiency: float = _f(0.92, "Efficacité polaire", ge=0.5, le=1.2)
     efficiency_up: float | None = _f(None, "Efficacité au près (optionnel)", ge=0.5, le=1.2)
     efficiency_down: float | None = _f(None, "Efficacité au portant (optionnel)", ge=0.5, le=1.2)
+    # heavy-weather reduction on the polar curves (helm + router), before the efficiency
+    heavy_wind_start_kn: float = _f(18.0, "Vent fort : début de réduction (nds)", ge=10.0, le=35.0)
+    heavy_wind_full_kn: float = _f(25.0, "Vent fort : réduction complète (nds)", ge=12.0, le=40.0)
+    heavy_wind_reduction: float = _f(0.05, "Vent fort : réduction", ge=0.0, le=0.3)
     # -- laylines (NAV-01/03) --------------------------------------------------------------------
     layline_source: Literal["polar", "sailed"] = _f("polar", "Angles des lay-lines")
     use_current: bool = _f(False, "Courant sur les lay-lines")
@@ -89,6 +93,12 @@ class Settings(BaseModel):
             self.race_start_local
         ):
             raise ValueError("fenêtre météo : la fin doit suivre le début")
+        return self
+
+    @model_validator(mode="after")
+    def _heavy_wind_order(self) -> Settings:
+        if self.heavy_wind_full_kn <= self.heavy_wind_start_kn:
+            raise ValueError("vent fort : la réduction complète doit suivre le début")
         return self
 
     def eff_up(self) -> float:

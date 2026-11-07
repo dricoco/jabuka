@@ -20,7 +20,14 @@ from jabuka.common.units import ms_to_kn, wrap_pi
 from jabuka.core.state import StateStore
 from jabuka.nav import laylines, wind
 from jabuka.nav.course import CourseStore
-from jabuka.nav.polar import Targets, apply_efficiency, efficiency_for, load_racepack_polar
+from jabuka.nav.polar import (
+    Polar,
+    Targets,
+    apply_efficiency,
+    derate_polar,
+    efficiency_for,
+    load_racepack_polar,
+)
 from jabuka.nav.settings import ManualWindStore, SettingsStore
 from jabuka.nav.tacks import TackTracker
 
@@ -68,7 +75,9 @@ class NavService:
         self.course = CourseStore(self.data_dir)
         self.manual = ManualWindStore(self.data_dir)
         self.tacks = TackTracker(self.settings_store.settings)
-        self.polar = load_racepack_polar(self.racepack_dir)
+        self.polar_raw = load_racepack_polar(self.racepack_dir)
+        self._polar_key: tuple[float, float, float] | None = None
+        self._polar: Polar = self.polar_raw
         self.wind = wind.WindPipeline(self.settings_store.settings)
         self.last: dict | None = None
         self.errors = 0
@@ -79,6 +88,22 @@ class NavService:
     @property
     def settings(self):
         return self.settings_store.settings
+
+    @property
+    def polar(self) -> Polar:
+        """The race-pack polar with the heavy-wind reduction of the current settings (helm targets,
+        % polar, reach speed, and the router's curves). The same object comes back while the three
+        heavy_wind_* settings are unchanged: the router caches its curves on that identity."""
+        s = self.settings
+        key = (s.heavy_wind_start_kn, s.heavy_wind_full_kn, s.heavy_wind_reduction)
+        if key != self._polar_key:
+            try:
+                self._polar = derate_polar(self.polar_raw, *key)
+            except ValueError:  # validated settings cannot get here; never a dead helm
+                log.exception("heavy-wind polar reduction rejected %r: raw polar", key)
+                self._polar = self.polar_raw
+            self._polar_key = key
+        return self._polar
 
     def set_grib_provider(self, provider: wind.GribProvider | None) -> None:
         """GRIB wind at (lat, lon) for the GPS + GRIB-only source (set by the core's router)."""
@@ -180,15 +205,16 @@ class NavService:
         # factor of the current point of sail (up / down / general), speeds only (Pitfall 9)
         eff_now = efficiency_for(twa_abs, s.efficiency, s.efficiency_up, s.efficiency_down)
         pct = None
+        polar = self.polar  # one polar per tick (heavy-wind derated; the efficiency on top)
         if w.ok and tws_kn is not None:
             targets_eff = apply_efficiency(
-                self.polar.targets(tws_kn), s.efficiency, s.efficiency_up, s.efficiency_down
+                polar.targets(tws_kn), s.efficiency, s.efficiency_up, s.efficiency_down
             )
             if twa_abs is not None and speed_kn is not None:
-                ref = eff_now * self.polar.speed(tws_kn, twa_abs)
+                ref = eff_now * polar.speed(tws_kn, twa_abs)
                 pct = speed_kn / ref * 100.0 if ref > 0.05 else None
         msg["polar"] = {
-            "name": self.polar.name,
+            "name": polar.name,
             "eff": s.efficiency,
             "up": (
                 {"twa": _r(targets_eff.up_twa, 1), "bsp_kn": _r(targets_eff.up_bsp, 2)}
@@ -237,7 +263,7 @@ class NavService:
             )
             reach_bsp = None
             if w.ok and tws_kn is not None and twa_abs is not None:
-                reach_bsp = eff_now * self.polar.speed(tws_kn, twa_abs)
+                reach_bsp = eff_now * polar.speed(tws_kn, twa_abs)
             res = laylines.solve(
                 boat,
                 w,

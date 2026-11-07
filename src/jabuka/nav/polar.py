@@ -11,6 +11,13 @@ VPP beat/gybe angle is found exactly. Cached per TWS rounded to 0.1 kn.
 
 The efficiency factor is NEVER applied here (WIND-02): callers multiply target and polar speeds.
 A uniform factor does not move the VMG-optimal angles (Pitfall 9).
+
+Heavy-weather reduction: derate_polar(polar, start, full, reduction) returns a NEW polar whose
+curves are multiplied by heavy_wind_factor(tws) (1 below start, ramping to 1 - reduction at and
+above full). Callers decide whether to use it (the helm and the router share the same derated
+polar; the efficiency still multiplies on top). The factor is uniform per TWS, so it does not move
+the VMG angles either (Pitfall 9); the knots added at start and full are built on the union of
+the bracketing curves' angles, so below start the derated polar reproduces the raw one exactly.
 Units: knots and degrees (the polar's own units).
 """
 
@@ -195,6 +202,57 @@ def apply_efficiency(
     up = efficiency_up if efficiency_up is not None else efficiency
     down = efficiency_down if efficiency_down is not None else efficiency
     return Targets(raw.up_twa, raw.up_bsp * up, raw.down_twa, raw.down_bsp * down)
+
+
+# -- heavy-weather reduction -------------------------------------------------------------------
+def heavy_wind_factor(tws_kn: float, start_kn: float, full_kn: float, reduction: float) -> float:
+    """1 - reduction * clamp((tws - start) / (full - start), 0, 1): 1 up to start, 1 - reduction
+    from full upwards, linear in between."""
+    if full_kn <= start_kn:
+        return 1.0 - reduction if tws_kn >= full_kn else 1.0
+    ramp = min(1.0, max(0.0, (tws_kn - start_kn) / (full_kn - start_kn)))
+    return 1.0 - reduction * ramp
+
+
+def _knot_curve(polar: Polar, tws: float) -> Curve:
+    """A curve at `tws` reproducing the polar exactly there: the union of the bracketing curves'
+    angles up to the (interpolated) deepest TWA, plus that deepest TWA. Above the top curve it is
+    a copy of the top curve, below the lowest one the lowest curve's angle set."""
+    below = [c for c in polar.curves if c[0] < tws]
+    above = [c for c in polar.curves if c[0] > tws]
+    brackets = ([below[-1]] if below else []) + ([above[0]] if above else [])
+    deep = polar._deepest(tws)
+    angles = {a for _, pts in brackets for a, _ in pts if a <= deep}
+    angles.add(deep)
+    return tws, [(a, polar.speed(tws, a)) for a in sorted(angles)]
+
+
+def derate_polar(polar: Polar, start_kn: float, full_kn: float, reduction: float) -> Polar:
+    """The polar with the heavy-wind reduction applied on its curves (pure: never mutates
+    `polar`). reduction == 0 returns `polar` itself. Knots are added at start_kn and full_kn
+    (unless a curve already exists there) so the ramp is exact; every curve keeps its own TWA
+    points. Raises ValueError unless 0 < start_kn < full_kn and 0 <= reduction < 1."""
+    vals = (start_kn, full_kn, reduction)
+    if not all(isinstance(x, int | float) and math.isfinite(x) for x in vals):
+        raise ValueError(f"polaire vent fort : valeurs non finies {vals!r}")
+    if not 0.0 < start_kn < full_kn:
+        raise ValueError(
+            f"polaire vent fort : le début ({start_kn}) doit être > 0 et < la fin ({full_kn})"
+        )
+    if not 0.0 <= reduction < 1.0:
+        raise ValueError(f"polaire vent fort : réduction hors de [0, 1[ : {reduction}")
+    if reduction == 0.0:
+        return polar
+    curves: list[Curve] = list(polar.curves)
+    for k in (float(start_kn), float(full_kn)):
+        if not any(math.isclose(t, k, abs_tol=1e-6) for t, _ in polar.curves):
+            curves.append(_knot_curve(polar, k))
+    curves.sort(key=lambda c: c[0])
+    out = [
+        (tws, [(a, b * heavy_wind_factor(tws, start_kn, full_kn, reduction)) for a, b in pts])
+        for tws, pts in curves
+    ]
+    return Polar(name=polar.name, curves=out, source=polar.source)
 
 
 # -- parsing / serialisation -------------------------------------------------------------------
