@@ -131,6 +131,62 @@ La portée system ne peut pas tourner sur le portable sans root : ses drop-ins s
 - Sur le Pi (`--systemd system`), ce sont les vraies unités qui sont relancées, avec leur
   durcissement ; le Pi 3B tient **20×** (36 h en ~1 h 50) ou **10×** (~3 h 40), pas 60×.
 
+## Résultats portable (race-36h, 2026-11-07)
+
+Portable x86_64, 8 cœurs, 32 Go, Python 3.13 (`.venv313`, l'interpréteur du Pi), mode shim,
+`bash scripts/soak.sh --scenario race-36h` lancé sous `nice -n 5 ionice -c2 -n7` (la porte et
+d'autres travaux tournaient en même temps). 129 600 s simulées (36 h) en ~36 min réelles, 94
+pannes par exécution.
+
+| Exécution | Dossier (`var/soak/`) | Code | Vitesse | Verdict |
+|---|---|---|---|---|
+| 1 (découverte) | `20261107T113002Z-race-36h` | lancée sur b04dae8 (code produit inchangé depuis), rapport daté 0832f7f | 59,96× | **PASS** |
+| 2 | `20261107T120650Z-race-36h` | 0832f7f, arbre propre | 59,96× | FAIL : f92 `clock-jump` (défaut du **banc**, corrigé en 394aa31, voir constats) |
+| 3 | `20261107T124725Z-race-36h` | 394aa31, arbre propre | 60× | **interrompue** à 78 040 s simulées (f80, 79 pannes, aucune en échec) : processus arrêté par Claude Code, mémoire du portable saturée par d'autres tâches (swap plein, charge 23) ; pas de rapport |
+
+Le code **produit** (`src/jabuka/{core,ingest,nav,route,sim,common}`) n'a pas changé pendant ce
+plan : seuls le banc (`src/jabuka/soak/`, `src/jabuka/tools/soak.py`) et `scripts/soak.sh` ont
+changé. Le PASS de l'exécution 1 vaut donc pour le produit. **À refaire** pour freeze-check F3
+(qui exige un rapport PASS sans changement de `src/` jusqu'à HEAD) : `bash scripts/soak.sh`
+sur le HEAD final, machine au calme.
+
+Mesures et budgets de l'exécution 1 (PASS ; l'exécution 2 donne les mêmes ordres de grandeur, sa
+seule ligne en échec est la route après f92) :
+
+| mesure | mesuré | budget | ok |
+|---|---|---|---|
+| recovery bus (s) | worst 0.55, p95 0.54 (20 faults) | 10 | oui |
+| recovery GPS (s) | worst 0.03, p95 0.03 (4 faults) | 10 | oui |
+| recovery process restart (s) | worst 3.1, p95 3.1 (12 faults) | 30 | oui |
+| recovery watchdog hang (s) | worst 25.93, p95 25.93 (2 faults) | 60 | oui |
+| recovery power pull (s) | worst 3.4, p95 3.4 (8 faults) | 60 | oui |
+| route after fault (s) | worst 1.74, p95 1.06 (23 faults) | 60 | oui |
+| restart with a short GRIB (s) | worst 4.36, p95 4.36 (8 faults) | 30 | oui |
+| log writes resume after disk full (s) | worst 0, p95 0 (2 faults) | 30 | oui |
+| max RSS core (MB) | 79.3 | 250 | oui |
+| max RSS worker (MB) | 150.4 | 250 | oui |
+| leak slope core (MB/36 h) | 9.76 (exécution 2 : 16.55) | 20 | oui |
+| leak slope worker (MB/36 h) | 4.71 (exécution 2 : 0.84) | 20 | oui |
+| fd growth | 1 | 8 | oui |
+| thread growth | 0 | 4 | oui |
+| CPU per sim s (CPU s) | 0.0046 | 0.1 | oui |
+| tick ratio | 1 | ≥ 0.95 | oui |
+| log usage (MB) | 44 (tmpfs 128 Mo, 31 suppressions de rétention) | 128 | oui |
+| land crossings | 0 of 320 routes | 0 | oui |
+| unexpected tracebacks | 0 (221 attendues, ENOSPC dans les fenêtres disk-full) | 0 | oui |
+
+Pannes par type (94) : bus-silent 6, clock-jump 6, course-change 3, disk-full 2, garbage 3,
+gps-loss 4, grib-gap 8, kill-core 3, kill-ingest 2, kill-worker 5, noise 6, power-pull 8 (dont
+corruptions garbage, truncate_half, drop_main, stray_tmp), sigterm-storm 7, stay-toggle 9,
+unplug 5, watchdog-hang 2, ws-churn 7, ws-stall 8. Persistance vérifiée après les 8 coupures,
+`logcheck` ok 9 fois.
+
+**Pente de fuite** : appliquée (segment de 12 h simulées sans redémarrage, la queue calme). La
+courbe RSS du core n'est pas une rampe : 65 Mo au démarrage, palier ~73-75 Mo après 1 à 2 h, une
+marche de +4 Mo vers 97 000 s simulées (exécution 2), puis plat (±1 Mo) sur les 8 à 10 dernières
+heures. L'ajustement linéaire sur tout le segment surestime donc la pente ; il reste sous le
+budget sans retouche de la chauffe ni du budget.
+
 ## Soak sur le Pi 3B (à faire avant le 2026-11-10)
 
 Une seule commande, sur le Pi lui-même, en SSH par Ethernet (le Wi-Fi reste le point d'accès de la
@@ -192,11 +248,11 @@ ils sont **à confirmer** par le soak ci-dessus ; ce relevé ferme aussi l'élé
 
 | Mesure | Budget | Portable (race-36h) | Pi 3B (à remplir) |
 |---|---|---|---|
-| RSS max core (Mo) | 250 | voir « Résultats portable » | |
-| RSS max worker (Mo) | 250 | voir « Résultats portable » | |
-| Pente de fuite core (Mo/36 h) | 20 | voir « Résultats portable » | |
-| CPU par seconde simulée (CPU s) | 0,10 | voir « Résultats portable » | |
-| Ratio de ticks | ≥ 0,95 | voir « Résultats portable » | |
+| RSS max core (Mo) | 250 | 79,3 | |
+| RSS max worker (Mo) | 250 | 150,4 | |
+| Pente de fuite core (Mo/36 h) | 20 | 9,8 / 16,6 | |
+| CPU par seconde simulée (CPU s) | 0,10 | 0,005 | |
+| Ratio de ticks | ≥ 0,95 | 1,0 | |
 | Vitesse tenue | — | 60× | 20× ou 10× |
 | Température max (°C) | (relevé) | — | |
 | Bits throttling vus | aucun | — | |
@@ -285,6 +341,7 @@ correspond à un motif autorisé pour ce type de panne. La table intégrée ne c
 | 2026-11-06 | arrêt du core (porte : `tests/sim/test_synth_e2e.py` bloqué) | l'arrêt propre du core ne se termine jamais | le nettoyage de session du client gpsd avalait `CancelledError` pendant l'attente de fermeture de la socket : le client se reconnectait sans fin | `CancelledError` n'est plus attrapée dans ce nettoyage | `tests/gps/test_gpsd_client_cancel.py` |
 | 2026-11-06 | `disk-full` (Python 3.13 seulement, celui du Pi) | `logcheck` : ligne JSON invalide **au milieu** du journal dérivé | le `BufferedWriter` de Python 3.13 écrit directement une ligne longue (un diag fait plusieurs Kio) ; si le disque se remplit au milieu, la moitié reste sur disque et le reste est perdu, la ligne suivante se colle au fragment | `RotatingAppendLog` tamponne lui-même des lignes entières, écrit par un fichier non tamponné et, en cas d'échec, tronque le fichier à la dernière ligne entière et garde le lot pour réessayer | `tests/test_rawlog_full_disk.py` |
 | 2026-11-06 | `clock-jump` (+1 h puis retour) | plus aucun recalcul de route pendant ~1 h | le minuteur de recalcul et l'âge de la route partaient d'une heure « future » | déclencheur forcé « clock » quand l'heure recule de plus de 30 s ; une route calculée pour une heure future est retirée (« heure GPS revenue en arrière ») jusqu'au recalcul | `tests/routing/test_clock_step_back.py` |
+| 2026-11-07 | `clock-jump` (soak complet 2, f92) | « pas de nouvelle route en 60 s » après le retour de l'heure | **défaut du banc** : le bateau a fini le parcours B pendant la fenêtre de la panne (état route `no_course`, à raison) ; le banc ne choisissait le parcours suivant qu'entre deux pannes | `_route_after` relance la sélection du parcours suivant pendant l'attente (394aa31) ; aucun défaut produit | `tests/soak/test_soak_tracer.py::test_route_wait_selects_the_next_course_when_the_boat_finished_during_a_fault` |
 
 Observations sans correction (pas des défauts) :
 
