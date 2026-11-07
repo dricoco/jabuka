@@ -39,7 +39,7 @@ Nothing is fetched at runtime: the tablet loads everything from the core.
 | `sprites/dark@2x.json` | sprites v4 | https://protomaps.github.io/basemaps-assets/sprites/v4/ | `1fb5b123fbe35d2e1f6ac171513ce01df89e671273a417ee89c44886a4c132f0` | BSD-3-Clause / CC0 (Protomaps) |
 | `sprites/dark@2x.png` | sprites v4 | https://protomaps.github.io/basemaps-assets/sprites/v4/ | `6e01b4e366d304f27bbd55390511a3d4e39aa1d03eb3e82f873f7ea32e74cbe4` | BSD-3-Clause / CC0 (Protomaps) |
 | `style-day.json` | basemaps 5.7.2 | scripts/build-styles.mjs (flavor light, lang hr) | `52d4e2cde4d705a4db4e0d7ac272cf7a6c3e64a08fa73283a9bb689a809ca1d8` | BSD-3-Clause (style code) |
-| `style-night.json` | basemaps 5.7.2 | scripts/build-styles.mjs (flavor black -> red) | `994baf704a8c1b973f9083c0d86a1f6064728f3d8c132b54d99e2570efa30109` | BSD-3-Clause (style code) |
+| `style-night.json` | basemaps 5.7.2 | scripts/build-styles.mjs (flavor black -> red) | `f8d782215bb0e8cd363c0879cb799e269a6d6e31abcc81fbd3be207f90347b24` | BSD-3-Clause (style code) |
 
 Map data: © OpenStreetMap contributors (ODbL 1.0), basemap tiles © Protomaps; shown as
 "Protomaps © OpenStreetMap" in the map attribution.

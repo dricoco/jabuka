@@ -36,11 +36,16 @@ function toRed(value) {
   m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(s);
   if (m) {
     const n = parseInt(m[1], 16);
+    // Already a pure red (the night flavor was converted once, then the layer paint built from
+    // it goes through toRed again): keep it, or earth #260000 dims to #040000 on #000000 water
+    // and the islands vanish at night.
+    if ((n & 0xffff) === 0) return value;
     const v = hex2(lum((n >> 16) & 255, (n >> 8) & 255, n & 255) * GAIN);
     return m[2] ? `rgba(${parseInt(v, 16)},0,0,${(parseInt(m[2], 16) / 255).toFixed(3)})` : `#${v}0000`;
   }
   m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(s);
   if (m) {
+    if (+m[2] === 0 && +m[3] === 0) return value; // already red (see above)
     const v = Math.round(lum(+m[1], +m[2], +m[3]) * GAIN);
     return m[4] !== undefined ? `rgba(${v},0,0,${m[4]})` : `#${hex2(v)}0000`;
   }
@@ -60,8 +65,19 @@ Object.assign(night, { water: "#000000", background: "#000000", earth: "#260000"
 
 const DROP_AT_NIGHT = new Set(["roads_shields", "roads_oneway", "pois"]);
 
+// The earth fill alone is a dim #260000: small islands disappear at night. Outline it with the
+// same #600000 coastline the no-tiles fallback style draws (map.js coastlineStyle).
+const COAST_AT_NIGHT = {
+  id: "earth_coastline",
+  type: "line",
+  source: "protomaps",
+  "source-layer": "earth",
+  paint: { "line-color": "#600000", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.6, 12, 1.5] },
+};
+
 function nightLayers() {
   return B.layers("protomaps", night, { lang: "hr" })
+    .flatMap((layer) => (layer.id === "earth" ? [layer, COAST_AT_NIGHT] : [layer]))
     .filter((layer) => !DROP_AT_NIGHT.has(layer.id))
     .map((layer) => {
       const out = { ...layer };

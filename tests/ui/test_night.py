@@ -149,6 +149,23 @@ def test_night_style_file_has_no_icons_and_only_red() -> None:
     assert sorted({c for c in colors if not _pure_red_or_black(c)}) == []
 
 
+def test_night_land_stands_out_from_the_sea() -> None:
+    """Islands and coast must stay visible at night: the earth fill is the designed #260000, not
+    the near-black #040000 a second red conversion produced (build-styles.mjs toRed twice)."""
+    night = json.loads((STATIC / "style-night.json").read_text())
+    paint = {layer["id"]: layer.get("paint", {}) for layer in night["layers"]}
+    assert paint["water"]["fill-color"] == "#000000"
+    assert paint["background"]["background-color"] == "#000000"
+    earth = paint["earth"]["fill-color"]
+    assert earth == "#260000"
+    assert int(earth[1:3], 16) >= 0x20
+    ids = [layer["id"] for layer in night["layers"]]
+    coast = night["layers"][ids.index("earth_coastline")]
+    assert ids.index("earth_coastline") == ids.index("earth") + 1
+    assert coast["source-layer"] == "earth"
+    assert coast["paint"]["line-color"] == "#600000"
+
+
 def test_night_toggle_is_red_only_and_persists(page, feeder) -> None:
     _near_plic_sestre(feeder)
     pg = page.page
