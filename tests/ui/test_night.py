@@ -218,19 +218,63 @@ def test_night_toggle_is_red_only_and_persists(page, feeder) -> None:
     )
     assert pg.evaluate(COLORS_JS)["bad"] == []
 
-    # overlay layers at night: red shades only, labels from text-field, no sprite
+    # overlay layers at night: red shades only, labels from text-field, no sprite; the one icon
+    # is the boat, drawn at runtime in red and black only (checked pixel by pixel)
     layers = pg.evaluate(OVERLAY_COLORS_JS)
     assert {lay["overlay"] for lay in layers} == {"helm-course", "helm-live", "seamarks"}
     colors: list[str] = []
     for lay in layers:
         _colors(lay["paint"], colors)
-        assert "icon-image" not in lay["layout"], lay["id"]
+        icon = lay["layout"].get("icon-image")
+        assert icon in (None, "jabuka-boat-night"), lay["id"]
+    pg.wait_for_function("() => window.jabuka.map.hasImage('jabuka-boat-night')", timeout=15000)
+    non_red = pg.evaluate(
+        """() => { const d = window.jabuka.map.style.getImage('jabuka-boat-night').data.data;
+          let bad = 0, red = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3] === 0) continue;
+            if (d[i + 1] !== 0 || d[i + 2] !== 0) bad++; else if (d[i] > 0) red++;
+          }
+          return {bad, red}; }"""
+    )
+    assert non_red["bad"] == 0 and non_red["red"] > 100, non_red
     assert colors
     assert sorted({c for c in colors if not _pure_red_or_black(c)}) == []
     labels = [lay for lay in layers if "text-field" in lay["layout"]]
     assert {lay["id"] for lay in labels} >= {"seamarks-label", "helm-mark-label"}
     assert page.external_requests == []
     assert page.bad_responses == [], page.bad_responses
+
+
+BOAT_JS = """() => {
+  const m = window.jabuka.map;
+  const ids = m.getStyle().layers.map((l) => l.id);
+  const lay = m.getStyle().layers.find((l) => l.id === "helm-boat");
+  return {tail: ids.slice(-2), type: lay && lay.type, image: lay && lay.layout["icon-image"],
+          loaded: m.hasImage("jabuka-boat-day") || m.hasImage("jabuka-boat-night")};
+}"""
+
+
+def _assert_boat_icon_on_top(pg, theme: str) -> None:
+    """The boat is a heading-rotated hull icon drawn above every overlay (route included), and
+    its image is re-added after a day/night style switch."""
+    pg.wait_for_function(f"() => window.jabuka.map.hasImage('jabuka-boat-{theme}')", timeout=15000)
+    info = pg.evaluate(BOAT_JS)
+    assert sorted(info["tail"]) == ["helm-boat", "helm-boat-dot"]
+    assert info["type"] == "symbol"
+    assert info["image"] == f"jabuka-boat-{theme}"
+
+
+def test_boat_icon_on_top_in_both_themes(page, feeder) -> None:
+    _near_plic_sestre(feeder)
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    _wait_overlays(pg)
+    _assert_boat_icon_on_top(pg, "day")
+    pg.click("#night-toggle")
+    pg.wait_for_function("() => window.jabuka.map.getStyle().name === 'jabuka-night'")
+    _assert_boat_icon_on_top(pg, "night")
+    assert page.external_requests == []
 
 
 def test_overlays_survive_theme_switches_and_carte_tab(page, feeder) -> None:
@@ -246,6 +290,7 @@ def test_overlays_survive_theme_switches_and_carte_tab(page, feeder) -> None:
         assert pg.evaluate(IDLE_JS) is True
         _assert_overlays_hold_data(pg, course)
     assert pg.evaluate("() => localStorage.getItem('jabuka.theme')") == "day"
+    _assert_boat_icon_on_top(pg, "day")
 
     vis_js = """(overlay) => window.jabuka.map.getStyle().layers
       .filter((l) => (l.metadata || {})["jabuka:overlay"] === overlay)

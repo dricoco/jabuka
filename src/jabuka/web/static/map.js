@@ -9,6 +9,8 @@
 //   registerOverlay(id, {sources: {name: spec}, layers: (theme) => LayerSpec[]})
 //   setOverlayData(sourceName, geojson)             keeps the data across style switches
 //   setOverlayVisible(id, bool)
+//   registerImage(id, () => {data: ImageData, pixelRatio})  icon added whenever a layer needs it
+//                                                   (survives day/night style switches)
 //   setTheme("day" | "night")                       re-styles, re-adding every overlay
 //   setMapPadding({top, right, bottom, left})       px of the map hidden under the UI (quick 002:
 //                                                   the helm column); the camera centre, easeTo
@@ -152,6 +154,11 @@ function overlayLayers(id, def, theme) {
   }));
 }
 
+// Layers whose metadata says "jabuka:top" (the boat) stay above every other overlay, whatever
+// order the overlays were registered in (route.js registers after overlays.js).
+const isTop = (layer) => Boolean(layer?.metadata?.["jabuka:top"]);
+const topLast = (layers) => [...layers.filter((l) => !isTop(l)), ...layers.filter(isTop)];
+
 function addOverlay(map, id, def) {
   for (const [name, spec] of Object.entries(def.sources)) {
     if (!map.getSource(name)) map.addSource(name, spec);
@@ -159,12 +166,34 @@ function addOverlay(map, id, def) {
   for (const layer of overlayLayers(id, def, currentTheme)) {
     if (!map.getLayer(layer.id)) map.addLayer(layer);
   }
+  for (const layer of map.getStyle()?.layers ?? []) {
+    if (isTop(layer)) map.moveLayer(layer.id);
+  }
 }
 
 export function registerOverlay(id, { sources, layers }) {
   const def = { sources: { ...sources }, layers, visible: true };
   overlays.set(id, def);
   if (mapInstance) addOverlay(mapInstance, id, def);
+}
+
+// Runtime icons (the boat): a style switch drops every image added with addImage, so they are
+// (re)added on demand when a layer asks for a missing one. factory() -> {data: ImageData, pixelRatio}.
+const images = new Map();
+
+export function registerImage(id, factory) {
+  images.set(id, factory);
+}
+
+function addMissingImage(map, id) {
+  const factory = images.get(id);
+  if (!factory || map.hasImage(id)) return;
+  try {
+    const { data, pixelRatio } = factory();
+    map.addImage(id, data, { pixelRatio });
+  } catch (e) {
+    console.warn("image", id, e);
+  }
 }
 
 export function setOverlayData(sourceName, data) {
@@ -249,6 +278,7 @@ export function ensureMap(container, opts = {}) {
     }
     built = map;
     map.on("error", (ev) => console.warn("map:", ev?.error?.message ?? ev));
+    map.on("styleimagemissing", (ev) => addMissingImage(map, ev.id));
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("map load timeout")), LOAD_TIMEOUT_MS);
       map.once("load", () => {
@@ -312,7 +342,7 @@ async function applyWantedTheme() {
         Object.assign(sources, def.sources);
         layers.push(...overlayLayers(id, def, t));
       }
-      return { ...next, sources, layers };
+      return { ...next, sources, layers: topLast(layers) };
     },
   });
 }

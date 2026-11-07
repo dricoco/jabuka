@@ -13,7 +13,7 @@
 // Day colours, or red shades only at night (HELM-03, Pitfall 4). Labels use text-field only (no
 // HTML, T-02-05-01). Sources are prefixed "helm-" except the 02-01 names (laylines, anchor, mark,
 // boat) the smoke test reads, so the 02-04 "carte" sources never collide with them.
-import { ensureMap, mapReady, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
+import { ensureMap, mapReady, registerImage, registerOverlay, setOverlayData, setOverlayVisible } from "./map.js";
 
 const EMPTY = { type: "FeatureCollection", features: [] };
 const HEADING_LINE_NM = 0.3;
@@ -92,7 +92,7 @@ export function liveData(nav) {
     laylines: nav?.layline?.geojson ?? EMPTY,
     mark: mark && isNum(mark.lat) && isNum(mark.lon) ? fc([feature(pt(mark.lon, mark.lat), { name: String(mark.name) })]) : EMPTY,
     anchor: mark && isNum(mark.anchor_lat) && isNum(mark.anchor_lon) ? fc([feature(pt(mark.anchor_lon, mark.anchor_lat))]) : EMPTY,
-    boat: hasBoat ? fc([feature(pt(boat.lon, boat.lat))]) : EMPTY,
+    boat: hasBoat ? fc([feature(pt(boat.lon, boat.lat), isNum(hdg) ? { hdg } : {})]) : EMPTY,
     "helm-heading":
       hasBoat && isNum(hdg)
         ? fc([
@@ -258,12 +258,62 @@ export function liveLayers(theme) {
       paint: { "line-color": c.heading, "line-width": 3 },
     },
     {
-      id: "helm-boat",
+      // no heading yet: a plain dot (bigger than a seamark's)
+      id: "helm-boat-dot",
+      metadata: { "jabuka:top": true },
       type: "circle",
       source: "boat",
-      paint: { "circle-radius": 7, "circle-color": c.boat, "circle-stroke-width": 2, "circle-stroke-color": c.halo },
+      filter: ["!", ["has", "hdg"]],
+      paint: { "circle-radius": 8, "circle-color": c.boat, "circle-stroke-width": 3, "circle-stroke-color": c.halo },
+    },
+    {
+      // hull silhouette pointing along the heading; "map" alignment keeps it right in course-up
+      id: "helm-boat",
+      metadata: { "jabuka:top": true },
+      type: "symbol",
+      source: "boat",
+      filter: ["has", "hdg"],
+      layout: {
+        "icon-image": `jabuka-boat-${theme === "night" ? "night" : "day"}`,
+        "icon-rotate": ["get", "hdg"],
+        "icon-rotation-alignment": "map",
+        "icon-pitch-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
     },
   ];
+}
+
+// Boat icon: a hull seen from above, bow up, filled with the boat colour and outlined with the
+// halo colour so it stands out from the seamark dots. 22 x 48 CSS px, drawn at 2x.
+const BOAT_W = 22;
+const BOAT_H = 48;
+const BOAT_RATIO = 2;
+
+export function boatImage(theme) {
+  const c = palette(theme);
+  const w = BOAT_W * BOAT_RATIO;
+  const h = BOAT_H * BOAT_RATIO;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const g = canvas.getContext("2d");
+  const lw = 2.5 * BOAT_RATIO;
+  const m = lw; // keep the outline inside the canvas
+  g.beginPath();
+  g.moveTo(w / 2, m); // bow
+  g.bezierCurveTo(w - m, h * 0.3, w - m, h * 0.6, w - m * 1.6, h - m); // starboard side
+  g.lineTo(m * 1.6, h - m); // transom
+  g.bezierCurveTo(m, h * 0.6, m, h * 0.3, w / 2, m); // port side
+  g.closePath();
+  g.fillStyle = c.boat;
+  g.fill();
+  g.lineWidth = lw;
+  g.lineJoin = "round";
+  g.strokeStyle = c.halo;
+  g.stroke();
+  return { data: g.getImageData(0, 0, w, h), pixelRatio: BOAT_RATIO };
 }
 
 export function seamarkLayers(theme) {
@@ -427,6 +477,8 @@ export async function mount(ctx) {
     },
     layers: courseLayers,
   });
+  registerImage("jabuka-boat-day", () => boatImage("day"));
+  registerImage("jabuka-boat-night", () => boatImage("night"));
   registerOverlay("helm-live", {
     sources: { laylines: src(), anchor: src(), "helm-heading": src(), boat: src() },
     layers: liveLayers,
