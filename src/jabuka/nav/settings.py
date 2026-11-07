@@ -2,7 +2,8 @@
 version for optimistic concurrency (CRSE-05, RESEARCH Pattern 7, Security Domain V5).
 
 <data-dir>/settings.json = {"version": int, "settings": {...}}. A torn or invalid file falls back to
-NAME.bak, then to the defaults with an alert string.
+NAME.bak with a "restauré" alert (04-REVIEW WR-04), then to the defaults with an "illisible"
+alert. wind_manual.json follows the same rule.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     field_validator,
     model_validator,
 )
@@ -117,25 +117,29 @@ class VersionConflict(Exception):
         self.current = current
 
 
+def _parse_settings_file(raw: Any) -> tuple[Settings, int]:
+    """settings.json content -> (settings, version). Raises ValueError (pydantic ValidationError
+    included) when invalid: load_json_status then tries NAME.bak."""
+    if not isinstance(raw, dict):
+        raise ValueError("not an object")
+    settings = Settings.model_validate(raw.get("settings", {}))
+    v = raw.get("version", 0)
+    return settings, (v if isinstance(v, int) and not isinstance(v, bool) else 0)
+
+
 class SettingsStore:
     def __init__(self, data_dir: str | Path) -> None:
         self.path = Path(data_dir) / SETTINGS_FILE
         self.alerts: list[str] = []
-        raw, source = load_json_status(self.path, None)
+        parsed, source = load_json_status(self.path, None, validate=_parse_settings_file)
         self.version = 0
         self.settings = Settings()
-        if source == "unreadable":  # present but neither NAME nor NAME.bak loads (04-01 soak)
+        if parsed is not None:  # "main" or "bak"
+            self.settings, self.version = parsed
+        if source == "bak":  # older settings may come back: never silent (04-REVIEW WR-04)
+            self.alerts.append("Réglages restaurés depuis la sauvegarde : vérifier les réglages")
+        elif source == "unreadable":  # present but neither NAME nor NAME.bak valid (04-01 soak)
             self.alerts.append("Réglages illisibles : valeurs par défaut")
-        if raw is not None:
-            try:
-                if not isinstance(raw, dict):
-                    raise ValueError("not an object")
-                self.settings = Settings.model_validate(raw.get("settings", {}))
-                v = raw.get("version", 0)
-                self.version = v if isinstance(v, int) and not isinstance(v, bool) else 0
-            except (ValidationError, ValueError):
-                self.alerts.append("Réglages illisibles : valeurs par défaut")
-                self.settings = Settings()
 
     def to_api(self) -> dict:
         return {"version": self.version, "settings": self.settings.model_dump()}
@@ -182,6 +186,16 @@ class ManualWind(BaseModel):
     t_set_wall: float | None = None
 
 
+def _parse_manual_file(raw: Any) -> ManualWind | None:
+    """wind_manual.json content -> the entry, None when cleared ({}). Raises ValueError (pydantic
+    ValidationError included) when invalid: load_json_status then tries NAME.bak."""
+    if raw is None or raw == {}:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("not an object")
+    return ManualWind.model_validate(raw)
+
+
 class ManualWindStore:
     """<data-dir>/wind_manual.json: the stored manual wind ({} when cleared). Sticky until cleared:
     live instrument wind outranks it without deleting it (next outage reuses it)."""
@@ -193,14 +207,11 @@ class ManualWindStore:
         # bumps on every set/clear: observers key on it, never on t_set_wall, which is None
         # without trusted GPS time (03-REVIEW LO-01)
         self.version = 0
-        raw, source = load_json_status(self.path, None)
-        if source == "unreadable":  # present but neither NAME nor NAME.bak loads (04-01 soak)
+        self.entry, source = load_json_status(self.path, None, validate=_parse_manual_file)
+        if source == "bak":  # an older wind may come back: never silent (04-REVIEW WR-04)
+            self.alerts.append("Vent manuel restauré depuis la sauvegarde : vérifier le vent")
+        elif source == "unreadable":  # present but neither NAME nor NAME.bak valid (04-01 soak)
             self.alerts.append("Vent manuel illisible : ignoré")
-        if raw:  # None (missing) or {} (cleared) -> no entry
-            try:
-                self.entry = ManualWind.model_validate(raw)
-            except ValidationError:
-                self.alerts.append("Vent manuel illisible : ignoré")
 
     def set(
         self, twd: float, tws_kn: float, ref: str, variation_deg: float, t_wall: float | None
