@@ -4,15 +4,15 @@ current_phase: 04
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
 stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-07T20:35:04.715Z"
+last_updated: "2026-11-07T22:29:10.153Z"
 last_activity: 2026-11-07
-last_activity_desc: Resumed after crash; merged 04-01, quick-002, quick-003; master gate green (1464 passed x2)
-state_head: 53fe65fc6d21a7bcf1b2b7f4246a527561772dc1
+last_activity_desc: Phase 04 execution started
+state_head: 4aff9d3cf415db099d1edd91c2d3d6386ce0de64
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 20
-  completed_plans: 17
+  completed_plans: 18
   percent: 0
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-05)
 
 **Core value:** At the helm, during the race, the screen shows a trustworthy, continuously updated "steer this / tack here" (optimal course to the next mark + laylines) computed from live boat data — even if parts of the data chain fail.
-**Current focus:** Phase 2 — Helm MVP — Laylines, Marks & Map
+**Current focus:** Phase 04 — race-readiness-hardening-commissioning
 
 ## Current Position
 
-Phase: 04 (race-readiness-hardening-commissioning) — READY TO EXECUTE
-Plan: 04-01 and 04-02 complete; 04-03 (Pi soak) next
-Status: Phases 1–3 executed; quick 001–003 done; master gate green 2026-11-07
-Last activity: 2026-11-07 — Completed quick task 261107-i6x: French Pi 3B install guide (docs/INSTALL-PI.md)
+Phase: 04 (race-readiness-hardening-commissioning) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 04
+Last activity: 2026-11-07 — Phase 04 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -86,6 +86,7 @@ Recent decisions affecting current work:
 | 7 | Jeu queue d'aronde support X35 0.6 -> 0.8 mm/flanc | 2026-11-07 | cf2be60 | — |
 | 8 | Support X35 : écrous M6 captifs au lieu d'inserts | 2026-11-07 | fdb0bb9 | — |
 | 9 | Boîte tablette : écrous M3/M4 captifs au lieu d'inserts | 2026-11-07 | 53fe65f | — |
+| 10 | Support X35 : centre tablette abaissé à 730 mm | 2026-11-07 | 4aff9d3 | — |
 
 ### Blockers/Concerns
 
