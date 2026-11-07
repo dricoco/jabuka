@@ -133,6 +133,7 @@ def _route_after(
         v = r.get("version") or 0
         return v > v_before or (restarted and v != v_before)
 
+    upkept = False
     while time.time() < deadline:
         newer = [r for r in h.tablet.routes_after(t_from) if new(r)]
         if newer:
@@ -141,6 +142,14 @@ def _route_after(
             rec["route_s"] = round(r["t_wall"] - t_from, 2)
             return True
         h.poll_abort()
+        if h.tablet.route_block().get("state") == "no_course":
+            # the boat finished the course inside the fault window (04-03 full run, f92): no
+            # router can compute a route until the next template is selected, which the run loop
+            # otherwise does only between faults
+            h.course_upkeep()
+            if not upkept:
+                upkept = True
+                _note(rec, "course finished during the fault: next course selected")
         time.sleep(0.05)
     _note(rec, f"no new route (version > {v_before}) within {budget:g} s")
     rec["route_s"] = None
@@ -211,7 +220,7 @@ def _ingest_recovery(h: Harness, rec: dict[str, Any], t_kill: float, budget_key:
 
 
 def _exit_codes(h: Harness, role: str, since: float) -> list[int | None]:
-    return [e["code"] for e in h.sup.services[role].exits if e["t_wall"] >= since]
+    return h.sup.exit_codes(role, since)
 
 
 # -- process faults ----------------------------------------------------------------------------
@@ -261,8 +270,7 @@ def kill_ingest(h: Harness, spec: FaultSpec) -> dict[str, Any]:
         _fail(rec, "ingest not running")
         return rec
     _ingest_recovery(h, rec, rec["t_wall"], "process")
-    n = h.sup.services["ingest"].n
-    rec["ingest_starts"] = n
+    rec["ingest_starts"] = h.sup.starts("ingest")
     return rec
 
 
@@ -486,36 +494,41 @@ def power_pull(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     h.http("POST", "/api/wind/manual", {"twd": 150.0, "tws_kn": 11.5, "ref": "T"})
     snap = _snapshot(h)
     rec["t_wall"] = t_pull = time.time()
-    h.sup.hold()
-    pids = h.sup.kill_all_groups()
-    rec["pids"] = pids
-    deadline = time.time() + 10.0
-    while any(h.sup.main_pid(r) is not None for r in ("core", "ingest")):
-        if time.time() > deadline:
-            _fail(rec, "processes survived the pull")
-            break
-        time.sleep(0.02)
-    if _wait_conn_drop(h, t_pull, 10.0) is None:
-        _fail(rec, "the tablet never lost the core")
-    files = {
-        name: _read_json(h.data_dir / name)
-        for base in ("course.json", "settings.json", "wind_manual.json", "route.json")
-        for name in (base, base + ".bak")
-    }
-    lc = h.run_logcheck(f"after power pull {spec.id}")
-    rec["logcheck_ok"] = lc["ok"]
-    if lc["ok"] is False:
-        _fail(rec, f"logcheck after the pull: {lc['errors'][:3]}")
+    files: dict[str, Any] = {}
     target = None
-    if action:
-        target, desc = corrupt(action, h.data_dir, h.run_dir, h.rng)
-        rec["corruption"] = desc
-        h.log("corrupt", id=spec.id, action=action, detail=desc)
-    off_wall = off_s / h.speed
-    time.sleep(max(0.0, off_wall - (time.time() - t_pull)))
-    rec["cleared_wall"] = t_on = time.time()
-    h.sup.start("ingest")
-    h.sup.start("core")
+
+    def off(pids: list[int]) -> None:
+        """Power is off (no process, no auto-restart): logcheck, the corruption, the off time."""
+        nonlocal files, target
+        rec["pids"] = pids
+        deadline = time.time() + 10.0
+        while any(h.sup.main_pid(r) is not None for r in ("core", "ingest")):
+            if time.time() > deadline:
+                _fail(rec, "processes survived the pull")
+                break
+            time.sleep(0.02)
+        if _wait_conn_drop(h, t_pull, 10.0) is None:
+            _fail(rec, "the tablet never lost the core")
+        files = {
+            name: _read_json(h.data_dir / name)
+            for base in ("course.json", "settings.json", "wind_manual.json", "route.json")
+            for name in (base, base + ".bak")
+        }
+        lc = h.run_logcheck(f"after power pull {spec.id}")
+        rec["logcheck_ok"] = lc["ok"]
+        if lc["ok"] is False:
+            _fail(rec, f"logcheck after the pull: {lc['errors'][:3]}")
+        if action:
+            target, desc = corrupt(action, h.data_dir, h.state_root, h.rng)
+            h.own_state(h.data_dir)
+            rec["corruption"] = desc
+            h.log("corrupt", id=spec.id, action=action, detail=desc)
+        off_wall = off_s / h.speed
+        time.sleep(max(0.0, off_wall - (time.time() - t_pull)))
+        rec["cleared_wall"] = time.time()
+
+    h.sup.power_pull(off)  # kill all, stop (no auto-restart), off(), then start ingest + core
+    t_on = rec["cleared_wall"] or time.time()
     budget = h.sc.budget("power")
     rec["budget_s"] = budget
     t_live = h.tablet.wait_live(t_on, budget * 2.0 + 10.0)
@@ -542,17 +555,18 @@ def watchdog_hang(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     sends SIGABRT then SIGKILL, and restarts it. SIGCONT is never needed."""
     v_before = h.tablet.max_route_version()
     rec = _rec(spec, h, route_version_before=v_before)
-    svc = h.sup.services["core"]
-    wd = svc.policy.watchdog_sec
+    wd = h.sup.watchdog_sec("core")
     if not wd:
         _fail(rec, "no WatchdogSec on the core")
         return rec
-    kills0 = svc.watchdog_kills
+    kills0 = h.sup.watchdog_kills("core")
     pid = h.sup.kill("core", signal.SIGSTOP)
     rec["t_wall"] = t0 = time.time()
     rec["pid"] = pid
     rec["watchdog_sec"] = wd
-    fired = h.tablet.wait(lambda _tb: svc.watchdog_kills > kills0, wd + 15.0)
+    # shim: its own watchdog; systemd: SubState *-watchdog seen, then the frozen pid is SIGCONTed
+    # so systemd's WatchdogSignal lands (a real hang is signalable)
+    fired = h.sup.wait_watchdog("core", pid, kills0, wd + 15.0)
     if not fired:
         _fail(rec, f"no watchdog restart within {wd + 15:.0f} s")
         if pid is not None:
@@ -773,10 +787,16 @@ def disk_full(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     stays down, the retention reserve prunes, and the derived log grows again once space is freed.
     ENOSPC tracebacks are expected inside this window only."""
     if not h.tmpfs:
-        return {"skip": "no user namespace / tmpfs for data/logs: never filled on the real disk"}
+        return {
+            "skip": getattr(
+                h,
+                "disk_full_skip",
+                "no user namespace / tmpfs for data/logs: never filled on the real disk",
+            )
+        }
     rec = _rec(spec, h)
     logs = h.data_dir / "logs"
-    ballast = inside(logs / "ballast.bin", h.run_dir)
+    ballast = inside(logs / "ballast.bin", h.state_root)
     restarts0 = {r: h.sup.restarts(r) for r in ("core", "ingest")}
     with h.tablet.lock:
         disk0 = dict(((h.tablet.last_diag or {}).get("core") or {}).get("disk") or {})
@@ -866,7 +886,7 @@ def grib_gap(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     now_utc = h.start_utc + h.sim_now()
     write_wind(
         h.pack_dir,
-        h.run_dir,
+        h.state_root,
         h.start_utc,
         now_utc + hours * 3600.0,
         **h.wind_kw(),

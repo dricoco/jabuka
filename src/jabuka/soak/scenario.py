@@ -109,6 +109,7 @@ DEFAULT_BUDGETS: dict[str, float] = {
 }
 
 LOGS_FS_MAX_BYTES = 512 * 1024 * 1024
+LOOP_FS_MAX_BYTES = 1024 * 1024 * 1024
 _SIZE = re.compile(r"^(\d+)([KMG]?)$")
 
 
@@ -122,16 +123,18 @@ def parse_size(text: str) -> int:
 
 
 def parse_logs_fs(text: str) -> tuple[str, int | None]:
-    """'auto' | 'none' | 'tmpfs:SIZE' -> (mode, bytes). The tmpfs is capped at 512M."""
+    """'auto' | 'none' | 'tmpfs:SIZE' | 'loop:SIZE' -> (mode, bytes). The tmpfs is capped at
+    512M; loop (an ext4 image in the soak dir, --systemd system only) at 1G (T-04-03-04)."""
     if text in ("auto", "none"):
         return text, None
     kind, _, size = text.partition(":")
-    if kind != "tmpfs" or not size:
-        raise ValueError(f"logs_fs must be auto, none or tmpfs:SIZE, got {text!r}")
+    if kind not in ("tmpfs", "loop") or not size:
+        raise ValueError(f"logs_fs must be auto, none, tmpfs:SIZE or loop:SIZE, got {text!r}")
     n = parse_size(size)
-    if not 0 < n <= LOGS_FS_MAX_BYTES:
-        raise ValueError(f"logs_fs tmpfs size {size} out of range (max 512M)")
-    return "tmpfs", n
+    cap, cap_s = (LOGS_FS_MAX_BYTES, "512M") if kind == "tmpfs" else (LOOP_FS_MAX_BYTES, "1G")
+    if not 0 < n <= cap:
+        raise ValueError(f"logs_fs {kind} size {size} out of range (max {cap_s})")
+    return kind, n
 
 
 @dataclass(frozen=True)

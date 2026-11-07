@@ -2,7 +2,8 @@
 check recovery through a WebSocket "tablet" and /proc probes, write a JSON + Markdown report.
 
     python -m jabuka.tools.soak --scenario ci [--speed X] [--duration SIM_S] [--seed N]
-        [--out DIR] [--logs-fs auto|tmpfs:SIZE|none] [--fixtures DIR] [--python EXE] [--keep]
+        [--out DIR] [--logs-fs auto|tmpfs:SIZE|loop:SIZE|none] [--fixtures DIR] [--python EXE]
+        [--keep] [--systemd user|system] [--systemd-cleanup]
 
 Exit 0 PASS, 1 FAIL, 2 usage/setup error. The run dir is <out>/<UTC ts>-<scenario>/ (created
 here, never pre-existing; an --out under /var/lib/jabuka is refused): report.json, report.md,
@@ -15,6 +16,13 @@ fake gpsd, steering on the core's own targets), the receive-only ingest on that 
 With logs_fs tmpfs (or auto when the scenario has a disk-full fault) the harness re-executes
 itself under ``unshare --user --map-root-user --mount`` to mount a size-limited tmpfs on
 data/logs; without a user namespace the disk-full fault is SKIPPED, never run on the real disk.
+
+--systemd (plan 04-03, jabuka.soak.systemd): the core and the ingest run as systemd units instead
+of under the shim, so systemd's own Restart=/RestartSec=/WatchdogSec=/Type=notify/KillMode drive
+every recovery. ``user``: transient user units (laptop, no sudo; disk-full SKIPPED). ``system``
+(Pi, root): the installed units through volatile /run drop-ins, soak data under
+/var/lib/jabuka/soak-<ts>/, the tablet still on port 80, cleanup always (drop-ins removed,
+production units restarted); ``--systemd-cleanup`` alone repairs an interrupted run.
 Dev / bench tool: never part of a systemd unit; it may read the wall clock.
 """
 
@@ -42,10 +50,11 @@ from typing import Any
 
 from jabuka.soak import probes
 from jabuka.soak import report as rep
+from jabuka.soak import systemd as sd
 from jabuka.soak.faults import FAULTS
 from jabuka.soak.pack import build_pack, inside
 from jabuka.soak.scenario import FaultSpec, Scenario, compile_timeline, load_scenario, parse_logs_fs
-from jabuka.soak.supervisor import UNITS, Supervisor, load_policy, repo_root
+from jabuka.soak.supervisor import UNITS, ProcessBackend, Supervisor, load_policy, repo_root
 from jabuka.soak.tablet import TabletClient
 
 REFUSED_OUT = Path("/var/lib/jabuka")
@@ -82,6 +91,19 @@ def local_minutes(epoch: float, *, up: bool = False) -> str:
     return datetime.fromtimestamp(e, UTC).astimezone(ZoneInfo(LOCAL_TZ)).strftime("%Y-%m-%dT%H:%M")
 
 
+def checkout() -> Path | None:
+    """The jabuka checkout: the one this module runs from, else the current directory when it is
+    one (the Pi runs the installed wheel from /opt/jabuka/venv inside ~/jabuka: the report's
+    git.head then names that checkout, as 04-02 freeze-check needs)."""
+    repo = repo_root()
+    if repo is not None:
+        return repo
+    cwd = Path.cwd()
+    if (cwd / "deploy" / "systemd").is_dir() and (cwd / "pyproject.toml").is_file():
+        return cwd
+    return None
+
+
 def userns_available() -> bool:
     """True when an unprivileged user + mount namespace can be created on this host."""
     exe = shutil.which("unshare")
@@ -105,7 +127,7 @@ class Harness:
         self.run_dir = run_dir
         self.sc = sc
         self.args = args
-        self.repo = repo_root()
+        self.repo = checkout()
         self.speed = float(args.speed or sc.speed)
         self.duration = float(args.duration or sc.duration_s)
         self.seed = sc.seed if args.seed is None else int(args.seed)
@@ -121,7 +143,33 @@ class Harness:
         self.udp_port = _free(socket.SOCK_DGRAM)
         self.gpsd_port = _free(socket.SOCK_STREAM)
         self.control_port: int | None = None
-        self.sup: Supervisor = Supervisor(run_dir, on_event=self._on_sup_event)
+        self.scope: str | None = getattr(args, "systemd", None)
+        self.state_root = run_dir  # every harness write into the stack's files stays inside it
+        self.owner: tuple[int, int] | None = None  # system scope: the units' User=/Group=
+        self.logs_fs_info: dict[str, Any] | None = None
+        self.sup: ProcessBackend
+        if self.scope is None:
+            self.sup = Supervisor(run_dir, on_event=self._on_sup_event)
+        else:
+            self.sup = sd.SystemdBackend(
+                self.scope,
+                run_dir=run_dir,
+                on_event=self._on_sup_event,
+                tag=run_dir.name.lower().replace("_", "-"),
+                workdir=self.repo or run_dir,
+            )
+        if self.scope == "system":
+            self.soak_dir = sd.SOAK_PARENT / f"soak-{run_dir.name.split('-', 1)[0]}"
+            self.state_root = self.soak_dir
+            self.data_dir = self.soak_dir / "data"
+            self.pack_dir = self.soak_dir / "racepack"
+            self.rt_dir = sd.RUN_LINK_DIR
+            self.link = self.rt_dir / "fastnet-pty"
+            self.http_port, self.udp_port = self._production_ports()
+            while self.gpsd_port == sd.REAL_GPSD_PORT:
+                self.gpsd_port = _free(socket.SOCK_STREAM)
+        self._pty_owner: threading.Thread | None = None
+        self._pty_stop = threading.Event()
         self.tablet: TabletClient | None = None  # type: ignore[assignment]
         self.synth: subprocess.Popen | None = None
         self._synth_reader: threading.Thread | None = None
@@ -136,6 +184,14 @@ class Harness:
         self.checks: dict[str, dict] = {}
         self.logs_fs_mode, self.logs_fs_bytes = parse_logs_fs(args.logs_fs or sc.logs_fs)
         self.tmpfs = False
+        self.disk_full_skip = (
+            "user scope: the services run under the user manager, outside the harness's mount "
+            "namespace; never filled on the real disk"
+            if self.scope == "user"
+            else "--logs-fs none: never filled on the real disk (use --logs-fs loop:SIZE)"
+            if self.scope == "system"
+            else "no user namespace / tmpfs for data/logs: never filled on the real disk"
+        )
         self.policies: dict[str, Any] = {}
         self.setup_error: str | None = None
         self.logcheck_runs: list[dict[str, Any]] = []
@@ -282,6 +338,9 @@ class Harness:
         )
         self._synth_reader = threading.Thread(target=self._read_synth, daemon=True)
         self._synth_reader.start()
+        if self.scope == "system":
+            self._pty_owner = threading.Thread(target=self._own_pty, name="soak-pty", daemon=True)
+            self._pty_owner.start()
         deadline = time.monotonic() + 30.0
         while self.control_port is None or not self.link.is_symlink():
             if self.synth.poll() is not None:
@@ -298,12 +357,50 @@ class Harness:
         over = {
             k: float(v) for k, v in self.sc.shim.items() if k in ("watchdog_sec", "restart_sec")
         }
+        if over and self.scope == "system":
+            self.findings.append(
+                f"scenario shim overrides {over} ignored in system scope: the installed units' "
+                "values apply (drop-ins override ExecStart only)"
+            )
+            over = {}
         if over:
             pol = dataclasses.replace(pol, **over, source=pol.source + " + scenario shim override")
         self.policies[role] = pol.to_dict()
         return pol
 
+    def _production_ports(self) -> tuple[int, int]:
+        """System scope: the core keeps the installed HTTP port (80: the tablet watches the soak)
+        and the ingest -> core UDP port of the installed units."""
+        assert isinstance(self.sup, sd.SystemdBackend)
+        core = self._installed_argv("core")
+        ingest = self._installed_argv("ingest")
+        from jabuka.core.main import build_arg_parser as core_parser
+        from jabuka.ingest.fastnet_main import build_arg_parser as ingest_parser
+
+        a = core_parser().parse_args(core[1:])
+        b = ingest_parser().parse_args(ingest[1:])
+        if b.udp[1] != a.udp_port:
+            raise SoakAbort(f"installed units disagree on the UDP port: {b.udp} vs {a.udp_port}")
+        return int(a.http_port), int(a.udp_port)
+
+    def _installed_argv(self, role: str) -> list[str]:
+        import shlex
+
+        assert isinstance(self.sup, sd.SystemdBackend)
+        return shlex.split(sd.unit_execstart(self.sup.installed_unit_text(UNITS[role])))
+
+    def _system_argv(self, role: str) -> list[str]:
+        return sd.soak_argv(
+            role,
+            self._installed_argv(role),
+            soak_dir=self.soak_dir,
+            pty_link=self.link,
+            gpsd_port=self.gpsd_port,
+        )
+
     def core_argv(self) -> list[str]:
+        if self.scope == "system":
+            return self._system_argv("core")
         clock = "gps" if self.sc.clock == "gps" else "sim"
         return [
             self.py,
@@ -328,6 +425,8 @@ class Harness:
         ]
 
     def ingest_argv(self) -> list[str]:
+        if self.scope == "system":
+            return self._system_argv("ingest")
         return [
             self.py,
             "-m",
@@ -340,8 +439,84 @@ class Harness:
             str(self.data_dir),
         ]
 
+    def prepare_system(self) -> None:
+        """System scope: /var/lib/jabuka/soak-<ts>/ owned by the units' User= (inside their
+        ReadWritePaths), never the production state files."""
+        import grp
+        import pwd
+
+        assert isinstance(self.sup, sd.SystemdBackend)
+        os.umask(0o022)
+        sd.check_soak_dir(self.soak_dir)
+        user = self.sup.unit_user(UNITS["core"]) or "root"
+        pw = pwd.getpwnam(user)
+        shown = self.sup._show_many([UNITS["core"]], ("Group",))
+        group = (shown[0].get("Group") or None) if shown else None
+        gid = grp.getgrnam(group).gr_gid if group else pw.pw_gid
+        self.owner = (pw.pw_uid, gid)
+        self.soak_dir.mkdir(mode=0o755, exist_ok=False)
+        self.data_dir.mkdir(mode=0o755)
+        for d in (self.soak_dir, self.data_dir):
+            os.chown(d, *self.owner)
+        self.rt_dir.mkdir(mode=0o755, exist_ok=True)
+        self.log("soak_dir", path=str(self.soak_dir), user=user, uid=pw.pw_uid, gid=gid)
+
+    def own_state(self, path: Path) -> None:
+        """System scope: files the harness created or rewrote in the data dir belong to the
+        units' user again (a root-owned stray .tmp would block the service's atomic writer)."""
+        if self.owner is None:
+            return
+        p = inside(Path(path), self.state_root)
+        for q in [p, *(p.iterdir() if p.is_dir() else [])]:
+            if q.is_symlink() or q.name == "logs":
+                continue
+            with contextlib.suppress(OSError):
+                if q.stat().st_uid != self.owner[0]:
+                    os.chown(q, *self.owner)
+
+    def _own_pty(self) -> None:
+        """System scope: every pty slave the synth creates (start and each unplug reopen) is
+        chowned to the ingest's User=, which opens it through the link."""
+        last = None
+        while not self._pty_stop.is_set():
+            try:
+                target = os.path.realpath(self.link) if self.link.is_symlink() else None
+            except OSError:
+                target = None
+            if target and target != last and self.owner is not None:
+                try:
+                    os.chown(target, *self.owner)
+                    last = target
+                    self.log("pty_chown", path=target)
+                except OSError as exc:
+                    self.log("pty_chown_failed", path=target, error=repr(exc))
+            self._pty_stop.wait(0.1)
+
     def mount_logs_tmpfs(self) -> None:
         logs = self.data_dir / "logs"
+        if self.scope == "system":
+            mode, size = self.logs_fs_mode, self.logs_fs_bytes
+            if mode == "auto":
+                mode = "tmpfs" if any(f.kind == "disk-full" for f in self.timeline) else "none"
+            if mode == "none":
+                logs.mkdir(exist_ok=True)
+                if self.owner is not None:
+                    os.chown(logs, *self.owner)
+                return
+            assert self.owner is not None and isinstance(self.sup, sd.SystemdBackend)
+            inside(logs, self.state_root)
+            self.sup.add_mount(logs)  # registered first: cleanup unmounts even a partial setup
+            self.logs_fs_info = sd.mount_logs(
+                logs,
+                mode,
+                size or 64 * 1024 * 1024,
+                image_dir=self.soak_dir,
+                uid=self.owner[0],
+                gid=self.owner[1],
+            )
+            self.tmpfs = True
+            self.log("logs_fs", **self.logs_fs_info)
+            return
         logs.mkdir(parents=True, exist_ok=True)
         if self.logs_fs_mode == "none" or not self.args.in_userns:
             return
@@ -515,11 +690,13 @@ class Harness:
 
     def run(self) -> dict[str, Any]:
         try:
+            if self.scope == "system":
+                self.prepare_system()
             self.mount_logs_tmpfs()
             self.pack_dir.mkdir(parents=True, exist_ok=True)
             build_pack(
                 self.pack_dir,
-                self.run_dir,
+                self.state_root,
                 self.fixtures,
                 self.start_utc,
                 self.wind_end_utc(),
@@ -534,18 +711,33 @@ class Harness:
             )
             self.tablet.start()
             self.sampler = probes.Sampler(
-                self.run_dir / "samples.csv", self.probe_pids, self.sim_now
+                self.run_dir / "samples.csv",
+                self.probe_pids,
+                self.sim_now,
+                pi_probe=probes.pi_probe(),
             )
             self.sampler.start()
             self.apply_settings()
             self.wait_first()
             self.run_faults()
-        except SoakAbort as exc:
+        except (SoakAbort, sd.SetupError) as exc:
             self.setup_error = str(exc)
             self.log("abort", error=str(exc))
         finally:
             self.shutdown()
-        return self.build_report()
+        try:
+            report = self.build_report()
+        finally:
+            cleanup = self.sup.cleanup()  # system scope: production units restored
+        if self.scope is not None:
+            report["systemd"]["cleanup"] = cleanup
+            left = cleanup.get("soak_lines_left")
+            if left:
+                report["verdict"] = "FAIL"
+                report.setdefault("fail_reasons", []).append(
+                    f"systemd cleanup: {left} 50-jabuka-soak line(s) left in systemctl cat"
+                )
+        return report
 
     def probe_pids(self) -> dict[str, int | None]:
         core = self.sup.main_pid("core") if "core" in self.sup.services else None
@@ -566,6 +758,9 @@ class Harness:
         if self.tablet is not None:
             self.tablet.stop()
         self.sup.stop_all()
+        if isinstance(self.sup, sd.SystemdBackend) and not getattr(self, "_journal", False):
+            self._journal = True
+            self.sup.dump_journal(self.run_dir / "proc", self.t0_wall - 1.0)
         if self.synth is not None and self.synth.poll() is None:
             self.synth.terminate()
             try:
@@ -579,6 +774,9 @@ class Harness:
                 os.killpg(self.synth.pid, signal.SIGKILL)
         if self._synth_reader is not None:
             self._synth_reader.join(timeout=5)
+        self._pty_stop.set()
+        if self._pty_owner is not None:
+            self._pty_owner.join(timeout=5)
         if self.tablet is not None:
             self.tablet.join(timeout=5)
 
@@ -808,7 +1006,7 @@ class Harness:
             "schema": rep.SCHEMA,
             "verdict": None,
             "scenario": self.sc.name,
-            "mode": "shim",
+            "mode": self.sup.mode,
             "host": rep.host_info(),
             "git": rep.git_info(self.repo),
             "speed_target": self.speed,
@@ -829,6 +1027,7 @@ class Harness:
                 "mode": self.logs_fs_mode,
                 "tmpfs": self.tmpfs,
                 "bytes": self.logs_fs_bytes,
+                "mounted": self.logs_fs_info,
             },
             "timeline": [s.to_dict() for s in self.timeline],
             "faults": self.faults,
@@ -844,6 +1043,13 @@ class Harness:
             "tablet": self.tablet.summary(self.t0_wall) if self.tablet is not None else None,
             "setup_error": self.setup_error,
         }
+        if self.scope is not None:
+            report["systemd"] = self.sup.info()
+            if self.scope == "system":
+                report["systemd"]["soak_dir"] = str(self.soak_dir)
+        pi = probes.pi_summary(list(self.sampler.samples) if self.sampler is not None else [])
+        if pi is not None:
+            report["pi"] = pi
         rep.finalize(report)
         with self._tl_lock:
             self._tl.close()
@@ -868,10 +1074,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=float, default=None, metavar="SIM_S")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--out", type=Path, default=Path("var/soak"), help="default var/soak")
-    p.add_argument("--logs-fs", default=None, help="auto | tmpfs:SIZE | none (default: scenario)")
+    p.add_argument(
+        "--logs-fs",
+        default=None,
+        help="auto | tmpfs:SIZE | none | loop:SIZE (--systemd system only, max 1G) "
+        "(default: scenario)",
+    )
     p.add_argument("--fixtures", type=Path, default=None, help="default <repo>/tests/fixtures")
     p.add_argument("--python", default=None, help="interpreter for the children (default: this)")
     p.add_argument("--keep", action="store_true", help="keep data/ and racepack/ after a PASS")
+    p.add_argument(
+        "--systemd",
+        choices=sd.SCOPES,
+        default=None,
+        help="run the core and the ingest as systemd units: user (transient user units, laptop) "
+        "or system (the installed units through /run drop-ins, Pi, root)",
+    )
+    p.add_argument(
+        "--systemd-cleanup",
+        action="store_true",
+        help="system scope: remove stale soak drop-ins and mounts, restart the production units, "
+        "exit (0 when `systemctl cat jabuka-core` holds no 50-jabuka-soak line)",
+    )
     p.add_argument("--in-userns", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--run-dir", type=Path, default=None, help=argparse.SUPPRESS)
     return p
@@ -879,6 +1103,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def _needs_namespace(sc: Scenario, logs_fs: str, timeline: list[FaultSpec]) -> bool:
     mode, _ = parse_logs_fs(logs_fs)
+    if mode == "loop":
+        return False
     if mode == "tmpfs":
         return True
     return mode == "auto" and any(f.kind == "disk-full" for f in timeline)
@@ -902,6 +1128,22 @@ def _cleanup() -> None:
     for h in list(_ACTIVE):
         with contextlib.suppress(Exception):
             h.shutdown()
+        with contextlib.suppress(Exception):
+            h.sup.cleanup()
+
+
+def _give_back(run_dir: Path) -> None:
+    """Under sudo: the run dir in the checkout belongs to the invoking user again (scp, rm)."""
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if os.geteuid() != 0 or not uid or not gid:
+        return
+    for p in [run_dir, *run_dir.rglob("*")]:
+        with contextlib.suppress(OSError):
+            os.chown(p, int(uid), int(gid), follow_symlinks=False)
+
+
+def _preflight(scope: str) -> None:
+    sd.SystemdBackend(scope, run_dir=Path("."), monitor=False).preflight()
 
 
 def _on_signal(signum: int, _frame: Any) -> None:
@@ -921,10 +1163,18 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
             print(f"jabuka-soak: {exc}", file=sys.stderr)
             return 2
     if args.fixtures is None:
-        repo = repo_root()
+        repo = checkout()
         args.fixtures = (repo / "tests" / "fixtures") if repo else Path("tests/fixtures")
-    h = Harness(run_dir, sc, args)
-    if not args.in_userns and any(f.kind == "disk-full" for f in h.timeline):
+    try:
+        h = Harness(run_dir, sc, args)
+    except (SoakAbort, sd.SetupError) as exc:
+        print(f"jabuka-soak: {exc}", file=sys.stderr)
+        return 2
+    if (
+        args.systemd is None
+        and not args.in_userns
+        and any(f.kind == "disk-full" for f in h.timeline)
+    ):
         h.findings.append("disk-full: no user namespace on this host, the fault is SKIPPED")
     _ACTIVE.append(h)
     print(f"jabuka-soak: {sc.name} -> {run_dir}", flush=True)
@@ -936,6 +1186,7 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
     if report["verdict"] == "PASS" and not args.keep:
         for d in ("racepack",):
             shutil.rmtree(run_dir / d, ignore_errors=True)
+    _give_back(run_dir)
     print(f"jabuka-soak: report {mpath}", flush=True)
     print(f"jabuka-soak: verdict {report['verdict']}", flush=True)
     for r in report.get("fail_reasons", []):
@@ -946,18 +1197,42 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = build_arg_parser().parse_args(argv)
+    if args.systemd_cleanup:
+        if args.systemd not in (None, "system"):
+            print("jabuka-soak: --systemd-cleanup is for the system scope", file=sys.stderr)
+            return 2
+        try:
+            left = sd.cleanup_system()
+        except sd.SetupError as exc:
+            print(f"jabuka-soak: {exc}", file=sys.stderr)
+            return 2
+        return 0 if left == 0 else 1
+    if args.systemd == "system" and os.geteuid() != 0:
+        print(f"jabuka-soak: {sd.SUDO_HINT}", file=sys.stderr)
+        return 2
     try:
         sc = load_scenario(args.scenario)
         logs_fs = args.logs_fs or sc.logs_fs
-        parse_logs_fs(logs_fs)
+        lmode, _ = parse_logs_fs(logs_fs)
         timeline = compile_timeline(sc, args.seed)
     except ValueError as exc:
         print(f"jabuka-soak: {exc}", file=sys.stderr)
         return 2
+    if lmode == "loop" and args.systemd != "system":
+        print("jabuka-soak: --logs-fs loop:SIZE is for --systemd system", file=sys.stderr)
+        return 2
+    if args.systemd is not None:
+        try:
+            _preflight(args.systemd)
+        except sd.SetupError as exc:
+            print(f"jabuka-soak: {exc}", file=sys.stderr)
+            return 2
     signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGHUP, _on_signal)
     atexit.register(_cleanup)
     if (
-        not args.in_userns
+        args.systemd is None
+        and not args.in_userns
         and _needs_namespace(sc, logs_fs, timeline)
         and sys.platform == "linux"
         and userns_available()

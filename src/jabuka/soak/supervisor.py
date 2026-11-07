@@ -28,7 +28,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 UNITS: dict[str, str] = {
     "core": "jabuka-core.service",
@@ -110,6 +110,42 @@ def load_policy(unit: str, repo: Path | None = None) -> Policy:
     return EMBEDDED_POLICIES[unit]
 
 
+class ProcessBackend(Protocol):
+    """The process-control surface the soak's fault actions use (plan 04-03). Implemented by the
+    laptop shim below (mode "shim") and by jabuka.soak.systemd.SystemdBackend (mode "systemd",
+    real systemd units). kill-worker keeps finding the router worker through /proc under
+    main_pid("core") in both."""
+
+    mode: str
+    events: list[dict[str, Any]]
+    services: dict[str, Any]
+
+    def add(
+        self, role: str, argv: list[str], policy: Policy, env: dict[str, str] | None = None
+    ) -> Any: ...
+    def start(self, role: str) -> None: ...
+    def start_all(self) -> None: ...
+    def stop_all(self, timeout: float = ...) -> None: ...
+    def kill(self, role: str, sig: int = ..., whom: str = "main") -> int | None: ...
+    def main_pid(self, role: str) -> int | None: ...
+    def all_pids(self) -> list[int]: ...
+    def restarts(self, role: str) -> int: ...
+    def n_restarts(self, role: str) -> int: ...
+    def starts(self, role: str) -> int: ...
+    def exit_codes(self, role: str, since: float) -> list[int | None]: ...
+    def power_off(self, roles: list[str] | None = None) -> list[int]: ...
+    def power_on(self, roles: list[str] | None = None) -> None: ...
+    def power_pull(
+        self, between: Callable[[list[int]], None], roles: list[str] | None = None
+    ) -> list[int]: ...
+    def wait_ready(self, role: str, timeout: float, *, after_n: int = 0) -> bool: ...
+    def watchdog_sec(self, role: str) -> float | None: ...
+    def watchdog_kills(self, role: str) -> int: ...
+    def wait_watchdog(self, role: str, pid: int | None, kills0: int, timeout: float) -> bool: ...
+    def cleanup(self) -> dict[str, Any]: ...
+    def info(self) -> dict[str, Any]: ...
+
+
 @dataclass
 class Service:
     role: str
@@ -141,6 +177,8 @@ class Service:
 
 class Supervisor:
     """Restart=always / WatchdogSec / KillMode=control-group for a few child processes."""
+
+    mode = "shim"
 
     def __init__(
         self, run_dir: Path, on_event: Callable[[dict[str, Any]], None] | None = None
@@ -361,15 +399,73 @@ class Supervisor:
     def restarts(self, role: str) -> int:
         return self.services[role].restarts
 
-    def kill(self, role: str, sig: int = signal.SIGKILL) -> int | None:
-        """Signal the main process of ``role`` (None if not running)."""
+    n_restarts = restarts
+
+    def starts(self, role: str) -> int:
+        return self.services[role].n
+
+    def exit_codes(self, role: str, since: float) -> list[int | None]:
+        return [e["code"] for e in self.services[role].exits if e["t_wall"] >= since]
+
+    def kill(self, role: str, sig: int = signal.SIGKILL, whom: str = "main") -> int | None:
+        """Signal the main process of ``role`` (whom="all": its whole process group). None if
+        not running."""
         pid = self.main_pid(role)
         if pid is not None:
             try:
-                os.kill(pid, sig)
+                if whom == "all":
+                    os.killpg(pid, sig)
+                else:
+                    os.kill(pid, sig)
             except ProcessLookupError:
                 return None
         return pid
+
+    def power_off(self, roles: list[str] | None = None) -> list[int]:
+        """A power pull: no automatic restart, then SIGKILL of every group at once."""
+        self.hold(roles)
+        return self.kill_all_groups(roles)
+
+    def power_on(self, roles: list[str] | None = None) -> None:
+        for role in roles or [r for r in ("ingest", "core") if r in self.services]:
+            self.start(role)
+
+    def power_pull(
+        self, between: Callable[[list[int]], None], roles: list[str] | None = None
+    ) -> list[int]:
+        pids = self.power_off(roles)
+        try:
+            between(pids)
+        finally:
+            self.power_on(roles)
+        return pids
+
+    def watchdog_sec(self, role: str) -> float | None:
+        return self.services[role].policy.watchdog_sec
+
+    def watchdog_kills(self, role: str) -> int:
+        return self.services[role].watchdog_kills
+
+    def wait_watchdog(self, role: str, pid: int | None, kills0: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        svc = self.services[role]
+        while time.monotonic() < deadline:
+            if svc.watchdog_kills > kills0:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def cleanup(self) -> dict[str, Any]:
+        self.stop_all()
+        return {}
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "scope": "shim",
+            "n_restarts": {r: s.restarts for r, s in self.services.items()},
+            "starts": {r: s.n for r, s in self.services.items()},
+            "watchdog_kills": {r: s.watchdog_kills for r, s in self.services.items()},
+        }
 
     def hold(self, roles: list[str] | None = None) -> None:
         """Power off: no automatic restart for these roles until start()."""
