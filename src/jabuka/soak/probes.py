@@ -4,6 +4,10 @@ the router worker, sampled every wall second into samples.csv, plus the checks o
 The worker is found through the process tree: the core starts the forkserver (a child whose
 command line mentions "forkserver"), the forkserver forks the worker. ``root`` lets the tests use
 a fake /proc tree.
+
+On a Raspberry Pi (vcgencmd on PATH) the sampler also records the SoC temperature and the
+throttling bits every 10 wall seconds, as rows of role "pi" (plan 04-03: reported only, the Pi
+numbers are still to confirm).
 """
 
 from __future__ import annotations
@@ -11,6 +15,9 @@ from __future__ import annotations
 import csv
 import math
 import os
+import re
+import shutil
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -23,8 +30,31 @@ try:
     CLK_TCK = os.sysconf("SC_CLK_TCK")
 except (ValueError, OSError, AttributeError):  # pragma: no cover - non-POSIX
     CLK_TCK = 100
-FIELDS = ("t_wall", "t_sim", "role", "pid", "rss_kb", "fds", "threads", "cpu_s")
+FIELDS = (
+    "t_wall",
+    "t_sim",
+    "role",
+    "pid",
+    "rss_kb",
+    "fds",
+    "threads",
+    "cpu_s",
+    "temp_c",
+    "throttled",
+)
 SECONDS_36H = 36 * 3600.0
+PI_INTERVAL_S = 10.0
+# vcgencmd get_throttled bits (Raspberry Pi documentation)
+THROTTLE_BITS: dict[int, str] = {
+    0: "under-voltage now",
+    1: "arm frequency capped now",
+    2: "throttled now",
+    3: "soft temperature limit now",
+    16: "under-voltage occurred",
+    17: "arm frequency capping occurred",
+    18: "throttled occurred",
+    19: "soft temperature limit occurred",
+}
 
 
 @dataclass
@@ -37,6 +67,63 @@ class Sample:
     fds: int
     threads: int
     cpu_s: float
+    temp_c: float | None = None
+    throttled: int | None = None
+
+
+# -- Raspberry Pi ------------------------------------------------------------------------------
+def parse_temp(text: str) -> float | None:
+    """ "temp=48.3'C" -> 48.3."""
+    m = re.search(r"temp=([-\d.]+)", text or "")
+    try:
+        return float(m.group(1)) if m else None
+    except ValueError:
+        return None
+
+
+def parse_throttled(text: str) -> int | None:
+    """ "throttled=0x50005" -> 0x50005."""
+    m = re.search(r"throttled=(0x[0-9a-fA-F]+|\d+)", text or "")
+    return int(m.group(1), 0) if m else None
+
+
+def throttled_flags(bits: int) -> list[str]:
+    return [name for bit, name in sorted(THROTTLE_BITS.items()) if bits & (1 << bit)]
+
+
+def pi_probe(exe: str | None = None) -> Callable[[], tuple[float | None, int | None]] | None:
+    """A (temp_c, throttled bits) reader when vcgencmd is on PATH (a Pi), else None."""
+    exe = exe or shutil.which("vcgencmd")
+    if exe is None:
+        return None
+
+    def run(arg: str) -> str:
+        try:
+            return subprocess.run([exe, arg], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def probe() -> tuple[float | None, int | None]:
+        return parse_temp(run("measure_temp")), parse_throttled(run("get_throttled"))
+
+    return probe
+
+
+def pi_summary(samples: list[Sample]) -> dict[str, Any] | None:
+    """report.json "pi": max temperature and every throttling bit seen (None off a Pi)."""
+    rows = [s for s in samples if s.role == "pi"]
+    if not rows:
+        return None
+    temps = [s.temp_c for s in rows if s.temp_c is not None]
+    bits = 0
+    for s in rows:
+        bits |= s.throttled or 0
+    return {
+        "samples": len(rows),
+        "temp_c_max": max(temps) if temps else None,
+        "throttled_bits_seen": hex(bits),
+        "throttled_flags_seen": throttled_flags(bits),
+    }
 
 
 def _stat_fields(pid: int, root: Path) -> list[str] | None:
@@ -137,6 +224,8 @@ class Sampler(threading.Thread):
         sim_now: Callable[[], float],
         interval: float = 1.0,
         root: Path = PROC,
+        pi_probe: Callable[[], tuple[float | None, int | None]] | None = None,
+        pi_interval: float = PI_INTERVAL_S,
     ) -> None:
         super().__init__(name="soak-probes", daemon=True)
         self.path = Path(path)
@@ -144,6 +233,9 @@ class Sampler(threading.Thread):
         self.sim_now = sim_now
         self.interval = interval
         self.root = root
+        self.pi_probe = pi_probe
+        self.pi_interval = pi_interval
+        self._pi_last = -math.inf
         self.samples: list[Sample] = []
         self.lock = threading.Lock()
         self._stop = threading.Event()
@@ -165,6 +257,13 @@ class Sampler(threading.Thread):
             if r is None:
                 continue
             got.append(Sample(t, ts, role, pid, r["rss_kb"], r["fds"], r["threads"], r["cpu_s"]))
+        if self.pi_probe is not None and t - self._pi_last >= self.pi_interval:
+            self._pi_last = t
+            try:
+                temp, thr = self.pi_probe()
+            except Exception:  # noqa: BLE001 - a probe never breaks the run
+                temp, thr = None, None
+            got.append(Sample(t, ts, "pi", 0, 0, 0, 0, 0.0, temp, thr))
         with self.lock:
             self.samples.extend(got)
         return got
@@ -185,6 +284,8 @@ class Sampler(threading.Thread):
                             s.fds,
                             s.threads,
                             round(s.cpu_s, 3),
+                            "" if s.temp_c is None else s.temp_c,
+                            "" if s.throttled is None else hex(s.throttled),
                         ]
                     )
                 f.flush()
