@@ -11,13 +11,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from jabuka.soak import report as soak_report
+
 REPO = Path(__file__).resolve().parents[2]
+UNIT_NAMES = ("jabuka-core.service", "jabuka-ingest-fastnet.service")
 SCRIPT = REPO / "scripts" / "freeze-check.sh"
 GIT = "/usr/bin/git"
 LINE = re.compile(r"^\[(PASS|FAIL|WARN|SKIP|HUMAN)\] (F\d) (.*)$")
@@ -73,6 +77,8 @@ class Frozen:
             ".planning/phases/01-a/01-UAT.md",
             "### 1. x\nresult: [pending]\n### 2. y\nresult: pass\n### 3. z\nresult: [pending]\n",
         )
+        for unit in UNIT_NAMES:
+            self.write(f"deploy/systemd/{unit}", f"[Service]\nExecStart=/opt/jabuka/venv/bin/{unit}\n")
         self.soak_head = commit_all(root, "code")
         self.set_lock_hash()
         self.head = commit_all(root, "lock reviewed")
@@ -112,11 +118,37 @@ class Frozen:
         }
         for k, v in over.items():
             if isinstance(v, dict):
-                rep[k] = {**rep[k], **v}  # type: ignore[dict-item]
+                rep[k] = {**(rep.get(k) or {}), **v}  # type: ignore[dict-item]
             else:
                 rep[k] = v
         (d / "report.json").write_text(json.dumps(rep), encoding="utf-8")
         return d / "report.json"
+
+    def pi_copy(self) -> tuple[Path, Path]:
+        """What the Pi holds per deploy/PI-SETUP.md §3: an rsync copy of the repo without .git
+        (~/jabuka), and the installed package (/opt/jabuka/venv/.../site-packages/jabuka) with
+        its compiled files."""
+        pi = self.root.parent / "pi"
+        checkout = pi / "jabuka"
+        shutil.copytree(self.root, checkout, ignore=shutil.ignore_patterns(".git"))
+        pkg = pi / "site-packages" / "jabuka"
+        shutil.copytree(self.root / "src" / "jabuka", pkg)
+        (pkg / "__pycache__").mkdir()
+        (pkg / "__pycache__" / "junk.cpython-313.pyc").write_bytes(b"\x00junk")
+        return checkout, pkg
+
+    def unit_hashes(self) -> dict[str, str]:
+        return {
+            u: hashlib.sha256((self.root / "deploy" / "systemd" / u).read_bytes()).hexdigest()
+            for u in UNIT_NAMES
+        }
+
+    def pi_report(self, pkg: Path, units: dict[str, str] | None = None, **git: object) -> Path:
+        code = soak_report.code_identity(
+            pkg, python=None, source="units", units=units or self.unit_hashes()
+        )
+        g = {"head": None, "dirty": None} | git
+        return self.report("aarch64", None, git=g, code=code)
 
     def build_wheelhouse(self, override: dict[str, bytes] | None = None) -> Path:
         wh = self.root / "deploy" / "wheelhouse"
@@ -203,6 +235,82 @@ def test_f3_f4_missing_dirty_or_failed_reports(frozen: Frozen) -> None:
     frozen.report("aarch64", frozen.soak_head, verdict="FAIL")
     _, items, out = frozen.check()
     assert items["F4"][0] == "FAIL" and "FAIL" in items["F4"][1], out
+
+
+# -- F3/F4 code identity (plan 04-04: 04-VERIFICATION gap 1, review WR-03) ------------------------
+def test_f4_non_git_pi_copy_accepted_when_the_installed_code_matches(frozen: Frozen) -> None:
+    checkout, pkg = frozen.pi_copy()
+    assert soak_report.git_info(checkout) == {"head": None, "dirty": None}
+    frozen.pi_report(pkg)
+    code, items, out = frozen.check()
+    assert items["F4"][0] == "PASS" and "empreinte" in items["F4"][1], out
+    assert code == 0, out
+
+
+def test_f4_non_git_pi_copy_rejected_after_one_byte_changes(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    (pkg / "core.py").write_bytes(b"X = 2\n")
+    frozen.pi_report(pkg)
+    code, items, out = frozen.check()
+    assert code == 1
+    assert items["F4"][0] == "FAIL", out
+    assert "empreinte" in items["F4"][1] and "HEAD" in items["F4"][1], out
+
+
+def test_f4_non_git_checkout_at_head_with_a_stale_venv_is_rejected(frozen: Frozen) -> None:
+    """WR-03: ~/jabuka at HEAD (git identity fine) but /opt/jabuka/venv holds other code."""
+    _, pkg = frozen.pi_copy()
+    (pkg / "core.py").write_bytes(b"X = 0  # older wheel\n")
+    frozen.pi_report(pkg, head=frozen.soak_head, dirty=False)
+    code, items, out = frozen.check()
+    assert code == 1
+    assert items["F4"][0] == "FAIL", out
+
+
+def test_f4_non_git_pi_copy_rejected_when_a_unit_differs(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    units = frozen.unit_hashes()
+    units["jabuka-core.service"] = hashlib.sha256(b"[Service]\nExecStart=/other\n").hexdigest()
+    frozen.pi_report(pkg, units=units)
+    code, items, out = frozen.check()
+    assert code == 1
+    assert items["F4"][0] == "FAIL" and "deploy/systemd" in items["F4"][1], out
+    del units["jabuka-ingest-fastnet.service"]
+    units["jabuka-core.service"] = frozen.unit_hashes()["jabuka-core.service"]
+    frozen.pi_report(pkg, units=units)
+    _, items, out = frozen.check()
+    assert items["F4"][0] == "FAIL" and "deploy/systemd" in items["F4"][1], out
+
+
+def test_f4_non_git_report_without_code_still_fails(frozen: Frozen) -> None:
+    frozen.report("aarch64", None, git={"head": None, "dirty": None})
+    code, items, out = frozen.check()
+    assert code == 1
+    assert items["F4"][0] == "FAIL", out
+
+
+def test_f3_code_identity_with_git_keeps_the_git_rules(frozen: Frozen) -> None:
+    """A matching fingerprint does not loosen the git rules when git.head is recorded."""
+    _, pkg = frozen.pi_copy()
+    code_block = soak_report.code_identity(pkg, python="/x/python", source="children")
+    frozen.report("x86_64", frozen.soak_head, code=code_block)
+    code, items, out = frozen.check()
+    assert code == 0 and items["F3"][0] == "PASS", out
+    frozen.report("x86_64", frozen.soak_head, git={"dirty": True}, code=code_block)
+    _, items, out = frozen.check()
+    assert items["F3"][0] == "FAIL" and "dirty" in items["F3"][1], out
+
+
+def test_f4_malformed_code_block_is_a_fail_line_not_an_abort(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    path = frozen.pi_report(pkg)
+    rep = json.loads(path.read_text(encoding="utf-8"))
+    rep["code"]["units"] = "garbage"
+    path.write_text(json.dumps(rep), encoding="utf-8")
+    code, items, out = frozen.check()
+    assert code == 1 and "Traceback" not in out
+    assert list(items) == [f"F{i}" for i in range(1, 10)], out
+    assert items["F4"][0] == "FAIL" and "deploy/systemd" in items["F4"][1], out
 
 
 def test_f5_lock_hash(frozen: Frozen) -> None:
