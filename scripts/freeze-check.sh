@@ -6,7 +6,10 @@
 #   F1  working tree clean (tracked files)
 #   F2  the gate: JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 bash scripts/check.sh  (--skip-gate)
 #   F3  laptop race-36h soak report (host.machine x86_64): verdict PASS, git.dirty false, and no
-#       change under src/, deploy/ (except *.md) or pyproject.toml between git.head and HEAD
+#       change under src/, deploy/ (except *.md) or pyproject.toml between git.head and HEAD.
+#       A report with a `code` block (empreinte du paquet exécuté, docs/SOAK.md) must also have
+#       code.sha256 = the fingerprint of src/jabuka at HEAD and, for the Pi (source "units"),
+#       code.units = deploy/systemd at HEAD; then git.head may be null (Pi copy without .git)
 #   F4  the same for the Pi (aarch64; copy the Pi's var/soak/<run>/ back into var/soak/)
 #   F5  sha256 of deploy/requirements.lock = the "Lock revu : sha256 <hex>" line of docs/FREEZE.md
 #   F6  deploy/wheelhouse: one wheel per lock pin, and the jabuka wheel's jabuka/ files are
@@ -17,7 +20,7 @@
 #
 # One line per item: [PASS|FAIL|WARN|SKIP|HUMAN] Fn <text>. Exit 0 when no item FAILs.
 # Reads soak reports written by jabuka-soak (plan 04-01, report.json schema 1): only verdict,
-# scenario, host.machine, git.head and git.dirty.
+# scenario, host.machine, git.head, git.dirty, code.sha256, code.source and code.units.
 set -euo pipefail
 
 GIT="${GIT:-/usr/bin/git}"
@@ -33,7 +36,7 @@ while [ $# -gt 0 ]; do
         --repo=*) REPO="$(cd "${1#--repo=}" && pwd)"; shift ;;
         --pre) PRE=1; shift ;;
         --skip-gate) SKIP_GATE=1; shift ;;
-        -h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "freeze-check: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -72,10 +75,74 @@ fi
 # -- F3 / F4 soak reports ----------------------------------------------------------------------
 soak() { # ID MACHINE LABEL
     local id="$1" machine="$2" label="$3" found
-    found="$("$PY" - "$REPO/var/soak" "$machine" <<'PY'
-import json, sys
+    # stdlib only (python3 from PATH, jabuka not importable). Prints one record for the newest
+    # race-36h report of MACHINE: path, verdict, head, dirty, code_state, detail (tab-separated,
+    # never an empty field). code_state: absent | match | differ | units-differ | units-missing |
+    # error. A helper crash becomes an error record (|| fallback), never an abort under set -e.
+    found="$("$PY" - "$REPO/var/soak" "$machine" "$REPO" "$GIT" <<'PY'
+import hashlib, io, json, re, subprocess, sys, tarfile
 from pathlib import Path
-soak, machine = Path(sys.argv[1]), sys.argv[2]
+soak, machine, repo, git = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+UNITS = ("jabuka-core.service", "jabuka-ingest-fastnet.service")
+
+
+def fingerprint(entries):
+    # = jabuka.soak.report.fingerprint_entries (FINGERPRINT_SH), parity-tested in
+    # tests/soak/test_soak_identity.py: compiled files skipped, "<sha256>  ./<rel>\n" lines in
+    # C byte order of "./<rel>", sha256 of the manifest
+    lines = []
+    for rel, data in entries:
+        parts = rel.split("/")
+        if parts[-1].endswith(".pyc") or "__pycache__" in parts[:-1]:
+            continue
+        name = "./" + rel
+        lines.append((name.encode(), hashlib.sha256(data).hexdigest() + "  " + name + "\n"))
+    lines.sort(key=lambda x: x[0])
+    return hashlib.sha256("".join(x for _, x in lines).encode()).hexdigest(), len(lines)
+
+
+def head_fingerprint():
+    out = subprocess.run([git, "-C", repo, "archive", "--format=tar", "HEAD", "src/jabuka"],
+                         check=True, capture_output=True, timeout=120).stdout
+    entries = []
+    with tarfile.open(fileobj=io.BytesIO(out)) as tar:
+        for m in tar.getmembers():
+            if m.isfile() and m.name.startswith("src/jabuka/"):
+                entries.append((m.name[len("src/jabuka/"):], tar.extractfile(m).read()))
+    return fingerprint(entries)
+
+
+def head_unit_sha(unit):
+    r = subprocess.run([git, "-C", repo, "show", f"HEAD:deploy/systemd/{unit}"],
+                       capture_output=True, timeout=60)
+    return hashlib.sha256(r.stdout).hexdigest() if r.returncode == 0 else None
+
+
+def code_state(code):
+    sha = code.get("sha256") if isinstance(code, dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return "absent", "-"
+    try:
+        want, n = head_fingerprint()
+    except Exception as exc:  # noqa: BLE001
+        return "error", f"empreinte de src/jabuka à HEAD impossible : {exc!r}"
+    if sha != want:
+        return "differ", f"{sha[:12]} {want[:12]}"
+    if code.get("source") == "units":
+        units = code.get("units")
+        for unit in UNITS:
+            got = units.get(unit) if isinstance(units, dict) else None
+            if not isinstance(got, str):
+                return "units-missing", f"{unit} absente du rapport"
+            try:
+                ref = head_unit_sha(unit)
+            except Exception as exc:  # noqa: BLE001
+                return "error", f"deploy/systemd/{unit} à HEAD illisible : {exc!r}"
+            if ref is None or got != ref:
+                return "units-differ", unit
+    return "match", f"empreinte {sha[:12]}, {code.get('files')} fichiers"
+
+
 best = None
 for p in soak.glob("*/report.json"):
     try:
@@ -91,18 +158,27 @@ for p in soak.glob("*/report.json"):
 if best is not None:
     _, p, r = best
     g = r.get("git") or {}
-    print(p, r.get("verdict"), g.get("head") or "-", "true" if g.get("dirty") is not False else "false", sep="\t")
+    state, detail = code_state(r.get("code"))
+    print(p, r.get("verdict"), g.get("head") or "-", "true" if g.get("dirty") is not False else "false", state, detail, sep="\t")
 PY
-)"
+)" || found="$(printf '%s\t%s\t%s\t%s\t%s\t%s' - PASS - true error "helper F3/F4 en échec ($PY)")"
     if [ -z "$found" ]; then
         say FAIL "$id" "pas de rapport race-36h $label ($machine) dans var/soak : bash scripts/soak.sh (docs/SOAK.md)"
         return
     fi
-    local path verdict head dirty
-    IFS=$'\t' read -r path verdict head dirty <<<"$found"
+    local path verdict head dirty cstate detail
+    IFS=$'\t' read -r path verdict head dirty cstate detail <<<"$found"
     path="${path#"$REPO"/}"
-    if [ "$verdict" != PASS ]; then
+    if [ "$cstate" = error ]; then
+        say FAIL "$id" "$label : $path : $detail"
+    elif [ "$verdict" != PASS ]; then
         say FAIL "$id" "$label : $path verdict $verdict"
+    elif [ "$cstate" = differ ]; then
+        say FAIL "$id" "$label : $path code soaké (empreinte ${detail%% *}) différent de src/jabuka à HEAD (${detail##* }) : réinstaller depuis HEAD puis refaire le soak"
+    elif [ "$cstate" = units-differ ] || [ "$cstate" = units-missing ]; then
+        say FAIL "$id" "$label : $path unités installées différentes de deploy/systemd à HEAD ($detail) : sudo deploy/provision.sh puis refaire le soak"
+    elif [ "$cstate" = match ] && [ "$head" = - ]; then
+        say PASS "$id" "$label : $path PASS, paquet installé = src/jabuka à HEAD ($detail)"
     elif [ "$dirty" = true ]; then
         say FAIL "$id" "$label : $path fait sur un arbre dirty (git.dirty pas false) : refaire le soak sur un commit propre"
     elif [ "$head" = - ] || ! g cat-file -e "$head^{commit}" 2>/dev/null; then

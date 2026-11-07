@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -144,6 +145,9 @@ class Harness:
         self.gpsd_port = _free(socket.SOCK_STREAM)
         self.control_port: int | None = None
         self.scope: str | None = getattr(args, "systemd", None)
+        self.code: dict[str, Any] | None = None  # report "code": the package that runs (04-04)
+        self.code_error: str | None = None
+        self.git: dict[str, Any] | None = None
         self.state_root = run_dir  # every harness write into the stack's files stays inside it
         self.owner: tuple[int, int] | None = None  # system scope: the units' User=/Group=
         self.logs_fs_info: dict[str, Any] | None = None
@@ -388,6 +392,45 @@ class Harness:
 
         assert isinstance(self.sup, sd.SystemdBackend)
         return shlex.split(sd.unit_execstart(self.sup.installed_unit_text(UNITS[role])))
+
+    def _unit_file_sha256(self, unit: str) -> str:
+        """System scope: sha256 of the installed unit file (FragmentPath, drop-ins excluded)."""
+        assert isinstance(self.sup, sd.SystemdBackend)
+        shown = self.sup._show_many([unit], ("FragmentPath",))
+        path = (shown[0].get("FragmentPath") or "") if shown else ""
+        if not path:
+            raise rep.CodeIdentityError(f"{unit}: systemctl show gives no FragmentPath")
+        try:
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError as exc:
+            raise rep.CodeIdentityError(f"{unit}: cannot read {path}: {exc}") from exc
+
+    def compute_code_identity(self) -> None:
+        """Fill self.code (report "code") with the fingerprint of the jabuka package the services
+        run, or self.code_error. System scope: the installed units' own venv (found statically
+        from their ExecStart binary, nothing executed as root) plus the sha256 of each installed
+        unit file; never the harness interpreter or the ~/jabuka copy (WR-03). Shim and user
+        scope: the package the children's interpreter imports. Never raises."""
+        try:
+            units: dict[str, str] | None = None
+            if self.scope == "system":
+                core_bin = self._installed_argv("core")[0]
+                ingest_bin = self._installed_argv("ingest")[0]
+                a, b = Path(core_bin).parent.parent, Path(ingest_bin).parent.parent
+                if a != b:
+                    self.code_error = f"the units run from two venvs: {a} / {b}"
+                    return
+                pkg = rep.venv_package(core_bin)
+                units = {u: self._unit_file_sha256(u) for u in UNITS.values()}
+                python, source = None, "units"
+            else:
+                pkg = rep.locate_package(self.py)
+                python, source = self.py, "children"
+            self.code = rep.code_identity(pkg, python=python, source=source, units=units)
+            self.code_error = None
+        except (rep.CodeIdentityError, OSError, ValueError, sd.SetupError) as exc:
+            self.code = None
+            self.code_error = str(exc)
 
     def _system_argv(self, role: str) -> list[str]:
         return sd.soak_argv(
@@ -1008,7 +1051,9 @@ class Harness:
             "scenario": self.sc.name,
             "mode": self.sup.mode,
             "host": rep.host_info(),
-            "git": rep.git_info(self.repo),
+            "git": self.git if self.git is not None else rep.git_info(self.repo),
+            "code": self.code,
+            "code_error": self.code_error,
             "speed_target": self.speed,
             "speed_achieved": round(sim / wall, 2) if wall > 0 else None,
             "sim_s": round(sim, 1),
@@ -1176,6 +1221,16 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
         and any(f.kind == "disk-full" for f in h.timeline)
     ):
         h.findings.append("disk-full: no user namespace on this host, the fault is SKIPPED")
+    h.compute_code_identity()
+    h.git = rep.git_info(h.repo)
+    code = h.code or {}
+    print(
+        f"jabuka-soak: code {str(code.get('sha256') or 'none')[:12]} ({code.get('files')} files, "
+        f"{code.get('package_dir')}, source {code.get('source')}); "
+        f"git {(h.git.get('head') or 'none')[:12]}",
+        file=sys.stderr,
+        flush=True,
+    )
     _ACTIVE.append(h)
     print(f"jabuka-soak: {sc.name} -> {run_dir}", flush=True)
     try:

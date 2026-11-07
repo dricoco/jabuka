@@ -78,7 +78,7 @@ class Frozen:
             "### 1. x\nresult: [pending]\n### 2. y\nresult: pass\n### 3. z\nresult: [pending]\n",
         )
         for unit in UNIT_NAMES:
-            self.write(f"deploy/systemd/{unit}", f"[Service]\nExecStart=/opt/jabuka/venv/bin/{unit}\n")
+            self.write(f"deploy/systemd/{unit}", f"[Service]\nExecStart=/opt/venv/bin/{unit}\n")
         self.soak_head = commit_all(root, "code")
         self.set_lock_hash()
         self.head = commit_all(root, "lock reviewed")
