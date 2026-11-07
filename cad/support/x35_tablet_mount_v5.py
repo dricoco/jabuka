@@ -44,7 +44,7 @@ FRONT_T = 4.0        # front shell thickness (the only part between leg and whee
 EAR = 22.0
 CL_L = 44.0
 BRIDGE_T = 20.0
-H_T = 780.0          # tablet centre = tilt axis height
+H_T = 730.0          # tablet centre = tilt axis height
 TAB_W, TAB_H, TAB_D = 247.0, 200.0, 37.5   # tablet box outer, cap included, symmetric
 LIFT_MAX = 6.0       # max free play with knob fully loose (nyloc above knob)
 STOP_PLAY = 3.0      # design margin: hard stop is at most this past the last notch
