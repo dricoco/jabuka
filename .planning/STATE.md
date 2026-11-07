@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 Phase: 4 (Race Readiness — Hardening & Commissioning) — EXECUTING
 Plan: 04-01 and 04-02 complete; 04-03 (Pi soak) next
 Status: Phases 1–3 executed; quick 001–003 done; master gate green 2026-11-07
-Last activity: 2026-11-07 — Completed quick task 261107-1ow: heavy-weather polar reduction; master gate 1512 passed ×2
+Last activity: 2026-11-07 — Completed quick task 261107-i6x: French Pi 3B install guide (docs/INSTALL-PI.md)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -80,6 +80,7 @@ Recent decisions affecting current work:
 | 261107-1ow | Heavy-weather polar reduction (18→25 kn, 5 %, Réglages) | 2026-11-07 | 995eb1c | [261107-1ow-heavy-weather-polar-reduction](./quick/261107-1ow-heavy-weather-polar-reduction/) |
 | 2 | Night map: land/islands visible (toRed applied twice; coastline added) | 2026-11-07 | 5d02b52 | — |
 | 3 | Map: boat hull icon on top + live heading ray | 2026-11-07 | 2ea6847 | — |
+| 261107-i6x | Guide d'installation FR du Pi 3B (docs/INSTALL-PI.md) + lien README | 2026-11-07 | 24c87d0 | [261107-i6x-guide-d-installation-fr-raspberry-pi-3b-](./quick/261107-i6x-guide-d-installation-fr-raspberry-pi-3b-/) |
 
 ### Blockers/Concerns
 
