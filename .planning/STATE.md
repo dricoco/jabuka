@@ -1,17 +1,17 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 4
-current_phase_name: Race Readiness — Hardening & Commissioning
+current_phase: 04
+current_phase_name: race-readiness-hardening-commissioning
 status: executing
 stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-07T17:00:04.221Z"
+last_updated: "2026-11-07T17:20:02.737Z"
 last_activity: 2026-11-07
 last_activity_desc: Resumed after crash; merged 04-01, quick-002, quick-003; master gate green (1464 passed x2)
-state_head: d8a1c1d157c882ace67a721990bf823d0c5a26ff
+state_head: 7b22fc261986312f738b48701fd4398f2a12a176
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 18
+  total_plans: 20
   completed_plans: 17
   percent: 0
 ---
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 
 ## Current Position
 
-Phase: 4 (Race Readiness — Hardening & Commissioning) — EXECUTING
+Phase: 04 (race-readiness-hardening-commissioning) — READY TO EXECUTE
 Plan: 04-01 and 04-02 complete; 04-03 (Pi soak) next
 Status: Phases 1–3 executed; quick 001–003 done; master gate green 2026-11-07
 Last activity: 2026-11-07 — Completed quick task 261107-i6x: French Pi 3B install guide (docs/INSTALL-PI.md)
