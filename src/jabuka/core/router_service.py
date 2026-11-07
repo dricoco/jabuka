@@ -32,7 +32,7 @@ from jabuka.common.atomicio import atomic_write_json, load_json_with_bak
 from jabuka.common.clock import Clock
 from jabuka.common.units import kn_to_ms
 from jabuka.core.state import StateStore
-from jabuka.nav.polar import polar_to_json
+from jabuka.nav.polar import Polar, polar_to_json
 from jabuka.route import cycle
 from jabuka.route.advice import (
     CLOCK_BACK_TOL_S,
@@ -247,7 +247,7 @@ class RouterService:
         self._soft: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks: set[asyncio.Task] = set()
-        self._curves_key: int | None = None
+        self._curves_polar: Polar | None = None  # the (derated) polar _curves was built from
         self._curves: Any = None
         self._counts = {
             "jobs_submitted": 0,
@@ -518,15 +518,18 @@ class RouterService:
         return CourseMark(m.id, m.name, m.lat, m.lon, leg.side, float(leg.radius_nm))
 
     def _polar_curves(self) -> Any:
+        # the nav polar is the heavy-wind derated one, rebuilt when its settings change. Cache on
+        # the object itself (strong reference, `is`), not id(): after two settings changes between
+        # two requests a new derated polar can be allocated at a freed one's address.
         polar = self.nav.polar
-        if self._curves_key != id(polar):
+        if self._curves_polar is not polar:
             # the Phase 2 polar carries TWA 0 points; the router grid adds its own 0 knot
             curves = [
                 (tws, [(a, b) for a, b in pts if 0.0 < a <= 180.0])
                 for tws, pts in polar_to_json(polar)["curves"]
             ]
             self._curves = normalize_curves([c for c in curves if c[1]])
-            self._curves_key = id(polar)
+            self._curves_polar = polar
         return self._curves
 
     def _tack0(self, msg: dict) -> int:
