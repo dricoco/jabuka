@@ -133,6 +133,7 @@ def _route_after(
         v = r.get("version") or 0
         return v > v_before or (restarted and v != v_before)
 
+    upkept = False
     while time.time() < deadline:
         newer = [r for r in h.tablet.routes_after(t_from) if new(r)]
         if newer:
@@ -141,6 +142,14 @@ def _route_after(
             rec["route_s"] = round(r["t_wall"] - t_from, 2)
             return True
         h.poll_abort()
+        if h.tablet.route_block().get("state") == "no_course":
+            # the boat finished the course inside the fault window (04-03 full run, f92): no
+            # router can compute a route until the next template is selected, which the run loop
+            # otherwise does only between faults
+            h.course_upkeep()
+            if not upkept:
+                upkept = True
+                _note(rec, "course finished during the fault: next course selected")
         time.sleep(0.05)
     _note(rec, f"no new route (version > {v_before}) within {budget:g} s")
     rec["route_s"] = None
