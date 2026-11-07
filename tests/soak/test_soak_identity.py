@@ -8,6 +8,10 @@ definition is the shell pipeline jabuka.soak.report.FINGERPRINT_SH; the Python i
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from jabuka.soak import report as rep
+from jabuka.soak.scenario import load_scenario
 from jabuka.tools import soak
 
 REPO = Path(__file__).resolve().parents[2]
@@ -215,3 +220,81 @@ def test_compute_code_identity_children_scope(tmp_path: Path) -> None:
     assert stub.code["source"] == "children" and stub.code["python"] == sys.executable
     assert stub.code["units"] is None
     assert stub.code["sha256"] == _shell_fingerprint(REPO / "src" / "jabuka")
+
+
+# -- run-start identity gate (plan 04-04 Task 2, 04-VERIFICATION gap 1 "missing" item 2) ----------
+CODE = {"sha256": "c" * 64, "files": 146, "package_dir": "/x/jabuka", "source": "children"}
+
+
+def test_identity_messages_refuse_system_scope_without_a_fingerprint() -> None:
+    with pytest.raises(soak.sd.SetupError, match="fingerprint") as exc:
+        soak.identity_messages("system", None, "no lib/python3*/site-packages/jabuka", {})
+    assert "no lib/python3*/site-packages/jabuka" in str(exc.value)
+
+
+def test_identity_messages_warn_loudly_without_any_identity() -> None:
+    for scope in (None, "user"):
+        lines = soak.identity_messages(scope, None, "cannot locate jabuka", {"head": None})
+        assert len(lines) >= 3
+        assert all(ln.startswith("jabuka-soak: WARNING") for ln in lines), lines
+        assert any("F3/F4" in ln for ln in lines) and any("cannot locate" in ln for ln in lines)
+
+
+def test_identity_messages_with_a_fingerprint() -> None:
+    lines = soak.identity_messages("system", CODE, None, {"head": None, "dirty": None})
+    assert len(lines) == 2
+    assert lines[0].startswith("jabuka-soak: code cccccccccccc")
+    assert lines[1].startswith("jabuka-soak: note:")
+    assert not any("WARNING" in ln for ln in lines)
+    lines = soak.identity_messages(None, CODE, None, {"head": "d" * 40, "dirty": False})
+    assert len(lines) == 1 and lines[0].startswith("jabuka-soak: code cccccccccccc")
+    assert "dddddddddddd" in lines[0]
+
+
+def _fake_systemctl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The fake systemctl of tests/soak/test_soak_systemd.py (cat/show answered, calls logged)."""
+    spec = importlib.util.spec_from_file_location(
+        "_soak_systemd_fake", Path(__file__).with_name("test_soak_systemd.py")
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    b = tmp_path / "bin"
+    b.mkdir()
+    for name in ("systemctl", "systemd-run", "journalctl"):
+        p = b / name
+        p.write_text(mod.FAKE.format(py=sys.executable))
+        p.chmod(0o755)
+    units = tmp_path / "units"
+    units.mkdir()
+    for u in ("jabuka-core.service", "jabuka-ingest-fastnet.service"):
+        shutil.copy(REPO / "deploy" / "systemd" / u, units / u)
+    monkeypatch.setenv("PATH", f"{b}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_SYSTEMD_LOG", str(tmp_path / "calls.jsonl"))
+    monkeypatch.setenv("FAKE_UNITS", str(units))
+    return tmp_path / "calls.jsonl"
+
+
+def test_run_soak_refuses_system_scope_without_a_code_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = _fake_systemctl(tmp_path, monkeypatch)
+
+    def no_identity(self: soak.Harness) -> None:
+        self.code, self.code_error = None, "no lib/python3*/site-packages/jabuka in /opt/x"
+
+    def never(self: soak.Harness) -> dict:
+        raise AssertionError("Harness.run must not be called")
+
+    monkeypatch.setattr(soak.Harness, "compute_code_identity", no_identity)
+    monkeypatch.setattr(soak.Harness, "run", never)
+    out = tmp_path / "out"
+    args = soak.build_arg_parser().parse_args(
+        ["--systemd", "system", "--scenario", "tracer", "--out", str(out)]
+    )
+    assert soak.run_soak(args, load_scenario("tracer")) == 2
+    err = capsys.readouterr().err
+    assert "fingerprint" in err and "/opt/x" in err, err
+    assert not list(out.iterdir())  # the run dir it created is gone
+    verbs = {json.loads(ln)[1] for ln in log.read_text().splitlines()}
+    assert verbs <= {"cat", "show"}, verbs

@@ -4,6 +4,7 @@ end to end against the real user manager."""
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -427,3 +428,143 @@ def test_user_scope_tracer_end_to_end(tmp_path: Path) -> None:
     # systemd itself restarted the killed core
     assert rep["systemd"]["n_restarts"]["core"] >= 1
     assert _soak_units() == before
+
+
+# -- plan 04-04: WR-01 cleanup order / retry / deferred signals, WR-02 no tmpfs, OOM ------------
+def _fake_unmount(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never the real umount (review IN-06): record it in the fake systemctl call log."""
+
+    def unmount(path: Path) -> bool:
+        with (tmp_path / "calls.jsonl").open("a") as f:
+            f.write(json.dumps(["umount", str(path)]) + "\n")
+        return True
+
+    monkeypatch.setattr(sd, "unmount", unmount)
+
+
+def _installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sd.SystemdBackend:
+    _fake_unmount(tmp_path, monkeypatch)
+    b = _system(tmp_path)
+    b.add_mount(tmp_path / "soak" / "data" / "logs")
+    b.install(_render())
+    atexit.unregister(b.cleanup)
+    return b
+
+
+def _verbs_since(tmp_path: Path, n: int) -> list[str]:
+    out = []
+    for c in _calls(tmp_path)[n:]:
+        if c[0] == "umount":
+            out.append("umount")
+        elif c[0] == "systemctl" and c[1] in ("daemon-reload", "restart"):
+            out.append(c[1])
+    return out
+
+
+def test_system_cleanup_restarts_the_units_before_unmounting(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _installed(tmp_path, monkeypatch)
+    n = len(_calls(tmp_path))
+    report = b.cleanup()
+    verbs = _verbs_since(tmp_path, n)
+    assert verbs == ["daemon-reload", "restart", "umount"], verbs
+    assert verbs.index("restart") < verbs.index("umount")
+    assert {CORE, INGEST} <= set(_ctl(tmp_path, "restart")[-1])
+    assert report["restarted"] is True and report["soak_lines_left"] == 0
+    assert b.cleaned
+
+
+def test_interrupted_system_cleanup_is_retried(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _installed(tmp_path, monkeypatch)
+    real = b._ctl
+    fired: list[str] = []
+
+    def ctl(*args: str, timeout: float = 60.0):
+        if args and args[0] == "restart" and not fired:
+            fired.append("restart")
+            raise KeyboardInterrupt  # a second Ctrl-C while the units are being restarted
+        return real(*args, timeout=timeout)
+
+    monkeypatch.setattr(b, "_ctl", ctl)
+    with pytest.raises(KeyboardInterrupt):
+        b.cleanup()
+    assert b.cleaned is False
+    for u in (CORE, INGEST):
+        assert not (tmp_path / "run-systemd" / f"{u}.d" / sd.DROPIN_NAME).exists()
+    n = len(_calls(tmp_path))
+    report = b.cleanup()  # atexit / --systemd-cleanup: the critical steps run again
+    verbs = _verbs_since(tmp_path, n)
+    assert "daemon-reload" in verbs and "restart" in verbs, verbs
+    assert verbs.index("restart") < verbs.index("umount")
+    assert b.cleaned is True and report["soak_lines_left"] == 0
+    n = len(_calls(tmp_path))
+    assert b.cleanup() is report  # idempotent once done
+    assert len(_calls(tmp_path)) == n
+
+
+def test_signal_during_system_cleanup_is_deferred_until_the_units_restart(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _installed(tmp_path, monkeypatch)
+    real = b._ctl
+    fired: list[int] = []
+
+    def ctl(*args: str, timeout: float = 60.0):
+        if args and args[0] == "daemon-reload" and not fired:
+            fired.append(len(_calls(tmp_path)))
+            os.kill(os.getpid(), signal.SIGHUP)  # the SSH session drops mid-cleanup
+        return real(*args, timeout=timeout)
+
+    monkeypatch.setattr(b, "_ctl", ctl)
+    prev = signal.signal(signal.SIGHUP, soak._on_signal)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            b.cleanup()
+        assert exc.value.code == 128 + signal.SIGHUP
+        after = _verbs_since(tmp_path, fired[0])
+        assert after[:3] == ["daemon-reload", "restart", "umount"], after
+        assert b.cleaned is True
+        assert signal.getsignal(signal.SIGHUP) is soak._on_signal
+    finally:
+        signal.signal(signal.SIGHUP, prev)
+
+
+def test_protect_from_oom(tmp_path: Path) -> None:
+    p = tmp_path / "oom_score_adj"
+    p.write_text("0\n")
+    assert sd.protect_from_oom(p) == -900
+    assert p.read_text().strip() == "-900"
+    assert sd.protect_from_oom(tmp_path / "missing" / "oom_score_adj") is None
+
+
+def test_system_scope_refuses_a_tmpfs_log_fs() -> None:
+    from jabuka.soak.scenario import compile_timeline, load_scenario
+
+    race = load_scenario("race-36h")
+    timeline = compile_timeline(race, None)
+    assert any(f.kind == "disk-full" for f in timeline)
+    for logs_fs in ("tmpfs:256M", race.logs_fs):
+        assert "loop:" in (soak.system_logs_fs_error(logs_fs, []) or ""), logs_fs
+    assert "loop:" in (soak.system_logs_fs_error("auto", timeline) or "")
+    for ok in ("loop:512M", "none"):
+        assert soak.system_logs_fs_error(ok, timeline) is None, ok
+    assert soak.system_logs_fs_error("auto", []) is None
+
+
+def test_cli_system_scope_refuses_tmpfs_before_the_root_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = ["--systemd", "system", "--scenario", "race-36h", "--out", str(tmp_path)]
+    assert soak.main(base) == 2
+    err = capsys.readouterr().err
+    assert "loop:" in err and "sudo" not in err, err
+    assert soak.main([*base, "--logs-fs", "tmpfs:64M"]) == 2
+    assert "loop:" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+    if os.geteuid() != 0:
+        assert soak.main([*base, "--logs-fs", "loop:512M"]) == 2
+        assert "sudo" in capsys.readouterr().err  # past the tmpfs check, at the root check
+        assert not list(tmp_path.iterdir())
