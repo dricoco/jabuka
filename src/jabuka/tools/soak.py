@@ -91,6 +91,19 @@ def local_minutes(epoch: float, *, up: bool = False) -> str:
     return datetime.fromtimestamp(e, UTC).astimezone(ZoneInfo(LOCAL_TZ)).strftime("%Y-%m-%dT%H:%M")
 
 
+def checkout() -> Path | None:
+    """The jabuka checkout: the one this module runs from, else the current directory when it is
+    one (the Pi runs the installed wheel from /opt/jabuka/venv inside ~/jabuka: the report's
+    git.head then names that checkout, as 04-02 freeze-check needs)."""
+    repo = repo_root()
+    if repo is not None:
+        return repo
+    cwd = Path.cwd()
+    if (cwd / "deploy" / "systemd").is_dir() and (cwd / "pyproject.toml").is_file():
+        return cwd
+    return None
+
+
 def userns_available() -> bool:
     """True when an unprivileged user + mount namespace can be created on this host."""
     exe = shutil.which("unshare")
@@ -114,7 +127,7 @@ class Harness:
         self.run_dir = run_dir
         self.sc = sc
         self.args = args
-        self.repo = repo_root()
+        self.repo = checkout()
         self.speed = float(args.speed or sc.speed)
         self.duration = float(args.duration or sc.duration_s)
         self.seed = sc.seed if args.seed is None else int(args.seed)
@@ -1150,7 +1163,7 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
             print(f"jabuka-soak: {exc}", file=sys.stderr)
             return 2
     if args.fixtures is None:
-        repo = repo_root()
+        repo = checkout()
         args.fixtures = (repo / "tests" / "fixtures") if repo else Path("tests/fixtures")
     try:
         h = Harness(run_dir, sc, args)
