@@ -4,10 +4,10 @@ current_phase: 04
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
 stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-07T22:29:10.153Z"
+last_updated: "2026-11-07T22:38:43.063Z"
 last_activity: 2026-11-07
 last_activity_desc: Phase 04 execution started
-state_head: 4aff9d3cf415db099d1edd91c2d3d6386ce0de64
+state_head: d07497e1a80bfba4a6c5e0fb1333047577931498
 progress:
   total_phases: 4
   completed_phases: 0
@@ -87,6 +87,7 @@ Recent decisions affecting current work:
 | 8 | Support X35 : écrous M6 captifs au lieu d'inserts | 2026-11-07 | fdb0bb9 | — |
 | 9 | Boîte tablette : écrous M3/M4 captifs au lieu d'inserts | 2026-11-07 | 53fe65f | — |
 | 10 | Support X35 : centre tablette abaissé à 730 mm | 2026-11-07 | 4aff9d3 | — |
+| 11 | Support X35 : renfort jonction tower/column | 2026-11-07 | d07497e | — |
 
 ### Blockers/Concerns
 
