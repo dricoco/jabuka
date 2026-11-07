@@ -53,7 +53,7 @@ Chaque exécution crée `var/soak/<horodatage UTC>-<scénario>/` :
 | Fichier | Contenu |
 |---|---|
 | `report.md` | verdict, **mesures et budgets** (valeur mesurée à côté de chaque budget du CONTEXT), chronologie des pannes, tableau des contrôles |
-| `report.json` | la même chose, schéma 1 (lu par `scripts/freeze-check.sh`, plan 04-02) ; en mode systemd, bloc `systemd` (portée, unités, `n_restarts`, nettoyage), sur un Pi, bloc `pi` |
+| `report.json` | la même chose, schéma 1 (lu par `scripts/freeze-check.sh`, plan 04-02) ; bloc `code` (plan 04-04 : empreinte `sha256` du paquet exécuté, nombre de `files`, `package_dir`, `source` `units` ou `children`, `units` = sha256 des unités installées en portée system) ; en mode systemd, bloc `systemd` (portée, unités, `n_restarts`, nettoyage, `harness_oom_score_adj`), sur un Pi, bloc `pi` |
 | `samples.csv` | une ligne par seconde réelle et par rôle : RSS, fd, threads, CPU ; sur un Pi, une ligne `pi` toutes les 10 s (`temp_c`, `throttled`) |
 | `timeline.jsonl` | événements : démarrages, READY, sorties, pannes, corruption |
 | `proc/<rôle>-<n>.log` | sortie horodatée de chaque processus (n = numéro de démarrage) ; en mode systemd, `proc/<rôle>-journal.log` (journal de l'unité) |
@@ -85,12 +85,16 @@ redémarrages faits par systemd (`NRestarts`, bloc `systemd` de `report.json`).
   fichiers d'état de la course) ; le pty du bateau synthétique est `/run/jabuka-soak/fastnet-pty`,
   rendu à l'utilisateur `jabuka` à chaque rebranchement simulé. `--logs-fs loop:512M` monte une
   image ext4 de 512 Mo (1G au plus) sur `data/logs` pour la panne `disk-full`.
-- **Nettoyage, toujours** (fin normale, échec, Ctrl-C, SIGTERM, SIGHUP, `atexit`) : drop-ins
-  retirés, `daemon-reload`, démontage, les deux unités **relancées sur leur configuration de
-  production**, puis le banc affiche le résultat de `systemctl cat jabuka-core | grep -c
-  50-jabuka-soak` (attendu 0). Un drop-in resté d'une exécution interrompue bloque toute nouvelle
-  exécution ; `sudo bash scripts/soak.sh --systemd system --systemd-cleanup` répare. `/run` est
-  de toute façon vidé au redémarrage du Pi.
+- **Nettoyage, toujours** (fin normale, échec, Ctrl-C, SIGTERM, SIGHUP, `atexit`), dans cet
+  ordre : drop-ins retirés, `daemon-reload`, les deux unités **relancées sur leur configuration
+  de production**, puis démontage du système de fichiers des journaux du soak ; le banc affiche
+  enfin le résultat de `systemctl cat jabuka-core | grep -c 50-jabuka-soak` (attendu 0). Le
+  nettoyage n'est marqué fait qu'une fois tout cela exécuté : un nettoyage interrompu est refait
+  par `atexit` ou par `--systemd-cleanup`, et Ctrl-C, SIGTERM et SIGHUP reçus pendant le
+  nettoyage sont différés jusqu'à sa fin. Un drop-in resté d'une exécution interrompue bloque
+  toute nouvelle exécution ; `sudo bash scripts/soak.sh --systemd system --systemd-cleanup`
+  répare. `/run` est de toute façon vidé au redémarrage du Pi. En portée system, le banc (root)
+  abaisse aussi son propre `oom_score_adj` à -900 : un OOM-kill du banc sauterait le nettoyage.
 - **Chien de garde** : `watchdog-hang` fige le core (SIGSTOP). systemd le voit (`Watchdog
   timeout`, état `stop-watchdog`) et envoie SIGABRT ; le banc fait alors SIGCONT pour que ce
   signal arrive tout de suite, comme sur un processus bloqué mais vivant. Sans ce SIGCONT,
@@ -196,10 +200,21 @@ budget sans retouche de la chauffe ni du budget.
 Une seule commande, sur le Pi lui-même, en SSH par Ethernet (le Wi-Fi reste le point d'accès de la
 tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
 
-1. **Pi installé depuis une wheelhouse construite après ce plan** (04-03) : le paquet du soak
-   doit être dans `/opt/jabuka/venv` (`/opt/jabuka/venv/bin/python -c "import
-   jabuka.soak.systemd"` ne doit rien afficher). Le dépôt `~/jabuka` doit être au même commit que
-   la wheel (le rapport enregistre `git.head` et `git.dirty`, relus par `freeze-check`).
+1. **Pi installé depuis une wheelhouse construite après ce plan** (04-03, 04-04) : le paquet du
+   soak doit être dans `/opt/jabuka/venv` (`/opt/jabuka/venv/bin/python -c "import
+   jabuka.soak.systemd"` ne doit rien afficher). Le rapport enregistre le bloc `code` :
+   l'**empreinte du paquet jabuka que les unités installées exécutent vraiment** (dans
+   `/opt/jabuka/venv`, `code.sha256`) et le sha256 des deux fichiers d'unité installés
+   (`code.units`). `~/jabuka` peut donc rester la copie rsync **sans .git** de PI-SETUP §3.
+   Au départ, le banc affiche `jabuka-soak: code <12 hex>` ; il refuse de partir (code 2) s'il
+   ne peut pas calculer cette empreinte. `freeze-check` F4 compare `code.sha256` avec
+   `src/jabuka` à HEAD, et les unités installées avec `deploy/systemd` à HEAD. Pour vérifier à
+   la main sur le Pi :
+
+   ```bash
+   cd /opt/jabuka/venv/lib/python3.13/site-packages/jabuka && find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
+   ```
+
    Il faut ~600 Mo libres dans `/var/lib/jabuka` (`df -h /var/lib/jabuka`) pour l'image de 512 Mo.
 2. Lancer :
 
@@ -210,6 +225,9 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
 
    Le banc refuse de partir sans root (code 2, avec la commande sudo), si les unités ne sont pas
    installées, ou s'il reste un drop-in d'une exécution interrompue (voir l'étape 8).
+   `--logs-fs loop:512M` est **obligatoire** en portée system : un tmpfs (le défaut de race-36h
+   sur le portable) est refusé avec le code 2, car il bloque de la RAM sur le Pi de 1 Go ;
+   `--logs-fs none` est accepté mais la panne `disk-full` est alors SKIPPED.
 3. **Suivre sur la tablette** : http://10.42.0.1 (le core du soak garde le port 80). Le bateau
    synthétique navigue au large de Vodice en temps accéléré ; les pannes font clignoter les
    sources et redémarrer l'appli, c'est voulu.

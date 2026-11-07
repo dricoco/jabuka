@@ -40,7 +40,10 @@ d'urgence** (dernière section), jamais une retouche sur le bateau.
 1. **Endurance sur le portable** : `bash scripts/soak.sh` (scénario race-36h, [SOAK](SOAK.md)),
    verdict PASS, sur un arbre propre.
 2. **Endurance sur le Pi** : le même essai sur le Pi (mode `--systemd`), verdict PASS ; recopier
-   le dossier du rapport du Pi dans `var/soak/` du portable.
+   le dossier du rapport du Pi dans `var/soak/` du portable. Le rapport du Pi porte l'empreinte
+   du paquet installé (`code.sha256`) et celle des unités installées ; F4 les compare avec
+   `src/jabuka` et `deploy/systemd` à HEAD, la copie du dépôt sans `.git` (PI-SETUP §3) suffit
+   donc.
 3. **Porte verte** : `JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 bash scripts/check.sh`.
 4. **Revue du verrou** : 01-UAT #8, 02-UAT #10, PI-SETUP §4 m et la revue des paquets de 03-05
    (numpy 2.5.4, outils de préparation). Puis calculer `sha256sum deploy/requirements.lock` et
@@ -63,6 +66,19 @@ d'urgence** (dernière section), jamais une retouche sur le bateau.
 
 Lock revu : sha256 À REMPLIR
 
+## Empreinte du code
+
+L'empreinte d'un paquet `jabuka` se calcule dans son dossier (sur le Pi
+`/opt/jabuka/venv/lib/python3.13/site-packages/jabuka`, sur le portable `src/jabuka`) :
+
+```bash
+find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
+```
+
+C'est la même valeur que `code.sha256` dans `report.json` du soak, celle que `freeze-check` F3/F4
+compare avec `src/jabuka` à HEAD, et celle que l'étape 5 de [SPARE-SD](SPARE-SD.md) compare entre
+les deux cartes.
+
 ## Correctif d'urgence après le gel
 
 Seulement pour un défaut qui empêche de courir (plantage, donnée fausse à l'écran), jamais pour
@@ -77,4 +93,5 @@ une amélioration :
 7. Recloner la SD de secours ([SPARE-SD](SPARE-SD.md)).
 
 Le soak n'est pas refait pour un correctif d'urgence (pas le temps) : `freeze-check.sh` dira F3/F4
-`code modifié depuis le soak` et F7 sur `race-2026` ; c'est attendu, le noter dans le carnet.
+`code modifié depuis le soak` (règle git) ou `code soaké … différent de src/jabuka à HEAD` (règle
+de l'empreinte), et F7 sur `race-2026` ; c'est attendu, le noter dans le carnet.
