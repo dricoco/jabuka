@@ -10,7 +10,11 @@
 #       A report with a `code` block (empreinte du paquet exécuté, docs/SOAK.md) must also have
 #       code.sha256 = the fingerprint of src/jabuka at HEAD and, for the Pi (source "units"),
 #       code.units = deploy/systemd at HEAD; then git.head may be null (Pi copy without .git)
-#   F4  the same for the Pi (aarch64; copy the Pi's var/soak/<run>/ back into var/soak/)
+#   F4  Pi race-36h soak report (aarch64; copy the Pi's var/soak/<run>/ back into var/soak/). It
+#       must come from `sudo bash scripts/soak.sh --systemd system …` (mode systemd, code.source
+#       units) and carry the code block: code.sha256 = the fingerprint of src/jabuka at HEAD and
+#       code.units = deploy/systemd at HEAD; git.head may then be null (Pi copy without .git).
+#       When git.head is present the F3 git rules apply on top; git alone never suffices for F4
 #   F5  sha256 of deploy/requirements.lock = the "Lock revu : sha256 <hex>" line of docs/FREEZE.md
 #   F6  deploy/wheelhouse: one wheel per lock pin, and the jabuka wheel's jabuka/ files are
 #       byte-identical to the tracked src/jabuka/ files
@@ -20,7 +24,7 @@
 #
 # One line per item: [PASS|FAIL|WARN|SKIP|HUMAN] Fn <text>. Exit 0 when no item FAILs.
 # Reads soak reports written by jabuka-soak (plan 04-01, report.json schema 1): only verdict,
-# scenario, host.machine, git.head, git.dirty, code.sha256, code.source and code.units.
+# scenario, mode, host.machine, git.head, git.dirty, code.sha256, code.source and code.units.
 set -euo pipefail
 
 GIT="${GIT:-/usr/bin/git}"
@@ -36,7 +40,7 @@ while [ $# -gt 0 ]; do
         --repo=*) REPO="$(cd "${1#--repo=}" && pwd)"; shift ;;
         --pre) PRE=1; shift ;;
         --skip-gate) SKIP_GATE=1; shift ;;
-        -h | --help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "freeze-check: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -78,7 +82,10 @@ soak() { # ID MACHINE LABEL
     # stdlib only (python3 from PATH, jabuka not importable). Prints one record for the newest
     # race-36h report of MACHINE: path, verdict, head, dirty, code_state, detail (tab-separated,
     # never an empty field). code_state: absent | match | differ | units-differ | units-missing |
-    # error. A helper crash becomes an error record (|| fallback), never an abort under set -e.
+    # error, and for aarch64 only: no-code (no valid code.sha256) | not-units (mode is not
+    # systemd or code.source is not units: not a `--systemd system` soak; overrides differ,
+    # units-* and match). A helper crash becomes an error record (|| fallback), never an abort
+    # under set -e.
     found="$("$PY" - "$REPO/var/soak" "$machine" "$REPO" "$GIT" <<'PY'
 import hashlib, io, json, re, subprocess, sys, tarfile
 from pathlib import Path
@@ -159,6 +166,13 @@ if best is not None:
     _, p, r = best
     g = r.get("git") or {}
     state, detail = code_state(r.get("code"))
+    if machine == "aarch64":
+        # F4 counts only the documented `--systemd system` Pi soak (plan 04-06, CR-01)
+        code = r.get("code") if isinstance(r.get("code"), dict) else {}
+        if state == "absent":
+            state, detail = "no-code", "-"
+        elif state != "error" and (r.get("mode") != "systemd" or code.get("source") != "units"):
+            state, detail = "not-units", f"mode {r.get('mode')}, source {code.get('source')}"
     print(p, r.get("verdict"), g.get("head") or "-", "true" if g.get("dirty") is not False else "false", state, detail, sep="\t")
 PY
 )" || found="$(printf '%s\t%s\t%s\t%s\t%s\t%s' - PASS - true error "helper F3/F4 en échec ($PY)")"
@@ -173,6 +187,10 @@ PY
         say FAIL "$id" "$label : $path : $detail"
     elif [ "$verdict" != PASS ]; then
         say FAIL "$id" "$label : $path verdict $verdict"
+    elif [ "$cstate" = no-code ]; then
+        say FAIL "$id" "$label : $path sans empreinte du code (pas de code.sha256) : refaire le soak du Pi avec le banc actuel : sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M (docs/SOAK.md)"
+    elif [ "$cstate" = not-units ]; then
+        say FAIL "$id" "$label : $path n'est pas un soak --systemd system ($detail) : F4 ne compte que le soak des unités installées : sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M (docs/SOAK.md)"
     elif [ "$cstate" = differ ]; then
         say FAIL "$id" "$label : $path code soaké (empreinte ${detail%% *}) différent de src/jabuka à HEAD (${detail##* }) : réinstaller depuis HEAD puis refaire le soak"
     elif [ "$cstate" = units-differ ] || [ "$cstate" = units-missing ]; then
