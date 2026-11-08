@@ -83,7 +83,15 @@ class Frozen:
         self.set_lock_hash()
         self.head = commit_all(root, "lock reviewed")
         self.report("x86_64", self.soak_head)
-        self.report("aarch64", self.soak_head)
+        # the documented Pi report: `sudo … --systemd system` writes mode systemd and a code
+        # block with source "units" (plan 04-06, CR-01)
+        self.report(
+            "aarch64",
+            self.soak_head,
+            code=soak_report.code_identity(
+                root / "src" / "jabuka", python=None, source="units", units=self.unit_hashes()
+            ),
+        )
         self.build_wheelhouse()
         git(root, "tag", "-a", "race-2026", "-m", "race")
 
@@ -311,6 +319,103 @@ def test_f4_malformed_code_block_is_a_fail_line_not_an_abort(frozen: Frozen) -> 
     assert code == 1 and "Traceback" not in out
     assert list(items) == [f"F{i}" for i in range(1, 10)], out
     assert items["F4"][0] == "FAIL" and "deploy/systemd" in items["F4"][1], out
+
+
+# -- F4 counts only a `--systemd system` Pi report (plan 04-06: 04-VERIFICATION gap 02-4, CR-01) --
+def _all_items_no_traceback(items: dict[str, tuple[str, str]], out: str) -> None:
+    assert list(items) == [f"F{i}" for i in range(1, 10)], out
+    assert "Traceback" not in out, out
+
+
+def _children_code(pkg: Path, units: dict[str, str] | None = None) -> dict[str, object]:
+    return soak_report.code_identity(
+        pkg, python="/opt/jabuka/venv/bin/python", source="children", units=units
+    )
+
+
+def test_f4_pi_shim_report_is_not_a_system_soak(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    frozen.report(
+        "aarch64", None, git={"head": None, "dirty": None}, code=_children_code(pkg), mode="shim"
+    )
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL", out
+    assert "--systemd system" in items["F4"][1] and "mode shim" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f4_pi_user_scope_report_is_not_a_system_soak(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    frozen.report(
+        "aarch64", None, git={"head": None, "dirty": None}, code=_children_code(pkg), mode="systemd"
+    )
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL", out
+    assert "--systemd system" in items["F4"][1] and "source children" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f4_pi_children_report_with_wrong_units_is_not_a_system_soak(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    code_block = _children_code(pkg, units={"jabuka-core.service": "0" * 64})
+    frozen.report("aarch64", None, git={"head": None, "dirty": None}, code=code_block)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "--systemd system" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f4_pi_units_report_with_a_wrong_mode_is_not_a_system_soak(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    path = frozen.pi_report(pkg)
+    rep = json.loads(path.read_text(encoding="utf-8"))
+    rep["mode"] = "shim"
+    path.write_text(json.dumps(rep), encoding="utf-8")
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "--systemd system" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f4_pi_report_with_git_but_without_code_fails(frozen: Frozen) -> None:
+    """Gap 02-4 (c): soak_head is a clean ancestor of HEAD with no diff under src/deploy/
+    pyproject, so the git rule alone used to PASS this report. F4 now needs the fingerprint."""
+    rep_path = frozen.report("aarch64", frozen.soak_head)
+    assert "code" not in json.loads(rep_path.read_text(encoding="utf-8"))
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "empreinte" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f4_pi_report_with_a_malformed_sha_fails(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    path = frozen.pi_report(pkg)
+    rep = json.loads(path.read_text(encoding="utf-8"))
+    rep["code"]["sha256"] = "abc"
+    path.write_text(json.dumps(rep), encoding="utf-8")
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "empreinte" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_laptop_report_without_code_keeps_the_git_rule(frozen: Frozen) -> None:
+    """F3 decision (plan 04-06): a laptop report without a code block is still judged by the git
+    rule (laptop runs always have .git; the git rule is the stronger one there)."""
+    lap = next((frozen.root / "var" / "soak").glob("*-laptop/report.json"))
+    assert "code" not in json.loads(lap.read_text(encoding="utf-8"))
+    code, items, out = frozen.check()
+    assert items["F3"][0] == "PASS", out
+    frozen.write("src/jabuka/core.py", "X = 4\n")
+    head = commit_all(frozen.root, "late fix")
+    git(frozen.root, "tag", "-f", "-a", "race-2026", "-m", "race", head)
+    frozen.build_wheelhouse()
+    _, items, out = frozen.check()
+    assert items["F3"][0] == "FAIL" and "code modifié depuis le soak" in items["F3"][1], out
+    _all_items_no_traceback(items, out)
 
 
 def test_f5_lock_hash(frozen: Frozen) -> None:
