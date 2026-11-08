@@ -72,8 +72,8 @@ Race-ready for Regata Jabuka (start 2026-11-13). Each maps to one roadmap phase.
 ### Reliability
 
 - [ ] **REL-01**: All services auto-start on boot and auto-restart on crash; the system survives power cuts without corrupting data
-- [x] **REL-02**: System runs ~36 h unattended on the Pi 3B (verified by an accelerated soak test with fault injection)
-- [x] **REL-03**: An on-boat commissioning runbook for 12–13 Nov exists (wiring, probe, capture, true/magnetic check, tablet setup, final GRIB download, spare SD card)
+- [ ] **REL-02**: System runs ~36 h unattended on the Pi 3B (verified by an accelerated soak test with fault injection)
+- [ ] **REL-03**: An on-boat commissioning runbook for 12–13 Nov exists (wiring, probe, capture, true/magnetic check, tablet setup, final GRIB download, spare SD card)
 
 ## v2 Requirements
 
@@ -153,8 +153,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HELM-04 | Phase 2 | Pending |
 | HELM-05 | Phase 1 | Pending |
 | REL-01 | Phase 1 | Pending |
-| REL-02 | Phase 4 | Complete |
-| REL-03 | Phase 4 | Complete |
+| REL-02 | Phase 4 | Gaps Found |
+| REL-03 | Phase 4 | Gaps Found |
 
 **Coverage:**
 
