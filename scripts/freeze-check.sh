@@ -20,9 +20,9 @@
 #       >= its duration_s and sim_s >= 0.99 x it, no fault skipped "after the end of the run"
 #       (else « essai raccourci »). The newest race-36h report of each machine is the one judged:
 #       quick runs go to --out var/soak-essais (plan 04-07). A report whose end_signal is non-null
-#       or absent (Ctrl-C/SIGTERM/SIGHUP at the end of the soak, exit 128 + signal) FAILs « soak
-#       interrompu »; a systemd-mode report whose systemd.journal.complete is not true FAILs
-#       « copie du journal des unités incomplète » (plan 04-08)
+#       or absent (Ctrl-C/SIGTERM/SIGHUP at the end of the soak, exit 128 + signal) FAILs
+#       « soak interrompu »; a systemd-mode report whose systemd.journal.complete is not true
+#       FAILs « copie du journal des unités incomplète » (plan 04-08)
 #   F5  sha256 of deploy/requirements.lock = the "Lock revu : sha256 <hex>" line of docs/FREEZE.md
 #   F6  deploy/wheelhouse: one wheel per lock pin, and the jabuka wheel's jabuka/ files are
 #       byte-identical to the tracked src/jabuka/ files
