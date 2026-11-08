@@ -348,3 +348,22 @@ def test_pi_soak_procedure_describes_the_code_identity() -> None:
     pi_setup = (REPO / "deploy" / "PI-SETUP.md").read_text(encoding="utf-8")
     sec3 = pi_setup[pi_setup.index("## 3. Install") : pi_setup.index("## 4.")]
     assert "code.sha256" in sec3 and "--exclude '.git'" in sec3
+
+
+def test_docs_describe_the_f4_system_scope_rule_and_tmux() -> None:
+    """Plan 04-06: the Pi soak runs inside tmux, F4 counts only the `--systemd system` report
+    (code.source units), and the cleanup outcome (restart verified, report before 128+signal)."""
+    text = _doc("SOAK.md")
+    pi = text[text.index("## Soak sur le Pi 3B") : text.index("## Budgets Pi à confirmer")]
+    step2 = pi[pi.index("2. Lancer") : pi.index("3. ")]
+    assert "tmux new -s soak" in step2 and "tmux attach -t soak" in step2, step2
+    for word in ("code.source", "--systemd user", "WARNING"):
+        assert word in pi, word
+    step8 = pi[pi.index("8. ") : pi.index("9. ")]
+    assert "code 1" in step8, step8
+    cleanup = text[text.index("- **Nettoyage, toujours**") : text.index("- **Chien de garde**")]
+    for word in ("restarted", "report.json", "128"):
+        assert word in cleanup, word
+    freeze = _doc("FREEZE.md")
+    for word in ("code.source", "--systemd system", "--systemd user"):
+        assert word in freeze, word
