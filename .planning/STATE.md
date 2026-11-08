@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
-stopped_at: Completed 04-06-PLAN.md
-last_updated: "2026-11-08T18:30:29.727Z"
+stopped_at: Completed 04-07-PLAN.md
+last_updated: "2026-11-08T19:06:36.766Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 28ba07674c1199131c555e4d48e6846621c7e023
+state_head: d57b2ada40966723b05a0d8de40437e05f3e4fa1
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 22
-  completed_plans: 21
+  completed_plans: 22
   percent: 0
 ---
 
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 04 (Race Readiness — Hardening & Commissioning) — EXECUTING
-Plan: 1 of 7
-Status: Executing Phase 04
+Plan: 2 of 7
+Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 04 P06 | 32 min | 3 tasks | 8 files |
+| Phase 04 P07 | 35 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,8 @@ Recent decisions affecting current work:
 - [Research]: FastAPI/uvicorn core + WebSocket. MapLibre 5.24 + PMTiles offline map. GRIBs prepped on the laptop into `.npz`. In-house numpy isochrone router, libweatherrouting as oracle/fallback.
 - [Phase 04]: 04-06: freeze-check F4 counts only a --systemd system Pi report (mode systemd, code.source units) with code block = HEAD; F3 keeps the git rule
 - [Phase 04]: 04-06: soak cleanup done only when both units ActiveState active after restart (else retryable, verdict FAIL, --systemd-cleanup exit 1); signal during cleanup honoured after report.json (128+signal)
+- [Phase 04]: 04-07: freeze-check F3/F4 count only a full-length race-36h run at HEAD (scenario_sha256, seed, duration_s, sim_s>=0.99x, no late skip; fail closed); F3 always needs git.head
+- [Phase 04]: 04-07: SIGINT/SIGTERM/SIGHUP held from end of main run until report.json written; run_soak then exits 128+signal
 
 ### Pending Todos
 
@@ -114,6 +117,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T17:33:22.697Z
-Stopped at: Completed 04-06-PLAN.md
+Last session: 2026-11-08T19:06:36.716Z
+Stopped at: Completed 04-07-PLAN.md
 Resume file: None
