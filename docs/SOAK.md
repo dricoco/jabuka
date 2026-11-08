@@ -90,8 +90,12 @@ redémarrages faits par systemd (`NRestarts`, bloc `systemd` de `report.json`).
   de production**, puis démontage du système de fichiers des journaux du soak ; le banc affiche
   enfin le résultat de `systemctl cat jabuka-core | grep -c 50-jabuka-soak` (attendu 0). Le
   nettoyage n'est marqué fait qu'une fois tout cela exécuté : un nettoyage interrompu est refait
-  par `atexit` ou par `--systemd-cleanup`, et Ctrl-C, SIGTERM et SIGHUP reçus pendant le
-  nettoyage sont différés jusqu'à sa fin. Un drop-in resté d'une exécution interrompue bloque
+  par `atexit` ou par `--systemd-cleanup`. Après la relance, le banc vérifie que les deux unités
+  sont actives (jusqu'à 20 s). Si la relance a échoué ou qu'une unité n'est pas active :
+  `restarted: false` dans `report.json` (avec les états des unités), verdict FAIL, nettoyage
+  refait à la sortie, et `--systemd-cleanup` rend le code 1. Un Ctrl-C, SIGTERM ou SIGHUP reçu
+  pendant le nettoyage ne l'interrompt plus et ne fait plus perdre le rapport : `report.json` est
+  écrit d'abord, puis le banc sort avec le code 128 + signal. Un drop-in resté d'une exécution interrompue bloque
   toute nouvelle exécution ; `sudo bash scripts/soak.sh --systemd system --systemd-cleanup`
   répare. `/run` est de toute façon vidé au redémarrage du Pi. En portée system, le banc (root)
   abaisse aussi son propre `oom_score_adj` à -900 : un OOM-kill du banc sauterait le nettoyage.
@@ -208,15 +212,23 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
    (`code.units`). `~/jabuka` peut donc rester la copie rsync **sans .git** de PI-SETUP §3.
    Au départ, le banc affiche `jabuka-soak: code <12 hex>` ; il refuse de partir (code 2) s'il
    ne peut pas calculer cette empreinte. `freeze-check` F4 compare `code.sha256` avec
-   `src/jabuka` à HEAD, et les unités installées avec `deploy/systemd` à HEAD. Pour vérifier à
-   la main sur le Pi :
+   `src/jabuka` à HEAD, et les unités installées avec `deploy/systemd` à HEAD. F4 ne compte que
+   ce soak-là (`mode` systemd et `code.source` = `units`) : un soak lancé sur le Pi sans
+   `sudo … --systemd system` (mode shim) ou avec `--systemd user` donne F4 FAIL « n'est pas un
+   soak --systemd system », même avec la bonne empreinte ; un rapport sans bloc `code` donne
+   aussi F4 FAIL. Le banc annonce un tel essai dès le départ par une ligne `WARNING`. Pour
+   vérifier à la main sur le Pi :
 
    ```bash
    cd /opt/jabuka/venv/lib/python3.13/site-packages/jabuka && find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
    ```
 
    Il faut ~600 Mo libres dans `/var/lib/jabuka` (`df -h /var/lib/jabuka`) pour l'image de 512 Mo.
-2. Lancer :
+2. Lancer, **dans tmux** : une coupure SSH pendant les 2 à 4 h envoie SIGHUP et arrête le banc
+   (il intercepte SIGHUP lui-même, `nohup` n'y change donc rien). Ouvrir d'abord une session
+   `tmux new -s soak` (si tmux manque : `sudo apt install -y tmux`, avec internet par Ethernet),
+   lancer la commande ci-dessous dedans ; après une coupure, se reconnecter en SSH puis
+   `tmux attach -t soak`.
 
    ```bash
    cd ~/jabuka && sudo bash scripts/soak.sh --systemd system \
@@ -256,8 +268,10 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
    `logs.img` y est laissée pour inspection).
 8. **Si le soak a été interrompu** (coupure, SSH perdu, Ctrl-C deux fois) :
    `cd ~/jabuka && sudo bash scripts/soak.sh --systemd system --python
-   /opt/jabuka/venv/bin/python --systemd-cleanup` (code 0 quand `systemctl cat jabuka-core` ne
-   contient plus `50-jabuka-soak`), puis l'étape 7.
+   /opt/jabuka/venv/bin/python --systemd-cleanup`. Code 0 quand `systemctl cat jabuka-core` ne
+   contient plus `50-jabuka-soak` **et** que les deux unités sont actives ; code 1 sinon :
+   `systemctl status jabuka-core jabuka-ingest-fastnet`, puis redémarrer le Pi (étape 7).
+   Ensuite l'étape 7.
 9. Le vrai test de **coupure d'alimentation** reste celui de PI-SETUP §4 j : 5 coupures réelles,
    suivies chacune de `jabuka-logcheck`. Le soak simule les coupures, il ne les remplace pas.
 
