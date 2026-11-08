@@ -354,6 +354,24 @@ def test_freeze_check_matches_the_harness_skip_reason() -> None:
     assert "SKIP_AFTER_END" in src and "after the end of the run" not in src, src
 
 
+def test_shortened_run_is_announced_at_start() -> None:
+    sc = load_scenario("race-36h")
+    lines = soak.run_length_messages(sc, 900.0)
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("jabuka-soak: WARNING: shortened run"), lines
+    assert "F3/F4" in lines[0] and "--out var/soak-essais" in lines[0], lines
+    assert soak.run_length_messages(sc, 129600.0) == []
+    assert soak.run_length_messages(sc, 200000.0) == []
+
+
+def test_report_md_marks_a_shortened_run() -> None:
+    md = rep.render_md({"git": {}, "duration_s": 900.0, "scenario_duration_s": 129600.0})
+    assert "Essai raccourci" in md, md
+    md = rep.render_md({"git": {}, "duration_s": 129600.0, "scenario_duration_s": 129600.0})
+    assert "Essai raccourci" not in md, md
+    assert "Essai raccourci" not in rep.render_md({"git": {}})
+
+
 # -- the docs quote the one fingerprint definition (plan 04-04 Task 3) ----------------------------
 DOCS = REPO / "docs"
 

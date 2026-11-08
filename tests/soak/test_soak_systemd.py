@@ -718,3 +718,104 @@ def test_cli_system_scope_refuses_tmpfs_before_the_root_check(
         assert soak.main([*base, "--logs-fs", "loop:512M"]) == 2
         assert "sudo" in capsys.readouterr().err  # past the tmpfs check, at the root check
         assert not list(tmp_path.iterdir())
+
+
+# -- the end of a soak is never cut short by a signal (plan 04-07, review WR-02) -----------------
+def test_signal_hold_records_and_restores() -> None:
+    prev = {s: signal.signal(s, soak._on_signal) for s in (signal.SIGHUP, signal.SIGTERM)}
+    try:
+        hold = sd.SignalHold().start()
+        signal.raise_signal(signal.SIGHUP)  # held: no SystemExit
+        assert hold.start() is hold  # already active: keeps the first signal
+        signal.raise_signal(signal.SIGTERM)
+        assert hold.release() == signal.SIGHUP
+        assert signal.getsignal(signal.SIGHUP) is soak._on_signal
+        assert signal.getsignal(signal.SIGTERM) is soak._on_signal
+        assert hold.release() == signal.SIGHUP  # idempotent
+        assert signal.getsignal(signal.SIGHUP) is soak._on_signal
+        assert sd.SignalHold().release() is None  # never started
+        with sd.SignalHold() as held:
+            signal.raise_signal(signal.SIGHUP)
+        assert held.signal == signal.SIGHUP
+        assert signal.getsignal(signal.SIGHUP) is soak._on_signal
+    finally:
+        for s, handler in prev.items():
+            signal.signal(s, handler)
+
+
+def test_signal_at_the_end_of_the_run_is_held_until_the_report_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real Harness.run end path (shim scope): a SIGHUP raised during shutdown() is held,
+    the report is still built and returned, and the caller releases the hold."""
+    out = tmp_path / "out"
+    args = soak.build_arg_parser().parse_args(["--scenario", "tracer", "--out", str(out)])
+    args.fixtures = tmp_path
+    h = soak.Harness(soak.make_run_dir(out, "tracer"), load_scenario("tracer"), args)
+
+    def stop_here(self: soak.Harness) -> None:
+        raise soak.SoakAbort("stop here")
+
+    real_shutdown = soak.Harness.shutdown
+    fired: list[int] = []
+
+    def shutdown(self: soak.Harness) -> None:
+        if not fired:
+            fired.append(1)
+            signal.raise_signal(signal.SIGHUP)  # the SSH session drops at the end of the run
+        real_shutdown(self)
+
+    monkeypatch.setattr(soak.Harness, "mount_logs_tmpfs", stop_here)
+    monkeypatch.setattr(soak.Harness, "shutdown", shutdown)
+    prev = signal.signal(signal.SIGHUP, soak._on_signal)
+    try:
+        report = h.run()
+        assert fired
+        assert "stop here" in (report.get("setup_error") or ""), report.get("setup_error")
+        assert h.end_signals.release() == signal.SIGHUP
+        assert signal.getsignal(signal.SIGHUP) is soak._on_signal
+    finally:
+        hold = getattr(h, "end_signals", None)
+        if hold is not None:
+            hold.release()
+        signal.signal(signal.SIGHUP, prev)
+        h._tl.close()
+
+
+def test_run_soak_honours_a_signal_held_at_the_end_of_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pkg = tmp_path / "site-packages" / "jabuka"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+
+    def identity(self: soak.Harness) -> None:
+        self.code = soak.rep.code_identity(pkg, python=None, source="children")
+        self.code_error = None
+
+    def run(self: soak.Harness) -> dict:
+        self.end_signals.start()  # what the real Harness.run does after the main run
+        signal.raise_signal(signal.SIGHUP)
+        return {"verdict": "PASS", "fail_reasons": []}
+
+    def write_report(run_dir: Path, report: dict) -> tuple[Path, Path]:
+        jpath, mpath = run_dir / "report.json", run_dir / "report.md"
+        jpath.write_text(json.dumps(report), encoding="utf-8")
+        mpath.write_text("# report\n", encoding="utf-8")
+        return jpath, mpath
+
+    monkeypatch.setattr(soak.Harness, "compute_code_identity", identity)
+    monkeypatch.setattr(soak.Harness, "run", run)
+    monkeypatch.setattr(soak.rep, "write_report", write_report)
+    out = tmp_path / "out"
+    args = soak.build_arg_parser().parse_args(["--scenario", "tracer", "--out", str(out)])
+    prev = signal.signal(signal.SIGHUP, soak._on_signal)
+    try:
+        assert soak.run_soak(args, load_scenario("tracer")) == 128 + signal.SIGHUP
+        reports = list(out.glob("*-tracer/report.json"))
+        assert len(reports) == 1, reports
+        assert json.loads(reports[0].read_text(encoding="utf-8"))["verdict"] == "PASS"
+        assert "report written" in capsys.readouterr().err
+        assert signal.getsignal(signal.SIGHUP) is soak._on_signal
+    finally:
+        signal.signal(signal.SIGHUP, prev)
