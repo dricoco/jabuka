@@ -444,3 +444,37 @@ def test_docs_describe_the_full_length_rule_and_the_f3_git_rule() -> None:
         freeze.index("1. **Endurance sur le portable**") : freeze.index("3. **Porte verte**")
     ]
     assert steps.count("sans `--duration`") == 2, steps
+
+
+def test_docs_describe_the_interrupted_soak_and_the_journal_copy() -> None:
+    """Plan 04-08 (gap 07-5, review CR-01/IN-02): journalctl/umount/vcgencmd in their own
+    session, an interrupted soak is recorded (end_signal) and refused by F3/F4, a failed journal
+    copy FAILs the verdict, the kill -9 threshold is ~15 min, and tee -i keeps the verdict."""
+    text = _doc("SOAK.md")
+    for word in (
+        "end_signal",
+        "systemd.journal",
+        "journal dump incomplete",
+        "soak interrompu",
+        "propre session",
+        "jabuka-soak: signal",
+    ):
+        assert word in text, word
+    cleanup = text[text.index("- **Nettoyage, toujours**") : text.index("- **Chien de garde**")]
+    for word in ("propre session", "soak interrompu", "fin du soak"):
+        assert word in cleanup, word
+    pi = text[text.index("## Soak sur le Pi 3B") : text.index("## Budgets Pi à confirmer")]
+    step8 = pi[pi.index("8. ") : pi.index("9. ")]
+    assert "~15 min" in step8 and "jabuka-soak: verdict" in step8, step8
+    assert "~10 min" not in step8, step8
+    freeze = _doc("FREEZE.md")
+    for word in (
+        "end_signal",
+        "soak interrompu",
+        "copie du journal des unités incomplète",
+        "systemd.journal",
+    ):
+        assert word in freeze, word
+    checker = (REPO / "scripts" / "freeze-check.sh").read_text(encoding="utf-8")
+    assert "soak interrompu" in checker and "copie du journal des unités incomplète" in checker
+    assert "| tee -i " in (REPO / "scripts" / "soak.sh").read_text(encoding="utf-8")
