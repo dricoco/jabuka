@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
-stopped_at: Completed 04-07-PLAN.md
-last_updated: "2026-11-08T19:42:48.713Z"
+stopped_at: Completed 04-08-PLAN.md
+last_updated: "2026-11-08T20:21:13.606Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 3b486f3536700a30956779260cb94573598169d8
+state_head: 4594a9e67e0ef51ce6fae6894d75c607849c661b
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 23
-  completed_plans: 22
+  completed_plans: 23
   percent: 0
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 04 (Race Readiness — Hardening & Commissioning) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 04
-Last activity: 2026-11-08 — Phase 04 execution started
+Plan: 8 of 8
+Status: All 8 plans executed — awaiting phase 04 re-verification (gap 07-5 closed by 04-08)
+Last activity: 2026-11-08 — 04-08 executed (journal copy isolated, end_signal, F3/F4 interrupted/journal rules)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -62,6 +62,7 @@ Progress: [░░░░░░░░░░] 0%
 |------|----------|-------|-------|
 | Phase 04 P06 | 32 min | 3 tasks | 8 files |
 | Phase 04 P07 | 35 min | 3 tasks | 10 files |
+| Phase 04 P08 | 37 min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-06: soak cleanup done only when both units ActiveState active after restart (else retryable, verdict FAIL, --systemd-cleanup exit 1); signal during cleanup honoured after report.json (128+signal)
 - [Phase 04]: 04-07: freeze-check F3/F4 count only a full-length race-36h run at HEAD (scenario_sha256, seed, duration_s, sim_s>=0.99x, no late skip; fail closed); F3 always needs git.head
 - [Phase 04]: 04-07: SIGINT/SIGTERM/SIGHUP held from end of main run until report.json written; run_soak then exits 128+signal
+- [Phase 04]: 04-08: end-of-run journalctl/umount/vcgencmd in own session; incomplete journal copy FAILs tracebacks+verdict; report.json end_signal; F3/F4 refuse interrupted soak or incomplete journal (fail closed)
 
 ### Pending Todos
 
@@ -117,6 +119,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T19:06:36.716Z
-Stopped at: Completed 04-07-PLAN.md
+Last session: 2026-11-08T20:21:13.556Z
+Stopped at: Completed 04-08-PLAN.md
 Resume file: None

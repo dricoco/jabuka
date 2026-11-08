@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 7/8 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08)
+**Plans:** 8/8 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08)
 
 Plans:
 **Wave 1**
@@ -143,7 +143,7 @@ Plans:
 - [x] 04-05-PLAN.md — Gap closure (race-path robustness): course/settings/manual wind restored from .bak raise a visible "restauré" alert, and a schema-invalid main falls through to a valid .bak (WR-04). A routing cycle lost to a recycled wedged pool counts as a failure, so the route turns stale and is withdrawn on a repeated wedge (WR-05)
 - [x] 04-06-PLAN.md — Gap closure 2 (freeze gate + soak cleanup): freeze-check F4 counts only a `--systemd system` Pi report carrying a code block. Shim, user-scope and code-less aarch64 reports FAIL (CR-01, gap 02-4); F3 is unchanged. System-scope cleanup checks that the units are active after the restart: if not, it stays retryable, FAILs the verdict and `--systemd-cleanup` exits 1 (WR-01). A signal during cleanup is honoured only after report.json is written (WR-02). SOAK.md runs the Pi soak in tmux; FREEZE.md states the F4 rule
 - [x] 04-07-PLAN.md — Gap closure 3 (freeze gate counts only a full-length race-36h): the soak report records duration_s, scenario_duration_s, scenario_source and scenario_sha256, and freeze-check F3/F4 FAIL a shortened, early-stopped, foreign-scenario or other-seed run (fail closed; CR-01, gap 02-4). F3 always needs git.head (WR-01). Signals at the end of a soak are held until report.json is written (WR-02). SOAK/FREEZE docs updated (IN-01)
-- [ ] 04-08-PLAN.md — Gap closure 4 (the Pi soak verdict needs the whole journal): journalctl, umount and vcgencmd run in their own session, so a Ctrl-C/SIGHUP at the end of a soak can no longer truncate the units' journal copy. A failed copy (rc, 300 s timeout, error, empty unit) is recorded in report.json and FAILs the tracebacks check (CR-01, gap 07-5). report.json records end_signal, and freeze-check F3/F4 FAIL an interrupted soak or an incomplete journal copy (fail closed). Held signal announced, `tee -i`, actionable short-run FAIL, SOAK.md promise corrected (IN-01, IN-02)
+- [x] 04-08-PLAN.md — Gap closure 4 (the Pi soak verdict needs the whole journal): journalctl, umount and vcgencmd run in their own session, so a Ctrl-C/SIGHUP at the end of a soak can no longer truncate the units' journal copy. A failed copy (rc, 300 s timeout, error, empty unit) is recorded in report.json and FAILs the tracebacks check (CR-01, gap 07-5). report.json records end_signal, and freeze-check F3/F4 FAIL an interrupted soak or an incomplete journal copy (fail closed). Held signal announced, `tee -i`, actionable short-run FAIL, SOAK.md promise corrected (IN-01, IN-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -161,7 +161,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 7/7 | In Progress|  |
+| 4. Race Readiness — Hardening & Commissioning | 8/8 | In Progress|  |
 
 ---
 *Roadmap created: 2026-11-06*
