@@ -16,7 +16,10 @@ Two scopes:
   recorded in ``pending_signal``; jabuka-soak also holds them over the whole end of the run
   (shutdown, journal copy, final checks, cleanup, report written and handed back, plan 04-07)
   and honours them only after report.json is written, and ``--systemd-cleanup`` exits with the
-  repair's own result. /run is cleared at reboot anyway.
+  repair's own result. At the end of the run, journalctl, umount and vcgencmd run in their own
+  session, so a held Ctrl-C/SIGHUP never reaches them, and a failed journal copy (rc, timeout,
+  error, a unit with no entry in system scope) FAILs the tracebacks check (plan 04-08). /run is
+  cleared at reboot anyway.
 - **user** (the laptop, no sudo): transient units through ``systemd-run --user`` with the shipped
   Type=, Restart=, RestartSec= and WatchdogSec= (and StartLimitIntervalSec=0). The hardening
   directives (User=, ProtectSystem=, PrivateDevices=, ...) are NOT applied: a user manager cannot
@@ -53,21 +56,38 @@ RUN_LINK_DIR = Path("/run/jabuka-soak")
 REAL_GPSD_PORT = 2947
 SCOPES = ("user", "system")
 DEFERRED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+# seconds journalctl may take to copy the units' journal at the end of a soak (review CR-01:
+# 120 s is plausible to exceed on a Pi 3B dumping 2-4 h of JSON journal); a timeout is recorded,
+# never silent (plan 04-08)
+JOURNAL_TIMEOUT_S = 300.0
+HELD_SIGNAL_MESSAGE = (
+    "jabuka-soak: signal {n} held until the end of the soak is finished (journal copy, checks, "
+    "cleanup, report.json; up to ~15 min); do not kill -9 before\n"
+)
 
 
 class SignalHold:
     """Holds SIGINT, SIGTERM and SIGHUP back between start() and release(), recording the first
     one in ``signal`` (never re-raised). Main thread only: elsewhere start() is a no-op. Used for
-    the soak cleanup and for the whole end of a soak run (review WR-02, plan 04-07)."""
+    the soak cleanup and for the whole end of a soak run (review WR-02, plan 04-07). The first
+    held signal prints one line on ``announce_fd`` (stderr by default, None: silent), so the
+    operator sees why nothing stops (review IN-02, plan 04-08)."""
 
-    def __init__(self) -> None:
+    def __init__(self, announce_fd: int | None = 2) -> None:
         self.signal: int | None = None
+        self.announce_fd = announce_fd
         self._prev: dict[int, Any] = {}
         self._active = False
 
     def _record(self, signum: int, _frame: Any) -> None:
-        if self.signal is None:
-            self.signal = signum
+        if self.signal is not None:
+            return
+        self.signal = signum
+        if self.announce_fd is not None:
+            # os.write, not print: a dead tee pipe or a closed stderr must never raise inside
+            # the end-of-run sequence
+            with contextlib.suppress(OSError):
+                os.write(self.announce_fd, HELD_SIGNAL_MESSAGE.format(n=int(signum)).encode())
 
     def start(self) -> SignalHold:
         if self._active or threading.current_thread() is not threading.main_thread():
@@ -302,6 +322,9 @@ class SystemdBackend:
         self.cleaned = False
         self.cleanup_report: dict[str, Any] = {}
         self.pending_signal: int | None = None  # first signal held back during cleanup
+        # set by dump_journal: {complete, error, entries}; None means the journal was never
+        # copied (plan 04-08, review CR-01)
+        self.journal: dict[str, Any] | None = None
         self._removed: list[str] = []  # drop-ins removed, across retried cleanups
         self._installed = False
         self._pre_inv: dict[str, str] = {}
@@ -729,7 +752,14 @@ class SystemdBackend:
     # -- journal -----------------------------------------------------------------------------
     def dump_journal(self, dest: Path, since_wall: float) -> list[Path]:
         """The units' journal since the run start -> dest/<role>-journal.log, one
-        '<wall> <message>' line each (the traceback classifier's format)."""
+        '<wall> <message>' line each (the traceback classifier's format).
+
+        journalctl runs in its own session: the harness holds a terminal Ctrl-C / SIGHUP at the
+        end of the run (plan 04-07), and a journalctl in its process group would die of it and
+        truncate the copy (review CR-01). The outcome is recorded in ``self.journal`` =
+        {complete, error, entries per role}: a non-zero rc (negative: killed by a signal), a run
+        over JOURNAL_TIMEOUT_S, an error, or (system scope) a unit with no entry make it
+        incomplete, and the harness then FAILs the tracebacks check (plan 04-08)."""
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=True)
         units = {s.unit: s.role for s in self.services.values()}
@@ -737,11 +767,28 @@ class SystemdBackend:
         for u in units:
             cmd += ["-u", u]
         cmd += ["--since", f"@{int(since_wall)}", "-o", "json", "--no-pager"]
+        error: str | None = None
+        raw: bytes | str | None = b""
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=120)
-            out = r.stdout.decode("utf-8", "replace")
-        except (OSError, subprocess.SubprocessError):
-            out = ""
+            # own session, like _ctl: the held Ctrl-C/SIGHUP must not cut the copy (CR-01)
+            r = subprocess.run(
+                cmd, capture_output=True, timeout=JOURNAL_TIMEOUT_S, start_new_session=True
+            )
+            raw = r.stdout
+            if r.returncode != 0:
+                err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
+                error = f"journalctl rc {r.returncode}: {' '.join(err.split())[:200]}"
+        except subprocess.TimeoutExpired as exc:
+            raw = exc.stdout  # the partial evidence stays readable
+            error = f"journalctl timed out after {JOURNAL_TIMEOUT_S:g} s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            raw = b""
+            error = f"journalctl: {exc!r}"
+        if isinstance(raw, bytes):
+            out = raw.decode("utf-8", "replace")
+        else:
+            out = raw or ""
+        counts: dict[str, int] = {s.role: 0 for s in self.services.values()}
         files: dict[str, Any] = {}
         try:
             for line in out.splitlines():
@@ -764,9 +811,18 @@ class SystemdBackend:
                     f = files[role] = (dest / f"{role}-journal.log").open("a", encoding="utf-8")
                 for part in str(msg or "").splitlines() or [""]:
                     f.write(f"{ts:.3f} {part}\n")
+                counts[role] = counts.get(role, 0) + 1
         finally:
             for f in files.values():
                 f.close()
+        if error is None and not self.user:
+            # the soak started and stopped these units, so PID 1 logged them: an empty copy
+            # means the journal was not read. User scope keeps an empty copy legal (a laptop
+            # user journal may be volatile).
+            empty = [self.unit(r) for r, n in counts.items() if n == 0]
+            if empty:
+                error = "; ".join(f"no journal entry for {u}" for u in empty)
+        self.journal = {"complete": error is None, "error": error, "entries": counts}
         return [dest / f"{r}-journal.log" for r in files]
 
     # -- teardown ----------------------------------------------------------------------------
@@ -878,6 +934,7 @@ class SystemdBackend:
             "policies": {r: s.policy.to_dict() for r, s in self.services.items()},
             "hardening_applied": not self.user,
             "cleanup": self.cleanup_report,
+            "journal": self.journal,
         }
 
 
@@ -899,7 +956,9 @@ def soak_lines_in(text: str) -> int:
 def unmount(path: Path) -> bool:
     for args in (["umount", str(path)], ["umount", "-l", str(path)]):
         try:
-            if subprocess.run(args, capture_output=True, timeout=30).returncode == 0:
+            # an end-of-run child: own session, same reason as _ctl (review CR-01)
+            r = subprocess.run(args, capture_output=True, timeout=30, start_new_session=True)
+            if r.returncode == 0:
                 return True
         except (OSError, subprocess.SubprocessError):
             continue

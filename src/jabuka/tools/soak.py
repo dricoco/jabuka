@@ -961,12 +961,18 @@ class Harness:
                 if f.get("id") == e["expected_by"]["fault"]:
                     f.setdefault("expected_tracebacks", []).append(e["text"].splitlines()[-1])
         self.unexpected_tracebacks = unexp
+        detail = "; ".join(
+            f"{u['file']}:{u['line']} {u['text'].splitlines()[-1]}" for u in unexp[:5]
+        ) + (f" ({len(exp)} expected)" if exp else "")
+        # review CR-01, plan 04-08: a truncated, failed or missing journal copy must never read
+        # as "no traceback"; the verdict is FAIL (fail closed). The classification of the blocks
+        # that were read is unchanged.
+        jerr = journal_problem(self.sup)
         c["tracebacks"] = rep.check(
-            not unexp,
+            False if jerr else not unexp,
             len(unexp),
             0,
-            "; ".join(f"{u['file']}:{u['line']} {u['text'].splitlines()[-1]}" for u in unexp[:5])
-            + (f" ({len(exp)} expected)" if exp else ""),
+            f"journal dump incomplete ({jerr}); {detail}" if jerr else detail,
         )
         if tb is not None:
             wins = self.fault_windows()
@@ -1194,6 +1200,19 @@ def system_logs_fs_error(logs_fs: str, timeline: list[FaultSpec]) -> str | None:
         f"{logs_fs}): pass --logs-fs loop:SIZE (e.g. loop:512M) or --logs-fs none "
         "(disk-full then SKIPPED)"
     )
+
+
+def journal_problem(sup: Any) -> str | None:
+    """Why the units' journal copy cannot be trusted (systemd backend), else None. The shim pipes
+    the process output itself, so it is never concerned (plan 04-08, review CR-01)."""
+    if not isinstance(sup, sd.SystemdBackend):
+        return None
+    journal = sup.journal
+    if journal is None:
+        return "journal not copied"
+    if journal.get("complete") is True:
+        return None
+    return journal.get("error") or "journal copy incomplete"
 
 
 def cleanup_fail_reasons(scope: str | None, cleanup: dict[str, Any]) -> list[str]:

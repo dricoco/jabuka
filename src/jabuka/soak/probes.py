@@ -99,7 +99,10 @@ def pi_probe(exe: str | None = None) -> Callable[[], tuple[float | None, int | N
 
     def run(arg: str) -> str:
         try:
-            return subprocess.run([exe, arg], capture_output=True, text=True, timeout=5).stdout
+            # review CR-01: keep the end-of-run children out of the harness's process group
+            return subprocess.run(
+                [exe, arg], capture_output=True, text=True, timeout=5, start_new_session=True
+            ).stdout
         except (OSError, subprocess.SubprocessError):
             return ""
 
