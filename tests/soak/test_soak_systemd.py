@@ -438,6 +438,7 @@ def test_user_scope_tracer_end_to_end(tmp_path: Path) -> None:
     assert rep["systemd"]["n_restarts"]["core"] >= 1
     assert _soak_units() == before
     assert rep["systemd"]["journal"]["complete"] is True, rep["systemd"]["journal"]
+    assert rep["end_signal"] is None, rep["end_signal"]
 
 
 # -- plan 04-04: WR-01 cleanup order / retry / deferred signals, WR-02 no tmpfs, OOM ------------
@@ -1090,3 +1091,68 @@ def test_a_held_signal_is_announced_once_and_never_raises(
         signal.signal(signal.SIGHUP, prev)
         if w is not None:
             os.close(w)
+
+
+# -- report.json records the signal held at the end of the run (plan 04-08, gap 07-5) -----------
+def test_run_soak_records_the_end_signal_in_report_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pkg = tmp_path / "site-packages" / "jabuka"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    mode = {"how": "end"}
+
+    def identity(self: soak.Harness) -> None:
+        self.code = soak.rep.code_identity(pkg, python=None, source="children")
+        self.code_error = None
+
+    def run(self: soak.Harness) -> dict:
+        if mode["how"] == "end":
+            self.end_signals.start()  # what the real Harness.run does after the main run
+            signal.raise_signal(signal.SIGHUP)
+        elif mode["how"] == "cleanup":
+            self.sup.pending_signal = signal.SIGHUP  # held by the cleanup's own hold
+        return {"verdict": "PASS", "fail_reasons": [], "end_signal": None}
+
+    def write_report(run_dir: Path, report: dict) -> tuple[Path, Path]:
+        jpath, mpath = run_dir / "report.json", run_dir / "report.md"
+        jpath.write_text(json.dumps(report), encoding="utf-8")
+        mpath.write_text("# report\n", encoding="utf-8")
+        return jpath, mpath
+
+    def soak_once(name: str) -> tuple[int, dict]:
+        out = tmp_path / name
+        args = soak.build_arg_parser().parse_args(["--scenario", "tracer", "--out", str(out)])
+        rc = soak.run_soak(args, load_scenario("tracer"))
+        reports = list(out.glob("*-tracer/report.json"))
+        assert len(reports) == 1, reports
+        return rc, json.loads(reports[0].read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(soak.Harness, "compute_code_identity", identity)
+    monkeypatch.setattr(soak.Harness, "run", run)
+    monkeypatch.setattr(soak.rep, "write_report", write_report)
+    prev = signal.signal(signal.SIGHUP, soak._on_signal)
+    try:
+        rc, report = soak_once("a")
+        assert rc == 128 + signal.SIGHUP
+        assert report["end_signal"] == int(signal.SIGHUP), report
+        mode["how"] = "cleanup"
+        rc, report = soak_once("b")
+        assert rc == 128 + signal.SIGHUP
+        assert report["end_signal"] == int(signal.SIGHUP), report
+        mode["how"] = "none"
+        rc, report = soak_once("c")
+        assert rc == 0
+        assert report["end_signal"] is None, report
+    finally:
+        signal.signal(signal.SIGHUP, prev)
+
+
+def test_report_md_marks_an_interrupted_soak() -> None:
+    assert "Soak interrompu" in soak.rep.render_md({"git": {}, "end_signal": 1})
+    for report in (
+        {"git": {}, "end_signal": None},
+        {"git": {}},
+        {"git": {}, "end_signal": True},
+    ):
+        assert "Soak interrompu" not in soak.rep.render_md(report), report

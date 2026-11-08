@@ -135,7 +135,19 @@ class Frozen:
             "scenario_duration_s": 129600.0,
             "scenario_sha256": self.scenario_sha,
             "skipped": [],
+            # ended without a signal (plan 04-08)
+            "end_signal": None,
         }
+        if rep["mode"] == "systemd":
+            # the units' journal copied whole (plan 04-08, review CR-01)
+            rep["systemd"] = {
+                "scope": "system",
+                "journal": {
+                    "complete": True,
+                    "error": None,
+                    "entries": {"core": 1200, "ingest": 800},
+                },
+            }
         for k, v in over.items():
             if isinstance(v, dict):
                 rep[k] = {**(rep.get(k) or {}), **v}  # type: ignore[dict-item]
@@ -655,3 +667,71 @@ def test_runs_on_this_repo() -> None:
     ids = [m.group(2) for m in map(LINE.match, proc.stdout.splitlines()) if m]
     assert ids == [f"F{i}" for i in range(1, 10)], proc.stdout + proc.stderr
     assert proc.returncode in (0, 1)
+
+
+# -- F3/F4 count only a soak that ended without a signal and, in systemd mode, whose journal ----
+# -- was copied whole (plan 04-08: 04-VERIFICATION gap 07-5, review CR-01 / IN-01) ---------------
+def test_f3_f4_interrupted_soak_fails(frozen: Frozen) -> None:
+    _edit_reports(frozen, "*-laptop", end_signal=2)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F3"][0] == "FAIL" and "soak interrompu" in items["F3"][1], out
+    assert "signal 2" in items["F3"][1], out
+    assert items["F4"][0] == "PASS", out
+    _all_items_no_traceback(items, out)
+    _, pkg = frozen.pi_copy()
+    frozen.pi_report(pkg)
+    _edit_reports(frozen, "*-pi", end_signal=1)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "soak interrompu" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_f4_report_without_end_signal_fails_closed(frozen: Frozen) -> None:
+    """A report from a bench older than plan 04-08 cannot prove the run ended without a signal."""
+    _edit_reports(frozen, drop=("end_signal",))
+    code, items, out = frozen.check()
+    assert code == 1, out
+    for f in ("F3", "F4"):
+        assert items[f][0] == "FAIL" and "soak interrompu" in items[f][1], (f, out)
+        assert "absent" in items[f][1], (f, out)
+    _all_items_no_traceback(items, out)
+
+
+def test_f4_incomplete_journal_copy_fails(frozen: Frozen) -> None:
+    _, pkg = frozen.pi_copy()
+    frozen.pi_report(pkg)
+    bad = {"complete": False, "error": "journalctl rc -2: ", "entries": {"core": 1, "ingest": 0}}
+    _edit_reports(frozen, "*-pi", systemd={"scope": "system", "journal": bad})
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL", out
+    assert "copie du journal des unités incomplète" in items["F4"][1], out
+    assert "rc -2" in items["F4"][1], out
+    assert items["F3"][0] == "PASS", out  # the laptop shim report has no systemd block
+    _all_items_no_traceback(items, out)
+    _edit_reports(frozen, "*-pi", systemd={"scope": "system"})
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "copie du journal" in items["F4"][1], out
+    assert "absent" in items["F4"][1], out
+    assert items["F3"][0] == "PASS", out
+    _all_items_no_traceback(items, out)
+
+
+def test_short_or_foreign_run_fail_says_how_to_unmask_an_older_full_soak(frozen: Frozen) -> None:
+    """Review IN-01: an older full soak may sit next to the quick run that masks it."""
+    pi = next((frozen.root / "var" / "soak").glob("*-pi/report.json"))
+    rep = json.loads(pi.read_text(encoding="utf-8"))
+    rep.update(sim_s=900.0, duration_s=900.0)
+    quick = frozen.root / "var" / "soak" / "20261111T000000Z-race-36h-quick"
+    quick.mkdir()
+    (quick / "report.json").write_text(json.dumps(rep), encoding="utf-8")
+    _, items, out = frozen.check()
+    assert items["F4"][0] == "FAIL" and "déplacer" in items["F4"][1], out
+    assert "var/soak-essais/" in items["F4"][1], out
+    _edit_reports(frozen, "*-laptop", scenario_sha256="0" * 64)
+    _, items, out = frozen.check()
+    assert items["F3"][0] == "FAIL" and "déplacer" in items["F3"][1], out
+    _all_items_no_traceback(items, out)
