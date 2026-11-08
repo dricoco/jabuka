@@ -44,7 +44,12 @@ l'interpréteur du Pi), `--systemd user|system`, `--systemd-cleanup`, et passe l
 `jabuka-soak` (`--logs-fs`, `--seed`, `--keep`, `--duration`, …). `--systemd system` sans root
 est refusé (code 2, une ligne avec la commande sudo).
 `--duration` raccourcit une exécution (essai rapide) : les pannes prévues après la fin sont
-listées SKIPPED avec leur heure, jamais comptées comme passées. Le
+listées SKIPPED avec leur heure, jamais comptées comme passées. Le banc l'annonce dès le départ
+(`jabuka-soak: WARNING: shortened run …`) et `report.md` le marque **Essai raccourci**.
+`freeze-check` F3/F4 refusent un tel rapport (« essai raccourci ») et jugent le rapport race-36h
+**le plus récent** de chaque machine dans `var/soak/` : un essai rapide rangé là masquerait le
+vrai soak. Les essais rapides vont donc ailleurs :
+`bash scripts/soak.sh --scenario race-36h --duration 900 --out var/soak-essais`. Le
 dossier de sortie doit être sous `var/` ; le banc refuse aussi tout `--out` sous
 `/var/lib/jabuka` (données réelles) et ne réutilise jamais un dossier existant.
 
@@ -53,7 +58,7 @@ Chaque exécution crée `var/soak/<horodatage UTC>-<scénario>/` :
 | Fichier | Contenu |
 |---|---|
 | `report.md` | verdict, **mesures et budgets** (valeur mesurée à côté de chaque budget du CONTEXT), chronologie des pannes, tableau des contrôles |
-| `report.json` | la même chose, schéma 1 (lu par `scripts/freeze-check.sh`, plan 04-02) ; bloc `code` (plan 04-04 : empreinte `sha256` du paquet exécuté, nombre de `files`, `package_dir`, `source` `units` ou `children`, `units` = sha256 des unités installées en portée system) ; en mode systemd, bloc `systemd` (portée, unités, `n_restarts`, nettoyage, `harness_oom_score_adj`), sur un Pi, bloc `pi` |
+| `report.json` | la même chose, schéma 1 (lu par `scripts/freeze-check.sh`, plan 04-02) ; bloc `code` (plan 04-04 : empreinte `sha256` du paquet exécuté, nombre de `files`, `package_dir`, `source` `units` ou `children`, `units` = sha256 des unités installées en portée system) ; clés du plan 04-07 : `duration_s` (durée simulée visée), `scenario_duration_s`, `scenario_source` et `scenario_sha256` (sha256 du fichier de scénario exécuté), que `freeze-check` compare avec `src/jabuka/soak/scenarios/race-36h.json` à HEAD, avec `seed`, `sim_s` et les pannes SKIPPED ; en mode systemd, bloc `systemd` (portée, unités, `n_restarts`, nettoyage, `harness_oom_score_adj`), sur un Pi, bloc `pi` |
 | `samples.csv` | une ligne par seconde réelle et par rôle : RSS, fd, threads, CPU ; sur un Pi, une ligne `pi` toutes les 10 s (`temp_c`, `throttled`) |
 | `timeline.jsonl` | événements : démarrages, READY, sorties, pannes, corruption |
 | `proc/<rôle>-<n>.log` | sortie horodatée de chaque processus (n = numéro de démarrage) ; en mode systemd, `proc/<rôle>-journal.log` (journal de l'unité) |
@@ -94,8 +99,10 @@ redémarrages faits par systemd (`NRestarts`, bloc `systemd` de `report.json`).
   sont actives (jusqu'à 20 s). Si la relance a échoué ou qu'une unité n'est pas active :
   `restarted: false` dans `report.json` (avec les états des unités), verdict FAIL, nettoyage
   refait à la sortie, et `--systemd-cleanup` rend le code 1. Un Ctrl-C, SIGTERM ou SIGHUP reçu
-  pendant le nettoyage ne l'interrompt plus et ne fait plus perdre le rapport : `report.json` est
-  écrit d'abord, puis le banc sort avec le code 128 + signal. Un drop-in resté d'une exécution interrompue bloque
+  pendant toute la **fin du soak** (arrêt des unités, copie du journal, contrôles finaux,
+  nettoyage, écriture et remise du rapport) ne l'interrompt plus et ne fait plus perdre le
+  rapport : le signal est retenu jusqu'à ce que `report.json` soit écrit, puis le banc sort avec
+  le code 128 + signal. Un drop-in resté d'une exécution interrompue bloque
   toute nouvelle exécution ; `sudo bash scripts/soak.sh --systemd system --systemd-cleanup`
   répare. `/run` est de toute façon vidé au redémarrage du Pi. En portée system, le banc (root)
   abaisse aussi son propre `oom_score_adj` à -900 : un OOM-kill du banc sauterait le nettoyage.
@@ -216,8 +223,11 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
    ce soak-là (`mode` systemd et `code.source` = `units`) : un soak lancé sur le Pi sans
    `sudo … --systemd system` (mode shim) ou avec `--systemd user` donne F4 FAIL « n'est pas un
    soak --systemd system », même avec la bonne empreinte ; un rapport sans bloc `code` donne
-   aussi F4 FAIL. Le banc annonce un tel essai dès le départ par une ligne `WARNING`. Pour
-   vérifier à la main sur le Pi :
+   aussi F4 FAIL. Le banc annonce un tel essai dès le départ par une ligne `WARNING`. F3/F4 ne
+   comptent aussi qu'un soak race-36h **complet** : le lancer sans `--duration`, avec le scénario
+   packagé et sa graine (`scenario_sha256`, `seed`). Un essai rapide sur le Pi va dans
+   `--out var/soak-essais`, sinon `freeze-check` le lit en premier et donne F4 FAIL « essai
+   raccourci ». Pour vérifier à la main sur le Pi :
 
    ```bash
    cd /opt/jabuka/venv/lib/python3.13/site-packages/jabuka && find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
@@ -266,10 +276,13 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
 
    Puis libérer la carte SD : `sudo rm -rf /var/lib/jabuka/soak-<ts>` (après l'étape 6 ; l'image
    `logs.img` y est laissée pour inspection).
-8. **Si le soak a été interrompu** (coupure, SSH perdu, Ctrl-C deux fois) :
+8. **Si le soak a été interrompu** (coupure, SSH perdu, Ctrl-C pendant le soak) :
    `cd ~/jabuka && sudo bash scripts/soak.sh --systemd system --python
-   /opt/jabuka/venv/bin/python --systemd-cleanup`. Code 0 quand `systemctl cat jabuka-core` ne
-   contient plus `50-jabuka-soak` **et** que les deux unités sont actives ; code 1 sinon :
+   /opt/jabuka/venv/bin/python --systemd-cleanup`. La fin du soak ne s'arrête plus sur un Ctrl-C
+   (il est retenu jusqu'à l'écriture de `report.json`) ; si elle semble bloquée (plus de ~10 min
+   sans nouvelle ligne), `sudo kill -9 <pid du banc>`, puis la commande ci-dessus. Code 0 quand
+   `systemctl cat jabuka-core` ne contient plus `50-jabuka-soak` **et** que les deux unités sont
+   actives ; code 1 sinon :
    `systemctl status jabuka-core jabuka-ingest-fastnet`, puis redémarrer le Pi (étape 7).
    Ensuite l'étape 7.
 9. Le vrai test de **coupure d'alimentation** reste celui de PI-SETUP §4 j : 5 coupures réelles,

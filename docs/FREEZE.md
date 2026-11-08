@@ -38,15 +38,15 @@ d'urgence** (dernière section), jamais une retouche sur le bateau.
 ## Liste du 11 novembre (dans l'ordre)
 
 1. **Endurance sur le portable** : `bash scripts/soak.sh` (scénario race-36h, [SOAK](SOAK.md)),
-   verdict PASS, sur un arbre propre.
+   verdict PASS, complet (sans `--duration`), sur un arbre propre.
 2. **Endurance sur le Pi** : `sudo bash scripts/soak.sh --systemd system --python
    /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M` lancé dans
-   `tmux` ([SOAK](SOAK.md) « Soak sur le Pi 3B »), verdict PASS ; recopier le dossier du rapport
-   du Pi dans `var/soak/` du portable. Le rapport du Pi porte l'empreinte du paquet installé
-   (`code.sha256`) et celle des unités installées ; F4 les compare avec `src/jabuka` et
-   `deploy/systemd` à HEAD, la copie du dépôt sans `.git` (PI-SETUP §3) suffit donc. F4 n'accepte
-   que ce rapport-là (`mode` systemd, `code.source` = `units`) : un soak du Pi en mode shim ou en
-   `--systemd user`, ou un rapport sans bloc `code`, donne F4 FAIL.
+   `tmux` ([SOAK](SOAK.md) « Soak sur le Pi 3B »), verdict PASS, complet (sans `--duration`) ;
+   recopier le dossier du rapport du Pi dans `var/soak/` du portable. Le rapport du Pi porte
+   l'empreinte du paquet installé (`code.sha256`) et celle des unités installées ; F4 les compare
+   avec `src/jabuka` et `deploy/systemd` à HEAD, la copie du dépôt sans `.git` (PI-SETUP §3)
+   suffit donc. F4 n'accepte que ce rapport-là (`mode` systemd, `code.source` = `units`) : un
+   soak du Pi en mode shim ou en `--systemd user`, ou un rapport sans bloc `code`, donne F4 FAIL.
 3. **Porte verte** : `JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 bash scripts/check.sh`.
 4. **Revue du verrou** : 01-UAT #8, 02-UAT #10, PI-SETUP §4 m et la revue des paquets de 03-05
    (numpy 2.5.4, outils de préparation). Puis calculer `sha256sum deploy/requirements.lock` et
@@ -84,13 +84,21 @@ les deux cartes.
 
 Règle par élément :
 
-- **F3 (portable)** : la règle git (arbre propre, aucun changement sous `src/`, `deploy/` hors
-  `*.md` ni `pyproject.toml` depuis `git.head`), plus l'empreinte quand le rapport en porte une.
+- **F3 (portable)** : la règle git est obligatoire (`git.head` présent, arbre propre, aucun
+  changement sous `src/`, `deploy/` hors `*.md` ni `pyproject.toml` depuis `git.head`), plus
+  l'empreinte quand le rapport en porte une. Un rapport du portable sans `git.head` donne F3 FAIL
+  « git.head inconnu », même avec la bonne empreinte.
 - **F4 (Pi)** : l'empreinte (`code.sha256`) et les unités (`code.units`) sont obligatoires, et le
   rapport doit venir d'un soak `--systemd system` (`mode` systemd, `code.source` = `units`). Un
   soak en mode shim ou en `--systemd user` donne « n'est pas un soak --systemd system », un rapport
   sans bloc `code` donne « sans empreinte du code ». La règle git seule ne suffit jamais pour F4 ;
   quand `git.head` est présent, elle s'applique en plus.
+- **F3 et F4 (soak complet)** : seul un soak race-36h complet compte : `scenario_sha256` = sha256
+  de `src/jabuka/soak/scenarios/race-36h.json` à HEAD, la même `seed`, `duration_s` ≥ sa durée
+  (129 600 s), `sim_s` ≥ 99 % de celle-ci, et aucune panne SKIPPED « after the end of the run ».
+  Sinon « essai raccourci » ou « ne prouve pas le scénario race-36h de HEAD ». `freeze-check`
+  juge le rapport race-36h le plus récent de chaque machine : garder les essais rapides hors de
+  `var/soak/` (`--out var/soak-essais`).
 
 ## Correctif d'urgence après le gel
 
