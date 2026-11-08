@@ -1,13 +1,15 @@
 ---
 phase: 04-race-readiness-hardening-commissioning
-reviewed: 2026-11-08T17:41:48Z
+reviewed: 2026-11-08T19:14:34Z
 depth: standard
-scope: incremental (8b35611..HEAD, gap-closure plan 04-06)
-files_reviewed: 8
+scope: incremental (ee6f427..HEAD, gap-closure plan 04-07)
+files_reviewed: 10
 files_reviewed_list:
   - docs/FREEZE.md
   - docs/SOAK.md
   - scripts/freeze-check.sh
+  - src/jabuka/soak/report.py
+  - src/jabuka/soak/scenario.py
   - src/jabuka/soak/systemd.py
   - src/jabuka/tools/soak.py
   - tests/commissioning/test_freeze_check.py
@@ -15,169 +17,136 @@ files_reviewed_list:
   - tests/soak/test_soak_systemd.py
 findings:
   critical: 1
-  warning: 2
+  warning: 0
   info: 3
-  total: 6
+  total: 4
 status: issues_found
 ---
 
-# Phase 4: Code Review Report (incremental, 04-06)
+# Phase 4: Code Review Report (incremental, 04-07)
 
-**Reviewed:** 2026-11-08T17:41:48Z
-**Depth:** standard (diff 8b35611..HEAD plus the surrounding code)
-**Files Reviewed:** 8
+**Reviewed:** 2026-11-08T19:14:34Z
+**Depth:** standard (diff ee6f427..HEAD plus the surrounding code)
+**Files Reviewed:** 10
 **Status:** issues_found
 
 ## Narrative Findings (AI reviewer)
 
 ## Summary
 
-Plan 04-06 closes the three findings it targeted:
+Plan 04-07 closes all three prior findings it targeted:
 
-- **Prior CR-01:** F4 now FAILs a Pi report from shim mode, from `--systemd user`, with no `code` block, or with a malformed sha.
-- **Prior WR-01:** after the restart, the cleanup checks that both units are ActiveState `active`. If they are not, the run FAILs, the cleanup stays retryable through the backend's own `atexit`, and `--systemd-cleanup` exits 1.
-- **Prior WR-02:** a signal held back during the cleanup is written to `pending_signal`, and the process only acts on it after `report.json` is written.
+- **Prior CR-01:** F3 and F4 now require `scenario_sha256` to equal the sha256 of `race-36h.json` at HEAD, the HEAD seed, `duration_s >= 129600`, `sim_s >= 0.99 x` that, and no fault skipped "after the end of the run". Each check fails closed.
+- **Prior WR-01:** F3 now FAILs a report with no `git.head`.
+- **Prior WR-02:** SIGINT, SIGTERM and SIGHUP are held from the end of the main run until `report.json` has been written.
 
-The 74 tests in scope pass (`.venv313`).
+The 91 in-scope tests pass (`.venv313`).
 
-The freeze gate can still give a false PASS:
+I traced the genuine full-length paths and found no false FAIL in them. The laptop path is shim plus userns re-exec. The Pi path is `--systemd system` from the installed wheel with no `.git`, at `--speed 20`. In detail:
 
-- **F3 and F4 accept any report labelled `race-36h`, however short the run was** (CR-01, reproduced). A `--duration 600` smoke run of the race-36h scenario gets verdict PASS, because faults scheduled after the end are only listed as SKIPPED. freeze-check never reads `sim_s` or `skipped`, and it takes the newest report. So a quick smoke run made after the real soak replaces it, and F4 shows green.
-- **F3 skips the git rule completely when a laptop report has `git.head = null`** (WR-01, reproduced). FREEZE.md now says the git rule is mandatory for F3. Plan 04-06 also relies on that rule as the compensating control for the deferred deploy/pyproject gap.
+- The compiled race-36h timeline ends at 115200 s and has no draw past 129600, so a full run never gets a late skip.
+- `sim_now()` can only reach or pass `duration` when `wait_sim` returns.
+- The wheel ships `scenarios/race-36h.json` byte-identical to the source; F6 enforces that.
+- On the Pi, `python -m` from the copied checkout resolves `jabuka` from the venv.
 
-Nothing in this plan touches the race path (nav, core, router, web).
+I found no new false-PASS path in freeze-check itself.
 
-## Prior findings (8b35611 04-REVIEW)
+The new end-of-run signal hold does introduce a **false PASS of the soak verdict itself** (CR-01, reproduced). A Ctrl-C or SIGHUP at the end of a `--systemd system` run still kills the `journalctl` child, which shares the harness's process group. The harness, which now survives that signal, then builds the tracebacks check from a truncated or empty journal. Before 04-07 the same signal lost the report, which is fail-safe. Now it can certify PASS without the evidence.
+
+Nothing in this plan touches the race path. The diff is limited to soak, tools, scripts, docs and tests.
+
+## Prior findings (ee6f427 04-REVIEW)
 
 | ID | Status | Notes |
 |---|---|---|
-| CR-01 (F4 accepts a shim, `--systemd user` or code-less Pi report) | **resolved** | When `machine == "aarch64"`, the helper maps `absent` to `no-code` and anything without `mode == "systemd"` and `code.source == "units"` to `not-units`. Both give FAIL. A user-scope run cannot produce `source "units"`: `compute_code_identity` sets it only when `scope == "system"`. Tests cover shim, user, children with units, a wrong mode, git without a code block, and a malformed sha. The decision to keep the git rule for code-less F3 reports is documented and tested. A separate F3 gap remains (WR-01 below). |
-| WR-01 (a failed restart is accepted as done) | **resolved** | `restarted` requires rc 0 **and** `_await_active` (polled for up to 20 s). `cleaned` stays False otherwise, and the backend's `atexit.register(self.cleanup)` (systemd.py:378-381) retries it. `cleanup_fail_reasons` makes the verdict FAIL, `--systemd-cleanup` exits 1 through `CleanupIncomplete`, and `_ctl` runs `systemctl` children with `start_new_session=True`. |
-| WR-02 (a signal during cleanup loses report.json) | **resolved for the cleanup window** | The signal is recorded and never re-raised. `run_soak` writes the report, then returns 128+n. A smaller report-loss window remains outside the cleanup (WR-02 below); the plan accepts it as risk T-04-06-04. |
-| WR-03 ("restauré" badges can never be cleared) | open (deferred in 04-06 with rationale) | Race-path UX. Not re-reviewed. |
-| WR-04 (the git-less F4 path does not cover `deploy/**` or `pyproject.toml`) | open (deferred, T-04-06-05) | The deferral relies on "F3's git rule FAILs the laptop soak on any deploy/pyproject change". WR-01 below shows that F3 rule can be skipped, so the compensating control is weaker than stated. |
-| IN-01 … IN-05 | open (deferred in 04-06) | Not re-reviewed. |
-| IN-06 (cleanup_system test used the real /proc/mounts and umount) | **resolved** | Both `cleanup_system` call sites in the tests pass `proc_mounts=tmp_path / "mounts"` and use `_fake_unmount`. |
+| CR-01 (shortened or custom race-36h run PASSes F3/F4) | **resolved** | Covered by `run_state()` (freeze-check.sh:179-195): sha, seed, duration, sim_s and late skips are checked, and a missing key fails closed. The harness records `scenario_sha256` and `duration_s`, warns at start, and `report.md` marks "Essai raccourci". `SKIP_AFTER_END` parity is tested. The newest-report rule still applies, so a later short run in `var/soak/` masks a valid one. That is now a loud FAIL with instructions, not a false PASS (see IN-01). |
+| WR-01 (F3 fingerprint-only shortcut when `git.head` is null) | **resolved** | The shortcut now requires `machine = aarch64` (line 258). Any other head-less report hits `git.head inconnu` FAIL (line 260). The header and FREEZE.md are updated, and a test covers it. With the git rule mandatory for F3, the compensating control that the deferred WR-04 relied on holds again for the laptop soak. |
+| WR-02 (signal outside the cleanup loses report.json) | **resolved for report loss, but introduces CR-01 below** | `Harness.end_signals` (a `SignalHold`) is started after the main run and released in `run_soak`'s `finally` after `write_report` and `_give_back`. The nested cleanup hold restores `end_signals._record`, so neither hold loses a signal. A test covers the real `Harness.run` end path. |
+| IN-01 (stale "second Ctrl-C" wording) | **resolved** | The `cleanup()` docstring and SOAK.md step 8 now describe the uninterruptible end and the `kill -9` plus `--systemd-cleanup` escape. |
+| IN-02 (deferred-signal path not tested end to end) | **resolved (mostly)** | `test_signal_at_the_end_of_the_run_is_held_until_the_report_is_written` drives the real `Harness.run` end path (shim scope). The system-scope cleanup inside it is still only unit-tested. The outer hold now covers it anyway. |
+| IN-03 (F4 identifies the Pi only by `host.machine == aarch64`) | open | Not addressed in 04-07. |
+| WR-03, WR-04, IN-04, IN-05 (older, deferred) | open (deferred) | Not re-reviewed. WR-04 is mitigated again by the F3 git rule, as above. |
 
 ## Critical Issues
 
-### CR-01: F3 and F4 PASS a shortened (`--duration`) or custom race-36h run, and the newest report replaces the real soak
+### CR-01: A Ctrl-C or SIGHUP at the end of a Pi soak truncates the journal dump, and the soak can then report PASS with no traceback evidence
 
-**File:** `scripts/freeze-check.sh:153-176`, `scripts/freeze-check.sh:198-199`; also `src/jabuka/tools/soak.py:134`, `src/jabuka/tools/soak.py:713-720`, `src/jabuka/soak/report.py:342-355`
+**File:**
+- `src/jabuka/soak/systemd.py:730-771` (`dump_journal`: `subprocess.run(cmd, capture_output=True, timeout=120)`, no `start_new_session`, return code ignored, `TimeoutExpired` → `out = ""`)
+- `src/jabuka/tools/soak.py:795-799` (hold started, then `shutdown()` → `dump_journal`)
+- `src/jabuka/tools/soak.py:953-969` (tracebacks check)
 
-**Issue:** The helper selects reports only by `scenario == "race-36h"` and `host.machine`, and keeps the newest run directory. It then reads only verdict, mode, git and code. Two facts make a short run pass:
+**Issue:** In system scope, the only process-output evidence the tracebacks check scans is `proc/<role>-journal.log`, written by `dump_journal`, plus `synth.log`. `journalctl` is spawned in the harness's own process group. `_ctl` uses `start_new_session=True`; `dump_journal` does not.
 
-- `jabuka-soak --duration SIM_S` keeps `scenario = "race-36h"`.
-- `run_faults` puts every fault scheduled after the shortened end into `skipped`, and `decide()` ignores `skipped`. Such a run therefore gets `verdict: "PASS"`.
+A terminal Ctrl-C therefore reaches `journalctl`, and the default action kills it. The same goes for SIGHUP when the SSH session drops (the sudo `use_pty` pty forwards ^C to the whole foreground group).
 
-docs/SOAK.md:44-47 advertises `--duration` as the "essai rapide" option and says skipped faults are "jamais comptées comme passées". freeze-check counts them anyway.
+- **Before 04-07:** the harness also died, so no report was written. That is safe: the operator had to redo the soak.
+- **Now:** `end_signals` holds the signal in the harness, so only `journalctl` dies. `subprocess.run` returns the partial stdout with rc -2. `dump_journal` ignores the rc and writes the truncated log. `scan_tracebacks` sees fewer or no blocks, `c["tracebacks"]` is `ok: True`, and the verdict can be PASS.
 
-**Reproduced** against the real script with the `Frozen` fixture: a `pi_report()` with `sim_s: 600`, `faults: []` and a `skipped` power-pull gives `[PASS] F4 Pi : … PASS, paquet installé = src/jabuka à HEAD`, and `freeze-check: ok`.
+The report and exit code (128 + n) show that a signal was received, but nothing ties that signal to a degraded tracebacks check. F4 reads only `verdict`, so it will certify that run.
 
-Realistic path: after the real 2–4 h Pi soak (FAIL, or not yet copied back), the operator runs a 10-minute `--scenario race-36h --duration 600` sanity check on the Pi, for example after a reinstall. That run is newest, so F4 certifies a 36 h endurance run that never happened. The same applies to F3, and to `--scenario /path/custom.json` with `"name": "race-36h"`, which the code fingerprint does not cover.
+The same silent-empty path exists on `TimeoutExpired`: a journalctl run of more than 120 s gives `out = ""` and zero tracebacks. That timeout is plausible on a Pi 3B dumping 2–4 h of JSON journal for two units with dozens of restarts.
 
-**Fix:** Make the harness record what was actually run, and have freeze-check require the full scenario:
+**Reproduced** with the real `SystemdBackend.dump_journal` under `SignalHold`, in a scratch dir via `setsid`, using a fake journalctl. The fake prints one line, sleeps 3 s, then prints a `Traceback` / `RuntimeError` pair. `os.killpg(getpgrp(), SIGINT)` was sent at 1 s. Result:
 
-```python
-# soak.py build_report: add next to "scenario"
-"duration_s": self.duration,
-"scenario_duration_s": self.sc.duration_s,
-"scenario_source": self.sc.source,       # "scenarios/race-36h.json" when packaged
-```
+- held signal: `2`
+- `core-journal.log` = `'1.000 started\n'`: the traceback lines are lost
+- the harness carried on normally
 
-```python
-# freeze-check helper, after picking best (stdlib only): compare with the scenario at HEAD
-full = json.loads(subprocess.run([git, "-C", repo, "show",
-    "HEAD:src/jabuka/soak/scenarios/race-36h.json"], capture_output=True, check=True).stdout)["duration_s"]
-short = [s for s in r.get("skipped") or [] if "after the end of the run" in str(s.get("reason"))]
-if (r.get("sim_s") or 0) < 0.99 * full or short or r.get("scenario_source") not in (None, "scenarios/race-36h.json"):
-    state, detail = "short", f"sim_s {r.get('sim_s')} / {full}, {len(short)} panne(s) après la fin"
-```
-
-```bash
-elif [ "$cstate" = short ]; then
-    say FAIL "$id" "$label : $path essai raccourci ou scénario non packagé ($detail) : refaire le soak race-36h complet"
-```
-
-Better still, have `decide()` (or `run_soak`) return a non-PASS verdict such as `"SHORT"` whenever `args.duration < sc.duration_s`, so the report cannot claim PASS. Add a freeze-check test with a `pi_report()` that sets `sim_s: 600` plus a skipped "after the end of the run" fault and expects FAIL.
-
-## Warnings
-
-### WR-01: F3 skips the git rule when a laptop report has `git.head = null`, which contradicts FREEZE.md and the compensating control for the deferred WR-04
-
-**File:** `scripts/freeze-check.sh:198-199`, `docs/FREEZE.md` (new "Règle par élément", F3 bullet), `scripts/freeze-check.sh:8-12`
-
-**Issue:** The `match && head = -` shortcut on line 198 applies to F3 as well as F4. An x86_64 report with a matching `code.sha256` (source `children`) and `git.head: null` therefore PASSes without the clean-tree check and without the `src/ deploy/ pyproject.toml` diff.
-
-FREEZE.md now says F3 is "la règle git (…), plus l'empreinte quand le rapport en porte une", so the git rule should always apply to F3. Plan 04-06 also defers WR-04 (T-04-06-05) on the grounds that "F3's git rule FAILs the laptop soak on any post-soak change under deploy/ or pyproject.toml".
-
-**Reproduced:** commit a change to `deploy/systemd/jabuka-fastnet-relay.service` and `pyproject.toml` after the soak. Then rewrite the laptop report with `git: {head: null, dirty: null}` and a matching `children` code block. The result is `[PASS] F3 portable : … paquet installé = src/jabuka à HEAD`.
-
-`git_info` returns null head whenever `/usr/bin/git` is missing, `rev-parse` or `status` times out (10 s), or the run's checkout has no `.git`. None of these are exotic on a dev laptop.
-
-**Fix:** Restrict the fingerprint-only PASS to F4. For F3, require a git head:
-
-```bash
-elif [ "$cstate" = match ] && [ "$head" = - ] && [ "$machine" = aarch64 ]; then
-    say PASS "$id" "$label : $path PASS, paquet installé = src/jabuka à HEAD ($detail)"
-```
-
-With this change, an x86_64 report with no head falls through to `git.head inconnu` (FAIL). Also update header lines 10-12, which still describe the Pi `units` and null-head case under F3. Add a test: an x86_64 report with a matching `code` and `head: null` must FAIL F3.
-
-### WR-02: A signal outside the cleanup block still loses report.json at the end of the Pi soak
-
-**File:** `src/jabuka/tools/soak.py:776-793` (`Harness.run`: `shutdown()` → `build_report()` → `cleanup()` → `cleanup_fail_reasons`), `src/jabuka/tools/soak.py:1349-1353`
-
-**Issue:** Signals are deferred only inside `SystemdBackend.cleanup()`. The end-of-run work before it is not covered. That work is:
-
-- `shutdown()`: stopping the units, then `dump_journal` over 2–4 h of journald JSON for two units.
-- `build_report()`: `compute_checks`, which includes the final `run_logcheck("end")` over the whole soak log tree.
-
-On a Pi 3B this plausibly takes tens of seconds or longer, not the "seconds" assumed in T-04-06-04. During that time, and in the short gap between handler restore and `write_report`, a Ctrl-C or SIGTERM becomes `KeyboardInterrupt` or `SystemExit` and escapes `run()`. The backend's atexit still restores the units, but the 2–4 h report is lost and the soak must be redone 2–3 days before the race.
-
-The new SOAK.md text ("ne fait plus perdre le rapport") is accurate only for the cleanup itself. tmux removes the SIGHUP case, but not Ctrl-C or a `systemctl`/shutdown SIGTERM.
-
-**Fix:** Hold signals over the whole end-of-run sequence, and act on them after the report is written. For example, expose the deferral as a public context manager and wrap it around everything from `self.shutdown()` to `write_report`:
+**Fix:** Isolate the child, and make a failed dump block a PASS:
 
 ```python
-# Harness.run
-finally:
-    with self.sup.deferred_signals() if isinstance(self.sup, sd.SystemdBackend) else contextlib.nullcontext():
-        self.shutdown()
-        report = self.build_report()  # (keep the try/finally around cleanup)
-        ...
+# systemd.py dump_journal
+self.journal_error = None
+try:
+    r = subprocess.run(cmd, capture_output=True, timeout=300, start_new_session=True)
+    out = r.stdout.decode("utf-8", "replace")
+    if r.returncode != 0:
+        self.journal_error = f"journalctl rc {r.returncode}: {r.stderr.decode(errors='replace')[:200]}"
+except (OSError, subprocess.SubprocessError) as exc:
+    out, self.journal_error = "", repr(exc)
 ```
 
-Or record the signal in the soak's own handler (`_on_signal` sets a flag once `h.ending` is True), and check that flag after `write_report`.
+```python
+# soak.py compute_checks, after classify_tracebacks
+jerr = getattr(self.sup, "journal_error", None)
+c["tracebacks"] = rep.check(
+    False if jerr else not unexp, len(unexp), 0,
+    (f"journal dump incomplete ({jerr}); " if jerr else "") + detail)
+```
+
+Also pass `start_new_session=True` to the other end-of-run children that share the group: `unmount()` in systemd.py:902 (its `umount -l` retry hides it today), and the `vcgencmd` probe in probes.py:102. Add a test that sends SIGINT to the process group during a fake journalctl in `dump_journal`. It should expect the full output, or a non-PASS tracebacks check.
 
 ## Info
 
-### IN-01: Stale "second Ctrl-C" wording; a hung cleanup can no longer be interrupted
+### IN-01: A short run masks an older valid full soak, and the FAIL text sends the operator to redo it
 
-**File:** `src/jabuka/soak/systemd.py:774-781` (docstring: "an interrupted cleanup (exception, second Ctrl-C)"), `docs/SOAK.md:262` (step 8: "Ctrl-C deux fois")
+**File:** `scripts/freeze-check.sh:198-209`, `scripts/freeze-check.sh:248-249`
 
-**Issue:** `_deferred_signals` now records every SIGINT, SIGTERM and SIGHUP and never re-raises them, so a second Ctrl-C no longer interrupts the cleanup. That is the intended behaviour, but the docstring and the step-8 trigger still describe the old one. A stuck cleanup can be stopped only with `kill -9`. It is bounded by the `_ctl` timeouts: daemon-reload 60 s, restart 180 s, the verify 20 s, umount 2×30 s per mount, then cat 60 s.
+**Issue:** The newest race-36h report of each machine is the only one judged, by run-dir name. A short run left in `var/soak/` yields "essai raccourci … le refaire sans --duration", even when an older full PASS run on the same code sits next to it. Three days before the race, that can cost a needless 2 h Pi re-soak.
 
-**Fix:** Correct the docstring and SOAK.md step 8. For example: "the cleanup cannot be interrupted (≤ ~6 min); if it hangs: `sudo kill -9 <pid>` then `--systemd-cleanup`".
+Run-dir names come from the Pi clock. The Pi has no RTC, and gpsd may have no fix on the bench. If that clock goes backwards between runs, a different report than the latest one is judged.
 
-### IN-02: The deferred-signal path is never tested end to end
+**Fix:** Add to the short and not-scenario messages: "si un soak complet plus ancien existe, déplacer `<path>` vers var/soak-essais/ et relancer freeze-check". Optionally order by `t0_wall` or `started_utc` rather than by dir name, and print it.
 
-**File:** `tests/soak/test_soak_systemd.py` (`test_run_soak_writes_the_report_before_honouring_a_deferred_signal`)
+### IN-02: The end-of-run hold gives no feedback, and the SOAK.md kill -9 threshold is close to the worst case
 
-**Issue:** The run_soak test replaces `Harness.run` with a stub that sets `pending_signal` by hand. The backend test checks `cleanup()` on its own. Nothing checks that a signal arriving during the real `Harness.run()` → `self.sup.cleanup()` reaches `run_soak` as `pending_signal`, with the report written and `128+n` returned. A future refactor could put the cleanup back outside `h.sup`, or reset the backend, and both tests would still pass.
+**File:** `src/jabuka/soak/systemd.py:69-71` (`SignalHold._record`), `docs/SOAK.md` step 8
 
-**Fix:** Add one test that runs `Harness.run` with the fake systemctl, and sends `os.kill(os.getpid(), SIGTERM)` from a patched `_ctl("restart")`.
+**Issue:** A held Ctrl-C prints nothing. `tee` in `scripts/soak.sh` also dies on the same Ctrl-C, so later lines are not shown either. Step 8 says to `kill -9` after "~10 min sans nouvelle ligne", but the bounded worst case is close to that: stop 60 s + journal 120 s + logcheck + daemon-reload 60 s + restart 180 s + verify 20 s + umount 60 s per mount + cat 60 s. A `kill -9` also skips atexit and loses the report.
 
-### IN-03: F4 identifies "the Pi" only by `host.machine == "aarch64"`
+**Fix:** On the first held signal, write one line with `os.write(2, b"jabuka-soak: signal held, finishing report.json (up to ~12 min)\n")`. `os.write` is async-signal-safe, unlike `print`. Raise the SOAK.md threshold to about 15 min.
 
-**File:** `scripts/freeze-check.sh:161`
+### IN-03: The userns parent still waits only 30 s after `terminate()` and then exits while the child is still finishing
 
-**Issue:** Any aarch64 host (an ARM laptop, a VM, a Pi 4/5 dev board) running `--systemd system` against an `/opt/jabuka` install satisfies F4. The report already has a Pi-specific `pi` block (from `probes.pi_summary`, with `get_throttled` and temperature), and F4 does not require it. As a result, F4 can PASS without the Pi 3B CPU and RAM budgets having been exercised.
+**File:** `src/jabuka/tools/soak.py:1499-1503`
 
-**Fix:** For F4, also require `isinstance(r.get("pi"), dict)`. Optionally also require a model string from `/proc/device-tree/model` in `host`, if one is recorded.
+**Issue:** On the laptop, the soak re-execs into a user namespace. On Ctrl-C at the end of the run, the parent sends SIGTERM to the child, which now holds it. The parent then waits 30 s and re-raises. If the child's end of run takes longer, the shell prompt returns while an orphaned child is still writing `report.json`, and its final messages go to a dead pipe. On a laptop this is normally under 30 s (`STOP_TIMEOUT_S = 5`), hence Info.
+
+**Fix:** After `terminate()`, wait for as long as the child's end of run can take (for example 600 s). Or print "le rapport s'écrit encore dans <run_dir>" before re-raising.
 
 ---
 
-_Reviewed: 2026-11-08T17:41:48Z_
+_Reviewed: 2026-11-08T19:14:34Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
