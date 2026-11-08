@@ -4,10 +4,10 @@ current_phase: 04
 current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
 stopped_at: Completed 04-08-PLAN.md
-last_updated: "2026-11-08T20:21:13.606Z"
+last_updated: "2026-11-08T22:10:11.282Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 4594a9e67e0ef51ce6fae6894d75c607849c661b
+state_head: ec562fcee0dfd4dfce73e4ebccd5405e1bec501f
 progress:
   total_phases: 4
   completed_phases: 0
@@ -100,6 +100,7 @@ Recent decisions affecting current work:
 | 9 | Boîte tablette : écrous M3/M4 captifs au lieu d'inserts | 2026-11-07 | 53fe65f | — |
 | 10 | Support X35 : centre tablette abaissé à 730 mm | 2026-11-07 | 4aff9d3 | — |
 | 11 | Support X35 : renfort jonction tower/column | 2026-11-07 | d07497e | — |
+| 12 | BOM PDF support tablette + boîte | 2026-11-08 | ec562fc | — |
 
 ### Blockers/Concerns
 
