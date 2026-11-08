@@ -34,6 +34,7 @@ beta-pkg==2.3 \\
     --hash=sha256:11
 """
 PLACEHOLDER = "Lock revu : sha256 À REMPLIR"
+SCENARIO = '{"name": "race-36h", "seed": 2026, "speed": 60, "duration_s": 129600, "faults": []}\n'
 
 
 def git(repo: Path, *args: str) -> str:
@@ -79,6 +80,9 @@ class Frozen:
         )
         for unit in UNIT_NAMES:
             self.write(f"deploy/systemd/{unit}", f"[Service]\nExecStart=/opt/venv/bin/{unit}\n")
+        # the race-36h scenario at HEAD that F3/F4 compare the reports with (plan 04-07, CR-01)
+        scenario = self.write("src/jabuka/soak/scenarios/race-36h.json", SCENARIO)
+        self.scenario_sha = hashlib.sha256(scenario.read_bytes()).hexdigest()
         self.soak_head = commit_all(root, "code")
         self.set_lock_hash()
         self.head = commit_all(root, "lock reviewed")
@@ -123,6 +127,14 @@ class Frozen:
             "mode": "shim" if machine == "x86_64" else "systemd",
             "host": {"machine": machine},
             "git": {"head": head, "dirty": False},
+            # a full-length run of the race-36h scenario at HEAD (plan 04-07): sim_s is the real
+            # 0fff60c laptop value
+            "seed": 2026,
+            "sim_s": 129640.6,
+            "duration_s": 129600.0,
+            "scenario_duration_s": 129600.0,
+            "scenario_sha256": self.scenario_sha,
+            "skipped": [],
         }
         for k, v in over.items():
             if isinstance(v, dict):
@@ -415,6 +427,166 @@ def test_f3_laptop_report_without_code_keeps_the_git_rule(frozen: Frozen) -> Non
     frozen.build_wheelhouse()
     _, items, out = frozen.check()
     assert items["F3"][0] == "FAIL" and "code modifié depuis le soak" in items["F3"][1], out
+    _all_items_no_traceback(items, out)
+
+
+# -- F3/F4 count only a full-length run of the race-36h scenario at HEAD (plan 04-07: gap 02-4,
+# review CR-01) and F3 always needs git (review WR-01) -------------------------------------------
+LATE = "after the end of the run"
+
+
+def _edit_reports(frozen: Frozen, pattern: str = "*", drop: tuple[str, ...] = (), **kv: object) -> None:
+    """Rewrite every var/soak/<pattern>/report.json: drop keys, then set keys."""
+    paths = sorted((frozen.root / "var" / "soak").glob(f"{pattern}/report.json"))
+    assert paths
+    for path in paths:
+        rep = json.loads(path.read_text(encoding="utf-8"))
+        for k in drop:
+            rep.pop(k, None)
+        rep.update(kv)
+        path.write_text(json.dumps(rep), encoding="utf-8")
+
+
+def test_f4_shortened_pi_report_fails(frozen: Frozen) -> None:
+    """Scratchpad repro test_repro.py: a Pi system-scope report of a 600 s run used to PASS F4."""
+    _, pkg = frozen.pi_copy()
+    path = frozen.pi_report(pkg)
+    rep = json.loads(path.read_text(encoding="utf-8"))
+    rep.update(
+        sim_s=600.0,
+        duration_s=600.0,
+        faults=[],
+        skipped=[{"kind": "power-pull", "id": "p1", "reason": f"scheduled at 90000 sim s, {LATE} (600)"}],
+    )
+    path.write_text(json.dumps(rep), encoding="utf-8")
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "essai raccourci" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_shortened_laptop_report_fails(frozen: Frozen) -> None:
+    """The verifier's real `--scenario race-36h --duration 900` run: sim_s 1322, late skips."""
+    frozen.report(
+        "x86_64",
+        frozen.soak_head,
+        sim_s=1322.0,
+        duration_s=900.0,
+        skipped=[{"kind": "kill-core", "id": "k1", "reason": f"scheduled at 7200 sim s, {LATE} (900)"}],
+    )
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F3"][0] == "FAIL" and "essai raccourci" in items["F3"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_f4_a_fault_skipped_after_the_end_fails_alone(frozen: Frozen) -> None:
+    late = [{"kind": "kill-core", "id": "k9", "reason": f"scheduled at 129700 sim s, {LATE} (129600)"}]
+    _edit_reports(frozen, skipped=late)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    for f in ("F3", "F4"):
+        assert items[f][0] == "FAIL" and "essai raccourci" in items[f][1], (f, out)
+    _all_items_no_traceback(items, out)
+    _edit_reports(frozen, skipped=[{"kind": "x", "id": "x1", "reason": "not implemented"}])
+    code, items, out = frozen.check()
+    assert code == 0, out
+    assert items["F3"][0] == "PASS" and items["F4"][0] == "PASS", out
+
+
+def test_f3_f4_report_that_stopped_early_fails(frozen: Frozen) -> None:
+    _edit_reports(frozen, sim_s=64800.0)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F3"][0] == "FAIL" and "essai raccourci" in items["F3"][1], out
+    assert items["F4"][0] == "FAIL" and "essai raccourci" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_f4_report_without_run_length_fails_closed(frozen: Frozen) -> None:
+    """A report from a harness older than plan 04-07 (no duration_s) proves nothing."""
+    _edit_reports(frozen, drop=("duration_s", "sim_s"))
+    code, items, out = frozen.check()
+    assert code == 1, out
+    for f in ("F3", "F4"):
+        assert items[f][0] == "FAIL" and "essai raccourci" in items[f][1], (f, out)
+    _all_items_no_traceback(items, out)
+    _edit_reports(frozen, sim_s=129640.6, duration_s=129600.0, skipped="x")
+    code, items, out = frozen.check()
+    assert code == 1, out
+    for f in ("F3", "F4"):
+        assert items[f][0] == "FAIL" and "essai raccourci" in items[f][1], (f, out)
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_f4_report_from_another_scenario_fails(frozen: Frozen) -> None:
+    """A custom scenario file named race-36h (other bytes), an older harness, or a --seed run."""
+    _edit_reports(frozen, scenario_sha256="0" * 64)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    for f in ("F3", "F4"):
+        assert items[f][0] == "FAIL", (f, out)
+        assert "ne prouve pas le scénario race-36h de HEAD" in items[f][1], (f, out)
+    _all_items_no_traceback(items, out)
+    _edit_reports(frozen, drop=("scenario_sha256",))
+    _, items, out = frozen.check()
+    assert items["F3"][0] == "FAIL" and "absent" in items["F3"][1], out
+    assert items["F4"][0] == "FAIL" and "absent" in items["F4"][1], out
+    _edit_reports(frozen, scenario_sha256=frozen.scenario_sha, seed=7)
+    _, items, out = frozen.check()
+    assert items["F3"][0] == "FAIL" and "seed" in items["F3"][1], out
+    assert items["F4"][0] == "FAIL" and "seed" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+
+
+def test_f3_f4_scenario_missing_at_head_fails_closed(frozen: Frozen) -> None:
+    git(frozen.root, "rm", "-q", "src/jabuka/soak/scenarios/race-36h.json")
+    head = commit_all(frozen.root, "drop the scenario")
+    git(frozen.root, "tag", "-f", "-a", "race-2026", "-m", "race", head)
+    frozen.build_wheelhouse()
+    code, items, out = frozen.check()
+    assert code == 1, out
+    for f in ("F3", "F4"):
+        assert items[f][0] == "FAIL" and "race-36h.json" in items[f][1], (f, out)
+    _all_items_no_traceback(items, out)
+
+
+def test_newest_quick_run_is_judged_and_named(frozen: Frozen) -> None:
+    """A quick race-36h run left in var/soak masks the real soak: FAIL with the remedy."""
+    pi = next((frozen.root / "var" / "soak").glob("*-pi/report.json"))
+    rep = json.loads(pi.read_text(encoding="utf-8"))
+    rep.update(sim_s=900.0, duration_s=900.0)
+    quick = frozen.root / "var" / "soak" / "20261111T000000Z-race-36h-quick"
+    quick.mkdir()
+    (quick / "report.json").write_text(json.dumps(rep), encoding="utf-8")
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F4"][0] == "FAIL" and "essai raccourci" in items["F4"][1], out
+    assert "var/soak-essais" in items["F4"][1] and "quick" in items["F4"][1], out
+    _all_items_no_traceback(items, out)
+    shutil.rmtree(quick)
+    code, items, out = frozen.check()
+    assert items["F4"][0] == "PASS", out
+    assert code == 0, out
+
+
+def test_f3_laptop_report_without_git_head_fails_even_with_a_matching_fingerprint(
+    frozen: Frozen,
+) -> None:
+    """WR-01 (scratchpad repro test_repro2.py): the fingerprint covers src/jabuka only, so a
+    later deploy/ or pyproject.toml change went unseen when F3 accepted a head-null report."""
+    frozen.write("deploy/systemd/jabuka-fastnet-relay.service", "[Service]\nExecStart=/x\n")
+    frozen.write("pyproject.toml", "[project]\nname = 'jabuka'\nversion = '0.2'\n")
+    head = commit_all(frozen.root, "deploy + pyproject")
+    git(frozen.root, "tag", "-f", "-a", "race-2026", "-m", "race", head)
+    frozen.build_wheelhouse()
+    code_block = soak_report.code_identity(
+        frozen.root / "src" / "jabuka", python="/x/python", source="children", units=None
+    )
+    frozen.report("x86_64", None, git={"head": None, "dirty": None}, code=code_block)
+    code, items, out = frozen.check()
+    assert code == 1, out
+    assert items["F3"][0] == "FAIL" and "git.head inconnu" in items["F3"][1], out
     _all_items_no_traceback(items, out)
 
 

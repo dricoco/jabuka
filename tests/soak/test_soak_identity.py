@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -314,6 +315,43 @@ def test_run_soak_refuses_system_scope_without_a_code_identity(
     assert not list(out.iterdir())  # the run dir it created is gone
     verbs = {json.loads(ln)[1] for ln in log.read_text().splitlines()}
     assert verbs <= {"cat", "show"}, verbs
+
+
+# -- the report records what ran, for freeze-check F3/F4 (plan 04-07, review CR-01) --------------
+def test_report_records_the_run_length_and_the_scenario(tmp_path: Path) -> None:
+    raw = (REPO / "src" / "jabuka" / "soak" / "scenarios" / "race-36h.json").read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()
+    sc = load_scenario("race-36h")
+    assert sc.sha256 == sha and sc.source == "scenarios/race-36h.json"
+    doc = json.loads(raw)
+    doc["duration_s"] = 600
+    custom = tmp_path / "race-36h.json"
+    custom.write_text(json.dumps(doc), encoding="utf-8")
+    other = load_scenario(str(custom))
+    assert other.sha256 != sha and other.source == str(custom)
+    for i, (extra, want) in enumerate(((["--duration", "900"], 900.0), ([], 129600.0))):
+        out = tmp_path / f"out{i}"
+        args = soak.build_arg_parser().parse_args(
+            ["--scenario", "race-36h", *extra, "--out", str(out)]
+        )
+        args.fixtures = tmp_path
+        h = soak.Harness(soak.make_run_dir(out, "race-36h"), sc, args)
+        try:
+            r = h.build_report()
+        finally:
+            h._tl.close()
+        assert r["duration_s"] == want, r["duration_s"]
+        assert r["scenario_duration_s"] == 129600.0
+        assert r["scenario_source"] == "scenarios/race-36h.json"
+        assert r["scenario_sha256"] == sha
+        assert r["seed"] == 2026
+
+
+def test_freeze_check_matches_the_harness_skip_reason() -> None:
+    assert soak.SKIP_AFTER_END == "after the end of the run"
+    assert soak.SKIP_AFTER_END in (REPO / "scripts" / "freeze-check.sh").read_text(encoding="utf-8")
+    src = inspect.getsource(soak.Harness.run_faults)
+    assert "SKIP_AFTER_END" in src and "after the end of the run" not in src, src
 
 
 # -- the docs quote the one fingerprint definition (plan 04-04 Task 3) ----------------------------
