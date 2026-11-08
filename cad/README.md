@@ -25,3 +25,9 @@ aux butées, taille A1), écrit les STL dans `../../stl/<boite|support>/`, le ST
 
 Construire la boîte avant le support : `TAB_W/TAB_H/TAB_D` du support doivent
 correspondre à l'encombrement de la boîte (247 × 200 × 37,5 mm, bouchon compris).
+
+## Nomenclature (BOM)
+
+`bom/X35_support_tablette_BOM.pdf` : liste de courses quincaillerie, pièces imprimées
+avec croquis, quantités et remarques. Régénérer avec `python3 bom/make_bom.py`
+(reportlab ; croquis dans `bom/img/`, rendus depuis FreeCAD).
