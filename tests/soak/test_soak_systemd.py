@@ -153,7 +153,8 @@ if args and args[0] == "show":
         elif not a.startswith("-"):
             units.append(a)
     vals = {{"MainPID": os.environ.get("FAKE_MAINPID", "4242"), "NRestarts": "0",
-             "ActiveState": os.environ.get("FAKE_ACTIVE", "active"), "SubState": "running", "LoadState": "loaded",
+             "ActiveState": os.environ.get("FAKE_ACTIVE", "active"), "SubState": "running",
+             "LoadState": "loaded",
              "InvocationID": "abc", "Id": "x"}}
     for i, u in enumerate(units or ["-"]):
         if i:

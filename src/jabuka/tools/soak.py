@@ -35,6 +35,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import random
 import shutil
 import signal
@@ -785,12 +786,10 @@ class Harness:
             cleanup = self.sup.cleanup()  # system scope: production units restored
         if self.scope is not None:
             report["systemd"]["cleanup"] = cleanup
-            left = cleanup.get("soak_lines_left")
-            if left:
+            reasons = cleanup_fail_reasons(self.scope, cleanup)
+            if reasons:
                 report["verdict"] = "FAIL"
-                report.setdefault("fail_reasons", []).append(
-                    f"systemd cleanup: {left} 50-jabuka-soak line(s) left in systemctl cat"
-                )
+                report.setdefault("fail_reasons", []).extend(reasons)
         return report
 
     def probe_pids(self) -> dict[str, int | None]:
@@ -1174,12 +1173,57 @@ def system_logs_fs_error(logs_fs: str, timeline: list[FaultSpec]) -> str | None:
     )
 
 
+def cleanup_fail_reasons(scope: str | None, cleanup: dict[str, Any]) -> list[str]:
+    """Why the systemd cleanup FAILs the soak verdict (plan 04-06, review WR-01): 50-jabuka-soak
+    lines left, or (system scope) production units not active after the restart."""
+    if scope is None:
+        return []
+    reasons = []
+    left = cleanup.get("soak_lines_left")
+    if left:
+        reasons.append(f"systemd cleanup: {left} 50-jabuka-soak line(s) left in systemctl cat")
+    if scope == "system" and cleanup.get("restarted") is not True:
+        reasons.append(
+            "systemd cleanup: production units not active after restart "
+            f"({cleanup.get('active')}, rc {cleanup.get('restart_rc')}): sudo bash scripts/soak.sh "
+            "--systemd system --systemd-cleanup, then systemctl is-active jabuka-core "
+            "jabuka-ingest-fastnet"
+        )
+    return reasons
+
+
+PI_F4_COMMAND = (
+    "sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python "
+    "--scenario race-36h --speed 20 --logs-fs loop:512M"
+)
+
+
 def identity_messages(
-    scope: str | None, code: dict[str, Any] | None, code_error: str | None, git: dict[str, Any]
+    scope: str | None,
+    code: dict[str, Any] | None,
+    code_error: str | None,
+    git: dict[str, Any],
+    *,
+    machine: str | None = None,
 ) -> list[str]:
     """The stderr lines that announce what code this run certifies (04-VERIFICATION gap 1).
     System scope without a package fingerprint raises sd.SetupError: freeze-check F4 could never
-    count such a 2-4 h Pi run. Elsewhere, no fingerprint and no git head gives a WARNING block."""
+    count such a 2-4 h Pi run. Elsewhere, no fingerprint and no git head gives a WARNING block.
+    On the Pi (machine aarch64) a run that is not `--systemd system` gets a WARNING: F4 will not
+    count it (plan 04-06)."""
+    lines = _identity_lines(scope, code, code_error, git)
+    if machine == "aarch64" and scope != "system":
+        kind = "--systemd user" if scope == "user" else "shim"
+        lines.append(
+            f"jabuka-soak: WARNING: on the Pi, freeze-check F4 only counts `{PI_F4_COMMAND}`; "
+            f"this {kind} run will not count (docs/SOAK.md)"
+        )
+    return lines
+
+
+def _identity_lines(
+    scope: str | None, code: dict[str, Any] | None, code_error: str | None, git: dict[str, Any]
+) -> list[str]:
     head = (git or {}).get("head")
     shown_head = str(head)[:12] if head else "none"
     if code is None:
@@ -1289,7 +1333,7 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
     h.compute_code_identity()
     h.git = rep.git_info(h.repo)  # the identity printed now is the one reported
     try:
-        lines = identity_messages(h.scope, h.code, h.code_error, h.git)
+        lines = identity_messages(h.scope, h.code, h.code_error, h.git, machine=platform.machine())
     except sd.SetupError as exc:
         # nothing touched yet: Harness() only read the units (systemctl cat/show), and neither
         # _ACTIVE nor atexit has seen this harness
@@ -1311,10 +1355,21 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
         for d in ("racepack",):
             shutil.rmtree(run_dir / d, ignore_errors=True)
     _give_back(run_dir)
-    print(f"jabuka-soak: report {mpath}", flush=True)
-    print(f"jabuka-soak: verdict {report['verdict']}", flush=True)
-    for r in report.get("fail_reasons", []):
-        print(f"jabuka-soak:   {r}", flush=True)
+    with contextlib.suppress(OSError, ValueError):  # SSH gone: stdout may be a dead pipe
+        print(f"jabuka-soak: report {mpath}", flush=True)
+        print(f"jabuka-soak: verdict {report['verdict']}", flush=True)
+        for r in report.get("fail_reasons", []):
+            print(f"jabuka-soak:   {r}", flush=True)
+    sig = getattr(h.sup, "pending_signal", None)
+    if sig is not None:  # held back during the cleanup (review WR-02): the report comes first
+        with contextlib.suppress(OSError, ValueError):
+            print(
+                f"jabuka-soak: signal {int(sig)} received during the cleanup: report written, "
+                f"exiting {128 + int(sig)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return 128 + int(sig)
     return 0 if report["verdict"] == "PASS" else 1
 
 
@@ -1327,6 +1382,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         try:
             left = sd.cleanup_system()
+        except sd.CleanupIncomplete as exc:
+            print(f"jabuka-soak: {exc}", file=sys.stderr)
+            return 1
         except sd.SetupError as exc:
             print(f"jabuka-soak: {exc}", file=sys.stderr)
             return 2

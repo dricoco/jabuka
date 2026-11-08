@@ -11,8 +11,10 @@ Two scopes:
   is the production one. Cleanup always runs (finally, atexit, signal handlers, and
   ``--systemd-cleanup`` alone): drop-ins removed, daemon-reload, both units restarted on their
   production configuration, then the soak log fs unmounted. It counts as done only once all of
-  that ran (an interrupted cleanup is redone by the next call) and signals are deferred while it
-  runs. /run is cleared at reboot anyway.
+  that ran and both units are ActiveState active again (an interrupted or failed cleanup is
+  redone by the next call). SIGINT/SIGTERM/SIGHUP arriving while it runs are held back and
+  recorded in ``pending_signal``: jabuka-soak honours them only after report.json is written,
+  and ``--systemd-cleanup`` exits with the repair's own result. /run is cleared at reboot anyway.
 - **user** (the laptop, no sudo): transient units through ``systemd-run --user`` with the shipped
   Type=, Restart=, RestartSec= and WatchdogSec= (and StartLimitIntervalSec=0). The hardening
   directives (User=, ProtectSystem=, PrivateDevices=, ...) are NOT applied: a user manager cannot
@@ -49,6 +51,8 @@ RUN_LINK_DIR = Path("/run/jabuka-soak")
 REAL_GPSD_PORT = 2947
 SCOPES = ("user", "system")
 DEFERRED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+# seconds to wait for both production units to be ActiveState "active" after the cleanup restart
+RESTART_VERIFY_S = 20.0
 OOM_SCORE_ADJ = Path("/proc/self/oom_score_adj")
 SUDO_HINT = (
     "--systemd system drives the installed units and needs root: run "
@@ -71,6 +75,10 @@ _SAFE = re.compile(r"^[A-Za-z0-9_@%+=:,./-]+$")
 
 class SetupError(Exception):
     """The systemd mode cannot run here (not root, units missing, stale drop-in, no manager)."""
+
+
+class CleanupIncomplete(SetupError):
+    """The production units are not active after the cleanup restart."""
 
 
 # -- unit files --------------------------------------------------------------------------------
@@ -247,6 +255,7 @@ class SystemdBackend:
         self.dropins: list[Path] = []
         self.cleaned = False
         self.cleanup_report: dict[str, Any] = {}
+        self.pending_signal: int | None = None  # first signal held back during cleanup
         self._removed: list[str] = []  # drop-ins removed, across retried cleanups
         self._installed = False
         self._pre_inv: dict[str, str] = {}
@@ -270,7 +279,11 @@ class SystemdBackend:
     def _ctl(self, *args: str, timeout: float = 60.0) -> subprocess.CompletedProcess:
         cmd = [self.systemctl, *(["--user"] if self.user else []), *args]
         try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            # own session: a terminal Ctrl-C reaches only the harness (which defers it during
+            # cleanup), never a `systemctl restart` client halfway (review WR-01)
+            return subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout, start_new_session=True
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             return subprocess.CompletedProcess(cmd, 1, "", repr(exc))
 
@@ -295,6 +308,20 @@ class SystemdBackend:
         if not blocks[-1]:
             blocks.pop()
         return blocks
+
+    def _await_active(self, units: list[str]) -> dict[str, str]:
+        """{unit: ActiveState}, polled until every unit is "active" or RESTART_VERIFY_S has
+        elapsed (at least one poll: 0 means a single check)."""
+        deadline = time.monotonic() + RESTART_VERIFY_S
+        while True:
+            blocks = self._show_many(units, ("ActiveState",))
+            states = {
+                u: (blocks[i].get("ActiveState", "") if i < len(blocks) else "")
+                for i, u in enumerate(units)
+            }
+            if all(v == "active" for v in states.values()) or time.monotonic() >= deadline:
+                return states
+            time.sleep(self.poll_s)
 
     def show(self, role: str, *props: str) -> dict[str, str]:
         b = self._show_many([self.unit(role)], props)
@@ -717,9 +744,11 @@ class SystemdBackend:
 
     @contextlib.contextmanager
     def _deferred_signals(self) -> Iterator[None]:
-        """SIGINT, SIGTERM and SIGHUP that arrive inside the block are held back: the first one
-        is re-raised (so its original handler runs, e.g. soak._on_signal -> SystemExit) only once
-        the block has completed. Main thread only (signal handlers cannot be set elsewhere)."""
+        """SIGINT, SIGTERM and SIGHUP that arrive inside the block are held back and the first
+        one is recorded in self.pending_signal (never re-raised here, whether the block completed
+        or raised): jabuka-soak honours it after report.json is written (review WR-02), and
+        ``--systemd-cleanup`` treats the repair's result as its exit code. The original handlers
+        are restored. Main thread only (signal handlers cannot be set elsewhere)."""
         if threading.current_thread() is not threading.main_thread():
             yield
             return
@@ -733,31 +762,30 @@ class SystemdBackend:
         for s in DEFERRED_SIGNALS:
             with contextlib.suppress(ValueError, OSError):
                 prev[s] = signal.signal(s, record)
-        done = False
         try:
             yield
-            done = True
         finally:
             for s, handler in prev.items():
                 with contextlib.suppress(ValueError, OSError, TypeError):
                     signal.signal(s, handler if handler is not None else signal.SIG_DFL)
-            if done and got:
-                signal.raise_signal(got[0])
+            if got and self.pending_signal is None:
+                self.pending_signal = got[0]
 
     def cleanup(self) -> dict[str, Any]:
         """Always safe to call; idempotent once it has completed. System scope, in this order:
         drop-ins removed, daemon-reload, the production units restarted, then the soak log fs
         unmounted (the restarted units no longer hold it). It is marked done only at the very
-        end, so an interrupted cleanup (exception, second Ctrl-C) is redone by the next call
-        (atexit, ``--systemd-cleanup``); SIGINT/SIGTERM/SIGHUP arriving meanwhile are deferred
-        until it ends (review WR-01). User scope: transient units stopped."""
+        end and only when both units are active again, so an interrupted cleanup (exception,
+        second Ctrl-C) or a failed restart is redone by the next call (atexit,
+        ``--systemd-cleanup``); SIGINT/SIGTERM/SIGHUP arriving meanwhile are recorded in
+        pending_signal (review WR-01/WR-02). User scope: transient units stopped."""
         if self.cleaned:
             return self.cleanup_report
         self._stop.set()
         with self._deferred_signals():
             report = self._cleanup_user() if self.user else self._cleanup_system()
             self.cleanup_report = report
-            self.cleaned = True
+            self.cleaned = self.user or report.get("restarted") is True
         return self.cleanup_report
 
     def _cleanup_user(self) -> dict[str, Any]:
@@ -775,20 +803,33 @@ class SystemdBackend:
             with contextlib.suppress(OSError):
                 path.parent.rmdir()
         self._ctl("daemon-reload")
-        r = self._ctl("restart", *[UNITS[r] for r in ("ingest", "core")], timeout=180.0)
+        units = [UNITS[r] for r in ("ingest", "core")]
+        r = self._ctl("restart", *units, timeout=180.0)
+        active = self._await_active(units)  # verify, do not trust the rc (review WR-01)
+        restarted = r.returncode == 0 and all(v == "active" for v in active.values())
         unmounted = [str(m) for m in self.mounts if unmount(m)]
         left = soak_lines_in(self._ctl("cat", UNITS["core"]).stdout)
+        states = ", ".join(f"{u}={v or '?'}" for u, v in active.items())
+        if restarted:
+            restart_msg = f"production units restarted (rc {r.returncode}, active {states})"
+        else:
+            restart_msg = (
+                f"production units NOT active after restart ({states}, rc {r.returncode}): "
+                "sudo bash scripts/soak.sh --systemd system --systemd-cleanup"
+            )
         with contextlib.suppress(OSError, ValueError):  # SSH gone: stdout may be a dead pipe
             print(
-                f"jabuka-soak: systemd cleanup: drop-ins removed {len(self._removed)}, production "
-                f"units restarted (rc {r.returncode}), unmounted {len(unmounted)}; `systemctl cat "
+                f"jabuka-soak: systemd cleanup: drop-ins removed {len(self._removed)}, "
+                f"{restart_msg}, unmounted {len(unmounted)}; `systemctl cat "
                 f"jabuka-core | grep -c 50-jabuka-soak` = {left} (expected 0)",
                 flush=True,
             )
         return {
             "scope": "system",
             "removed": list(self._removed),
-            "restarted": r.returncode == 0,
+            "restarted": restarted,
+            "restart_rc": r.returncode,
+            "active": active,
             "unmounted": unmounted,
             "soak_lines_left": left,
         }
@@ -855,7 +896,8 @@ def cleanup_system(
     proc_mounts: Path = Path("/proc/mounts"),
 ) -> int:
     """``--systemd-cleanup``: remove stale soak drop-ins and mounts, restart the production units.
-    Returns the number of 50-jabuka-soak lines left in ``systemctl cat jabuka-core``."""
+    Returns the number of 50-jabuka-soak lines left in ``systemctl cat jabuka-core``; raises
+    CleanupIncomplete when the units are not active after the restart."""
     b = SystemdBackend(
         "system",
         run_dir=Path("."),
@@ -871,7 +913,15 @@ def cleanup_system(
         if p.exists():
             b.dropins.append(p)
     b.mounts.extend(soak_mounts(proc_mounts))
-    return int(b.cleanup()["soak_lines_left"])
+    report = b.cleanup()
+    if report.get("restarted") is not True:
+        states = ", ".join(f"{u}={v or '?'}" for u, v in (report.get("active") or {}).items())
+        raise CleanupIncomplete(
+            f"production units not active after restart ({states}, rc "
+            f"{report.get('restart_rc')}): systemctl status jabuka-core jabuka-ingest-fastnet, "
+            "then retry --systemd-cleanup or reboot the Pi"
+        )
+    return int(report["soak_lines_left"])
 
 
 def mount_logs(
