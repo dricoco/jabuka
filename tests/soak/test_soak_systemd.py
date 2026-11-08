@@ -5,6 +5,7 @@ end to end against the real user manager."""
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -435,6 +437,7 @@ def test_user_scope_tracer_end_to_end(tmp_path: Path) -> None:
     # systemd itself restarted the killed core
     assert rep["systemd"]["n_restarts"]["core"] >= 1
     assert _soak_units() == before
+    assert rep["systemd"]["journal"]["complete"] is True, rep["systemd"]["journal"]
 
 
 # -- plan 04-04: WR-01 cleanup order / retry / deferred signals, WR-02 no tmpfs, OOM ------------
@@ -819,3 +822,271 @@ def test_run_soak_honours_a_signal_held_at_the_end_of_the_run(
         assert signal.getsignal(signal.SIGHUP) is soak._on_signal
     finally:
         signal.signal(signal.SIGHUP, prev)
+
+
+# -- the end-of-run journal copy is whole or FAILs (plan 04-08, review CR-01) -------------------
+def _entry(unit: str, msg: str, ts: int) -> str:
+    return json.dumps({"_SYSTEMD_UNIT": unit, "MESSAGE": msg, "__REALTIME_TIMESTAMP": str(ts)})
+
+
+def _fake_journalctl(path: Path, body: str) -> str:
+    """A bash fake journalctl; ``body`` is the script after the shebang."""
+    path.write_text("#!/bin/bash\n" + body)
+    path.chmod(0o755)
+    return str(path)
+
+
+def _say(*lines: str) -> str:
+    return "".join(f"printf '%s\\n' {shlex.quote(ln)}\n" for ln in lines)
+
+
+_GROUP_SIGINT_DRIVER = """\
+import json, os, signal, sys, threading, time
+from pathlib import Path
+
+from jabuka.soak import report as rep
+from jabuka.soak import systemd as sd
+from jabuka.soak.supervisor import Policy
+
+fake, out = sys.argv[1], Path(sys.argv[2])
+b = sd.SystemdBackend(
+    "system", run_dir=out, journalctl=fake, monitor=False, assume_root=True,
+    dropin_root=out / "run-systemd",
+)
+b.add("core", ["x"], Policy())
+hold = sd.SignalHold().start()
+
+
+def fire():
+    time.sleep(0.5)
+    os.killpg(os.getpgrp(), signal.SIGINT)  # the terminal Ctrl-C: the whole foreground group
+
+
+threading.Thread(target=fire, daemon=True).start()
+b.dump_journal(out / "proc", 0)
+held = hold.release()
+core = out / "proc" / "core-journal.log"
+print(json.dumps({
+    "held": held,
+    "journal": getattr(b, "journal", None),
+    "blocks": len(rep.scan_tracebacks(sorted((out / "proc").glob("*.log")))),
+    "text": core.read_text() if core.exists() else "",
+}))
+"""
+
+
+def test_group_sigint_during_the_journal_copy_keeps_the_whole_journal(tmp_path: Path) -> None:
+    """The verifier's cr01 repro made permanent: a Ctrl-C held by the harness at the end of a
+    system-scope soak must not kill journalctl halfway (review CR-01, gap 07-5)."""
+    fake = _fake_journalctl(
+        tmp_path / "fake-journalctl",
+        _say(_entry(CORE, "started", 1000000))
+        + "sleep 2\n"
+        + _say(
+            _entry(CORE, "Traceback (most recent call last):", 2000000),
+            _entry(CORE, '  File "x.py", line 1, in <module>', 2000001),
+            _entry(CORE, "RuntimeError: boom", 2000002),
+        ),
+    )
+    driver = tmp_path / "driver.py"
+    driver.write_text(_GROUP_SIGINT_DRIVER)
+    out = tmp_path / "out"
+    out.mkdir()
+    # the driver leads its own session: its killpg never reaches pytest's process group
+    r = subprocess.run(
+        [sys.executable, str(driver), fake, str(out)],
+        start_new_session=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=REPO,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    assert res["held"] == signal.SIGINT, res
+    assert res["journal"] is not None and res["journal"]["complete"] is True, res
+    assert res["journal"]["entries"]["core"] == 4, res
+    assert "RuntimeError: boom" in res["text"], res
+    assert res["blocks"] == 1, res
+
+
+def test_a_failed_journal_copy_is_recorded_never_silent(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    both = _say(_entry(CORE, "a", 1000000), _entry(INGEST, "b", 1000001))
+    proc = tmp_path / "proc"
+
+    def system(name: str, body: str) -> sd.SystemdBackend:
+        return _system(tmp_path / name, journalctl=_fake_journalctl(tmp_path / name, body))
+
+    # (a) journalctl exits 1 with a message on stderr
+    b = system("rc1", both + "echo boom >&2\nexit 1\n")
+    files = b.dump_journal(proc / "a", 0)
+    assert b.journal["complete"] is False, b.journal
+    assert b.journal["error"].startswith("journalctl rc 1:") and "boom" in b.journal["error"]
+    assert sorted(p.name for p in files) == ["core-journal.log", "ingest-journal.log"]
+    assert all(p.exists() for p in files)
+    # (b) journalctl killed by a signal (SIGKILL: a background gate may ignore SIGINT)
+    b = system("killed", _say(_entry(CORE, "a", 1000000)) + "kill -KILL $$\n")
+    b.dump_journal(proc / "b", 0)
+    assert b.journal["complete"] is False and "rc -9" in b.journal["error"], b.journal
+    # (c) journalctl outlasts the timeout (exec: the kill on timeout leaves no orphan)
+    monkeypatch.setattr(sd, "JOURNAL_TIMEOUT_S", 1.0)
+    b = system("slow", _say(_entry(CORE, "a", 1000000)) + "exec sleep 10\n")
+    t0 = time.monotonic()
+    b.dump_journal(proc / "c", 0)
+    assert time.monotonic() - t0 < 8
+    assert b.journal["complete"] is False, b.journal
+    assert "timed out after 1 s" in b.journal["error"], b.journal
+    monkeypatch.undo()
+    # (d) no journalctl at all
+    b = _system(tmp_path / "missing-dir", journalctl=str(tmp_path / "missing"))
+    assert b.dump_journal(proc / "d", 0) == []
+    assert b.journal["complete"] is False and b.journal["error"].startswith("journalctl:")
+    # (e) system scope: a unit with no entry at all means the journal was not read
+    b = system("one", _say(_entry(CORE, "a", 1000000)))
+    b.dump_journal(proc / "e", 0)
+    assert b.journal["complete"] is False, b.journal
+    assert b.journal["error"] == f"no journal entry for {INGEST}", b.journal
+    # (f) user scope: an empty copy is legal (a laptop user journal may be volatile)
+    u = sd.SystemdBackend(
+        "user",
+        run_dir=tmp_path / "u",
+        journalctl=_fake_journalctl(tmp_path / "empty", "exit 0\n"),
+        monitor=False,
+        tag="t",
+    )
+    for role in ("core", "ingest"):
+        u.add(role, ["x"], Policy())
+    u.dump_journal(proc / "f", 0)
+    assert u.journal == {"complete": True, "error": None, "entries": {"core": 0, "ingest": 0}}
+    # (g) a whole copy
+    b = system(
+        "ok",
+        _say(
+            _entry(CORE, "a", 1000000),
+            _entry(CORE, "b", 1000001),
+            _entry(INGEST, "c", 1000002),
+            _entry(INGEST, "d", 1000003),
+        ),
+    )
+    b.dump_journal(proc / "g", 0)
+    assert b.journal == {"complete": True, "error": None, "entries": {"core": 2, "ingest": 2}}
+    assert b.info()["journal"] == b.journal
+
+
+def test_end_of_run_children_get_their_own_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """journalctl, umount and vcgencmd run at the end of the run, when the harness holds a
+    terminal Ctrl-C: they must not share its process group (review CR-01)."""
+    from jabuka.soak import probes
+
+    seen: list[tuple[list[str], dict[str, object]]] = []
+    rc = {"value": 0}
+
+    def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        seen.append((list(cmd), kw))
+        out = "" if kw.get("text") else b""
+        return subprocess.CompletedProcess(cmd, rc["value"], out, out)
+
+    monkeypatch.setattr(sd.subprocess, "run", run)
+    b = _system(tmp_path)
+    b.dump_journal(tmp_path / "proc", 0)
+    assert seen and seen[-1][1].get("start_new_session") is True, seen
+    assert seen[-1][1].get("timeout") == sd.JOURNAL_TIMEOUT_S == 300.0, seen
+    seen.clear()
+    rc["value"] = 1  # both umount calls happen
+    assert sd.unmount(tmp_path / "m") is False
+    assert len(seen) == 2 and all(kw.get("start_new_session") is True for _, kw in seen), seen
+    seen.clear()
+    rc["value"] = 0
+    probe = probes.pi_probe("/x/vcgencmd")
+    assert probe is not None
+    probe()
+    assert seen and all(kw.get("start_new_session") is True for _, kw in seen), seen
+
+
+def _shim_harness(tmp_path: Path) -> soak.Harness:
+    out = tmp_path / "out"
+    args = soak.build_arg_parser().parse_args(["--scenario", "tracer", "--out", str(out)])
+    args.fixtures = tmp_path
+    return soak.Harness(soak.make_run_dir(out, "tracer"), load_scenario("tracer"), args)
+
+
+def _user_backend(h: soak.Harness, journalctl: str) -> sd.SystemdBackend:
+    b = sd.SystemdBackend("user", run_dir=h.run_dir, journalctl=journalctl, monitor=False, tag="t")
+    for role in ("core", "ingest"):
+        b.add(role, ["x"], Policy())
+    return b
+
+
+def test_incomplete_journal_copy_fails_the_tracebacks_check_and_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = _shim_harness(tmp_path)
+    try:
+        monkeypatch.setattr(sd, "JOURNAL_TIMEOUT_S", 1.0)
+        b = _user_backend(h, _fake_journalctl(tmp_path / "slow", "exec sleep 10\n"))
+        h.sup = b
+        b.dump_journal(h.run_dir / "proc", 0)
+        report = h.build_report()
+        tb = report["checks"]["tracebacks"]
+        assert tb["ok"] is False, tb
+        assert tb["detail"].startswith("journal dump incomplete (journalctl timed out"), tb
+        assert report["verdict"] == "FAIL"
+        assert any(
+            r.startswith("check tracebacks: journal dump incomplete")
+            for r in report["fail_reasons"]
+        ), report["fail_reasons"]
+    finally:
+        with contextlib.suppress(Exception):
+            h._tl.close()
+
+
+def test_complete_journal_copy_keeps_the_tracebacks_check(tmp_path: Path) -> None:
+    h = _shim_harness(tmp_path)
+    try:
+        script = _say(
+            _entry("jabuka-soak-t-core.service", "clean", 1000000),
+            _entry("jabuka-soak-t-ingest.service", "clean", 1000001),
+        )
+        b = _user_backend(h, _fake_journalctl(tmp_path / "ok", script))
+        h.sup = b
+        b.dump_journal(h.run_dir / "proc", 0)
+        tb = h.build_report()["checks"]["tracebacks"]
+        assert tb["ok"] is True, tb
+        assert "journal dump incomplete" not in tb["detail"], tb
+    finally:
+        with contextlib.suppress(Exception):
+            h._tl.close()
+    assert soak.journal_problem(object()) is None
+    fresh = sd.SystemdBackend("user", run_dir=tmp_path / "fresh", monitor=False, tag="f")
+    assert soak.journal_problem(fresh) == "journal not copied"
+
+
+def test_a_held_signal_is_announced_once_and_never_raises(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Review IN-02: the operator sees why nothing stops; a dead tee never breaks the end."""
+    prev = signal.signal(signal.SIGHUP, soak._on_signal)
+    w = None
+    try:
+        hold = sd.SignalHold().start()
+        signal.raise_signal(signal.SIGHUP)
+        signal.raise_signal(signal.SIGHUP)
+        assert hold.release() == signal.SIGHUP
+        err = capfd.readouterr().err
+        lines = [ln for ln in err.splitlines() if ln.startswith("jabuka-soak: signal")]
+        assert len(lines) == 1, err
+        assert lines[0].startswith(f"jabuka-soak: signal {int(signal.SIGHUP)} held"), lines
+        assert "~15 min" in lines[0], lines
+        r, w = os.pipe()
+        os.close(r)  # a dead tee
+        hold = sd.SignalHold(announce_fd=w).start()
+        signal.raise_signal(signal.SIGHUP)  # must not raise (BrokenPipeError suppressed)
+        assert hold.release() == signal.SIGHUP
+    finally:
+        signal.signal(signal.SIGHUP, prev)
+        if w is not None:
+            os.close(w)
