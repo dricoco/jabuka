@@ -1126,6 +1126,10 @@ class Harness:
             "alerts_seen": self.tablet.alerts_seen if self.tablet is not None else {},
             "tablet": self.tablet.summary(self.t0_wall) if self.tablet is not None else None,
             "setup_error": self.setup_error,
+            # run_soak sets it, just before write_report, to the first SIGINT/SIGTERM/SIGHUP held
+            # at the end of the run; freeze-check F3/F4 refuse a non-null value (plan 04-08,
+            # gap 07-5)
+            "end_signal": None,
         }
         if self.scope is not None:
             report["systemd"] = self.sup.info()
@@ -1406,6 +1410,10 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
             report = h.run()
         finally:
             _ACTIVE.remove(h)
+        end = h.end_signals.signal
+        if end is None:
+            end = getattr(h.sup, "pending_signal", None)
+        report["end_signal"] = int(end) if end is not None else None  # plan 04-08
         jpath, mpath = rep.write_report(run_dir, report)
         if report["verdict"] == "PASS" and not args.keep:
             for d in ("racepack",):

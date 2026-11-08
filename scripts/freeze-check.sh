@@ -19,7 +19,10 @@
 #       sha256 of src/jabuka/soak/scenarios/race-36h.json at HEAD and the same seed, duration_s
 #       >= its duration_s and sim_s >= 0.99 x it, no fault skipped "after the end of the run"
 #       (else « essai raccourci »). The newest race-36h report of each machine is the one judged:
-#       quick runs go to --out var/soak-essais (plan 04-07)
+#       quick runs go to --out var/soak-essais (plan 04-07). A report whose end_signal is non-null
+#       or absent (Ctrl-C/SIGTERM/SIGHUP at the end of the soak, exit 128 + signal) FAILs « soak
+#       interrompu »; a systemd-mode report whose systemd.journal.complete is not true FAILs
+#       « copie du journal des unités incomplète » (plan 04-08)
 #   F5  sha256 of deploy/requirements.lock = the "Lock revu : sha256 <hex>" line of docs/FREEZE.md
 #   F6  deploy/wheelhouse: one wheel per lock pin, and the jabuka wheel's jabuka/ files are
 #       byte-identical to the tracked src/jabuka/ files
@@ -30,7 +33,7 @@
 # One line per item: [PASS|FAIL|WARN|SKIP|HUMAN] Fn <text>. Exit 0 when no item FAILs.
 # Reads soak reports written by jabuka-soak (plan 04-01, report.json schema 1): only verdict,
 # scenario, mode, host.machine, git.head, git.dirty, code.sha256, code.source, code.units, seed,
-# sim_s, duration_s, scenario_sha256 and skipped[].reason.
+# sim_s, duration_s, scenario_sha256, skipped[].reason, end_signal and systemd.journal.complete.
 set -euo pipefail
 
 GIT="${GIT:-/usr/bin/git}"
@@ -46,7 +49,7 @@ while [ $# -gt 0 ]; do
         --repo=*) REPO="$(cd "${1#--repo=}" && pwd)"; shift ;;
         --pre) PRE=1; shift ;;
         --skip-gate) SKIP_GATE=1; shift ;;
-        -h | --help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "freeze-check: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -93,8 +96,10 @@ soak() { # ID MACHINE LABEL
     # units-* and match). Both machines (plan 04-07): not-scenario (scenario_sha256 or seed is
     # not race-36h.json at HEAD) | short (duration_s, sim_s or skipped do not prove a full-length
     # run); they override every state except error, and race-36h.json unreadable at HEAD is an
-    # error (fail closed). A helper crash becomes an error record (|| fallback), never an abort
-    # under set -e.
+    # error (fail closed). Both machines (plan 04-08), after not-scenario/short: interrupted
+    # (end_signal non-null or absent) | journal (mode systemd and systemd.journal.complete not
+    # true); they override every code state. A helper crash becomes an error record (||
+    # fallback), never an abort under set -e.
     found="$("$PY" - "$REPO/var/soak" "$machine" "$REPO" "$GIT" <<'PY'
 import hashlib, io, json, math, re, subprocess, sys, tarfile
 from pathlib import Path
@@ -195,6 +200,23 @@ def run_state(r, sha, full, seed):
     return None
 
 
+def end_state(r):
+    # None when the soak ended without a signal and, in systemd mode, its units' journal was
+    # copied whole (plan 04-08: 04-VERIFICATION gap 07-5, review CR-01); fail closed
+    if "end_signal" not in r:
+        return "interrupted", "end_signal absent : banc antérieur au plan 04-08"
+    if r.get("end_signal") is not None:
+        return "interrupted", f"signal {r.get('end_signal')!r} reçu à la fin du soak"
+    if r.get("mode") == "systemd":
+        sysd = r.get("systemd")
+        journal = sysd.get("journal") if isinstance(sysd, dict) else None
+        if not isinstance(journal, dict):
+            return "journal", "systemd.journal absent"
+        if journal.get("complete") is not True:
+            return "journal", str(journal.get("error") or f"systemd.journal.complete {journal.get('complete')!r}")
+    return None
+
+
 best = None
 for p in soak.glob("*/report.json"):
     try:
@@ -226,6 +248,8 @@ if best is not None:
             state, detail = "error", f"src/jabuka/soak/scenarios/race-36h.json à HEAD illisible : {exc!r}"
         else:
             run = run_state(r, sha, full, seed)
+            if run is None:
+                run = end_state(r)  # plan 04-08: after not-scenario/short, before the code states
             if run is not None:
                 state, detail = run
     detail = " ".join(str(detail).split()) or "-"
@@ -244,9 +268,13 @@ PY
     elif [ "$verdict" != PASS ]; then
         say FAIL "$id" "$label : $path verdict $verdict"
     elif [ "$cstate" = not-scenario ]; then
-        say FAIL "$id" "$label : $path ne prouve pas le scénario race-36h de HEAD ($detail) : refaire le soak avec le banc actuel et --scenario race-36h (scénario packagé, sans fichier perso ni --seed) (docs/SOAK.md)"
+        say FAIL "$id" "$label : $path ne prouve pas le scénario race-36h de HEAD ($detail) : refaire le soak avec le banc actuel et --scenario race-36h (scénario packagé, sans fichier perso ni --seed) (docs/SOAK.md) ; si un soak complet plus ancien est dans var/soak, déplacer $path vers var/soak-essais/ puis relancer freeze-check"
     elif [ "$cstate" = short ]; then
-        say FAIL "$id" "$label : $path essai raccourci ($detail) : F3/F4 ne comptent que le soak race-36h complet : le refaire sans --duration (docs/SOAK.md) ; lancer les essais rapides avec --out var/soak-essais pour ne pas masquer le vrai soak"
+        say FAIL "$id" "$label : $path essai raccourci ($detail) : F3/F4 ne comptent que le soak race-36h complet : le refaire sans --duration (docs/SOAK.md) ; lancer les essais rapides avec --out var/soak-essais pour ne pas masquer le vrai soak ; si un soak complet plus ancien est dans var/soak, déplacer $path vers var/soak-essais/ puis relancer freeze-check"
+    elif [ "$cstate" = interrupted ]; then
+        say FAIL "$id" "$label : $path soak interrompu ($detail) : F3/F4 ne comptent qu'un soak terminé sans signal : le refaire et attendre « jabuka-soak: verdict » sans Ctrl-C (docs/SOAK.md)"
+    elif [ "$cstate" = journal ]; then
+        say FAIL "$id" "$label : $path copie du journal des unités incomplète ($detail) : les traces n'ont pas toutes été lues : refaire le soak (docs/SOAK.md)"
     elif [ "$cstate" = no-code ]; then
         say FAIL "$id" "$label : $path sans empreinte du code (pas de code.sha256) : refaire le soak du Pi avec le banc actuel : sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M (docs/SOAK.md)"
     elif [ "$cstate" = not-units ]; then
