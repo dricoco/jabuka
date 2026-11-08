@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 5/6 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06)
+**Plans:** 6/6 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06)
 
 Plans:
 **Wave 1**
@@ -141,7 +141,7 @@ Plans:
 - [x] 04-02-PLAN.md — French commissioning runbook for 12–13 Nov (docs/COMMISSIONING.md + Slovenian skipper card), `scripts/commissioning-rehearsal.sh` dry run against a replayed capture and the synthetic boat (PASS/FAIL/HUMAN per step), docs bound to the code by tests, docs/FREEZE.md + `scripts/freeze-check.sh`, docs/SPARE-SD.md (clone, verification, swap at sea, optional overlay FS)
 - [x] 04-04-PLAN.md — Gap closure (freeze path + soak safety): the soak report records a sha256 fingerprint of the jabuka package (and unit files) the units actually ran, and freeze-check F3/F4 accept a git-less Pi report only when it equals HEAD (VERIFICATION gap, WR-03). The harness warns or refuses at start without a code identity, refuses a tmpfs log fs in system scope (WR-02), and its cleanup restarts production before unmounting and is retryable (WR-01). SOAK/FREEZE/SPARE-SD/PI-SETUP docs updated
 - [x] 04-05-PLAN.md — Gap closure (race-path robustness): course/settings/manual wind restored from .bak raise a visible "restauré" alert, and a schema-invalid main falls through to a valid .bak (WR-04). A routing cycle lost to a recycled wedged pool counts as a failure, so the route turns stale and is withdrawn on a repeated wedge (WR-05)
-- [ ] 04-06-PLAN.md — Gap closure 2 (freeze gate + soak cleanup): freeze-check F4 counts only a `--systemd system` Pi report carrying a code block. Shim, user-scope and code-less aarch64 reports FAIL (CR-01, gap 02-4); F3 is unchanged. System-scope cleanup checks that the units are active after the restart: if not, it stays retryable, FAILs the verdict and `--systemd-cleanup` exits 1 (WR-01). A signal during cleanup is honoured only after report.json is written (WR-02). SOAK.md runs the Pi soak in tmux; FREEZE.md states the F4 rule
+- [x] 04-06-PLAN.md — Gap closure 2 (freeze gate + soak cleanup): freeze-check F4 counts only a `--systemd system` Pi report carrying a code block. Shim, user-scope and code-less aarch64 reports FAIL (CR-01, gap 02-4); F3 is unchanged. System-scope cleanup checks that the units are active after the restart: if not, it stays retryable, FAILs the verdict and `--systemd-cleanup` exits 1 (WR-01). A signal during cleanup is honoured only after report.json is written (WR-02). SOAK.md runs the Pi soak in tmux; FREEZE.md states the F4 rule
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -159,7 +159,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 5/5 | In Progress|  |
+| 4. Race Readiness — Hardening & Commissioning | 6/6 | In Progress|  |
 
 ---
 *Roadmap created: 2026-11-06*

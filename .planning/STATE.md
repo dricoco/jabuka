@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 current_phase: 04
-current_phase_name: race-readiness-hardening-commissioning
+current_phase_name: Race Readiness — Hardening & Commissioning
 status: executing
-stopped_at: 04-01 soak harness, quick-002 and quick-003 merged after the PC crash; next 04-03 Pi soak
-last_updated: "2026-11-08T14:40:50.447Z"
-last_activity: 2026-11-07
+stopped_at: Completed 04-06-PLAN.md
+last_updated: "2026-11-08T17:33:22.740Z"
+last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: d55fd40b74c0890fa0b7ef9cb8f5ba722e978440
+state_head: 36ba39be5d36d42286d709c61abda64e24b41688
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 21
-  completed_plans: 18
+  completed_plans: 21
   percent: 0
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-05)
 
 **Core value:** At the helm, during the race, the screen shows a trustworthy, continuously updated "steer this / tack here" (optimal course to the next mark + laylines) computed from live boat data — even if parts of the data chain fail.
-**Current focus:** Phase 04 — race-readiness-hardening-commissioning
+**Current focus:** Phase 04 — Race Readiness — Hardening & Commissioning
 
 ## Current Position
 
-Phase: 04 (race-readiness-hardening-commissioning) — READY TO EXECUTE
-Plan: 1 of 5
+Phase: 04 (Race Readiness — Hardening & Commissioning) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-11-07 — Phase 04 execution started
+Last activity: 2026-11-08 — Phase 04 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -56,6 +56,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 04 P06 | 32 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -68,6 +73,8 @@ Recent decisions affecting current work:
 - [Roadmap]: Tack countdown starts in Phase 2 from the laylines (HELM-02/NAV-02). Phase 3 (ROUT-06) adds the route-driven version.
 - [Research]: Pi OS Lite 64-bit Trixie, Python 3.13. No Signal K server. Own ingest process with pyfastnet (raw bytes first), fastnet2ip as diagnostic/Plan B. gpsd + chrony for GPS and clock.
 - [Research]: FastAPI/uvicorn core + WebSocket. MapLibre 5.24 + PMTiles offline map. GRIBs prepped on the laptop into `.npz`. In-house numpy isochrone router, libweatherrouting as oracle/fallback.
+- [Phase 04]: 04-06: freeze-check F4 counts only a --systemd system Pi report (mode systemd, code.source units) with code block = HEAD; F3 keeps the git rule
+- [Phase 04]: 04-06: soak cleanup done only when both units ActiveState active after restart (else retryable, verdict FAIL, --systemd-cleanup exit 1); signal during cleanup honoured after report.json (128+signal)
 
 ### Pending Todos
 
@@ -107,6 +114,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-06
-Stopped at: Roadmap and state initialized; ready to plan Phase 1
+Last session: 2026-11-08T17:33:22.697Z
+Stopped at: Completed 04-06-PLAN.md
 Resume file: None
