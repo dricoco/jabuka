@@ -251,6 +251,22 @@ def test_identity_messages_with_a_fingerprint() -> None:
     assert "dddddddddddd" in lines[0]
 
 
+def test_identity_messages_warn_when_a_pi_run_is_not_system_scope() -> None:
+    """Plan 04-06: freeze-check F4 counts only the `--systemd system` Pi soak; a shim or
+    `--systemd user` run on the Pi says so at start."""
+    git = {"head": None, "dirty": None}
+    for scope in (None, "user"):
+        lines = soak.identity_messages(scope, CODE, None, git, machine="aarch64")
+        warn = [ln for ln in lines if ln.startswith("jabuka-soak: WARNING")]
+        assert warn and all("--systemd system" in ln for ln in warn), lines
+    for scope, machine in (("system", "aarch64"), (None, "x86_64")):
+        lines = soak.identity_messages(scope, CODE, None, git, machine=machine)
+        assert not [ln for ln in lines if "WARNING" in ln], (scope, machine, lines)
+    today = soak.identity_messages(None, CODE, None, git)
+    assert today == soak.identity_messages(None, CODE, None, git, machine="x86_64")
+    assert len(today) == 2 and not any("WARNING" in ln for ln in today), today
+
+
 def _fake_systemctl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The fake systemctl of tests/soak/test_soak_systemd.py (cat/show answered, calls logged)."""
     spec = importlib.util.spec_from_file_location(

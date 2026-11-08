@@ -21,6 +21,7 @@ import pytest
 from jabuka.core.main import build_arg_parser as core_parser
 from jabuka.ingest.fastnet_main import build_arg_parser as ingest_parser
 from jabuka.soak import systemd as sd
+from jabuka.soak.scenario import load_scenario
 from jabuka.soak.supervisor import Policy
 from jabuka.tools import soak
 
@@ -152,7 +153,7 @@ if args and args[0] == "show":
         elif not a.startswith("-"):
             units.append(a)
     vals = {{"MainPID": os.environ.get("FAKE_MAINPID", "4242"), "NRestarts": "0",
-             "ActiveState": "active", "SubState": "running", "LoadState": "loaded",
+             "ActiveState": os.environ.get("FAKE_ACTIVE", "active"), "SubState": "running", "LoadState": "loaded",
              "InvocationID": "abc", "Id": "x"}}
     for i, u in enumerate(units or ["-"]):
         if i:
@@ -280,11 +281,16 @@ def test_stale_dropin_and_missing_units_are_refused(tmp_path: Path, fake_bin: Pa
         b.preflight()
 
 
-def test_systemd_cleanup_alone_removes_stale_dropins(tmp_path: Path, fake_bin: Path) -> None:
+def test_systemd_cleanup_alone_removes_stale_dropins(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_unmount(tmp_path, monkeypatch)  # never the real /proc/mounts and umount (IN-06)
     stale = tmp_path / "run-systemd" / f"{INGEST}.d" / sd.DROPIN_NAME
     stale.parent.mkdir(parents=True)
     stale.write_text("[Service]\n")
-    n = sd.cleanup_system(dropin_root=tmp_path / "run-systemd", assume_root=True)
+    n = sd.cleanup_system(
+        dropin_root=tmp_path / "run-systemd", assume_root=True, proc_mounts=tmp_path / "mounts"
+    )
     assert n == 0  # 50-jabuka-soak lines left in `systemctl cat jabuka-core`
     assert not stale.exists()
     assert {CORE, INGEST} <= set(_ctl(tmp_path, "restart")[-1])
@@ -521,15 +527,158 @@ def test_signal_during_system_cleanup_is_deferred_until_the_units_restart(
     monkeypatch.setattr(b, "_ctl", ctl)
     prev = signal.signal(signal.SIGHUP, soak._on_signal)
     try:
-        with pytest.raises(SystemExit) as exc:
-            b.cleanup()
-        assert exc.value.code == 128 + signal.SIGHUP
+        report = b.cleanup()  # plan 04-06 (WR-02): recorded, honoured by run_soak after the report
+        assert report["restarted"] is True and b.pending_signal == signal.SIGHUP
         after = _verbs_since(tmp_path, fired[0])
         assert after[:3] == ["daemon-reload", "restart", "umount"], after
         assert b.cleaned is True
         assert signal.getsignal(signal.SIGHUP) is soak._on_signal
     finally:
         signal.signal(signal.SIGHUP, prev)
+
+
+# -- plan 04-06: WR-01 restart verified, WR-02 signal honoured after the report ----------------
+def test_failed_restart_keeps_the_system_cleanup_retryable(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _installed(tmp_path, monkeypatch)
+    monkeypatch.setattr(sd, "RESTART_VERIFY_S", 0.0)
+    monkeypatch.setenv("FAKE_ACTIVE", "failed")
+    n = len(_calls(tmp_path))
+    report = b.cleanup()
+    assert report["restarted"] is False, report
+    assert report["active"] == {INGEST: "failed", CORE: "failed"}, report
+    assert b.cleaned is False
+    for u in (CORE, INGEST):
+        assert not (tmp_path / "run-systemd" / f"{u}.d" / sd.DROPIN_NAME).exists()
+    verbs = _verbs_since(tmp_path, n)
+    assert "restart" in verbs and verbs.index("restart") < verbs.index("umount"), verbs
+    monkeypatch.setenv("FAKE_ACTIVE", "active")
+    n = len(_calls(tmp_path))
+    report = b.cleanup()  # atexit / --systemd-cleanup: redone in full
+    verbs = _verbs_since(tmp_path, n)
+    assert "daemon-reload" in verbs and "restart" in verbs, verbs
+    assert report["restarted"] is True and b.cleaned is True, report
+    n = len(_calls(tmp_path))
+    b.cleanup()
+    assert len(_calls(tmp_path)) == n  # done: no new systemctl verb
+
+
+def test_restart_rc_failure_is_not_a_restart(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _installed(tmp_path, monkeypatch)
+    monkeypatch.setattr(sd, "RESTART_VERIFY_S", 0.0)
+    real = b._ctl
+
+    def ctl(*args: str, timeout: float = 60.0):
+        if args and args[0] == "restart":
+            return subprocess.CompletedProcess(["systemctl", *args], 1, "", "Job failed")
+        return real(*args, timeout=timeout)
+
+    monkeypatch.setattr(b, "_ctl", ctl)
+    report = b.cleanup()
+    assert report["restarted"] is False and report["restart_rc"] == 1, report
+    assert report["active"] == {INGEST: "active", CORE: "active"}, report
+    assert b.cleaned is False
+
+
+def test_cleanup_fail_reasons() -> None:
+    assert soak.cleanup_fail_reasons("system", {"restarted": True, "soak_lines_left": 0}) == []
+    down = {
+        "restarted": False,
+        "restart_rc": 1,
+        "active": {INGEST: "failed", CORE: "active"},
+        "soak_lines_left": 0,
+    }
+    reasons = soak.cleanup_fail_reasons("system", down)
+    assert len(reasons) == 1, reasons
+    assert "--systemd-cleanup" in reasons[0] and "not active" in reasons[0], reasons
+    reasons = soak.cleanup_fail_reasons("system", {"restarted": True, "soak_lines_left": 2})
+    assert len(reasons) == 1 and "50-jabuka-soak" in reasons[0], reasons
+    assert soak.cleanup_fail_reasons("user", {"scope": "user", "units": []}) == []
+    assert soak.cleanup_fail_reasons(None, {}) == []
+
+
+def test_systemd_cleanup_cli_exits_1_when_the_units_stay_down(
+    tmp_path: Path,
+    fake_bin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _fake_unmount(tmp_path, monkeypatch)
+    monkeypatch.setattr(sd, "RESTART_VERIFY_S", 0.0)
+    monkeypatch.setenv("FAKE_ACTIVE", "failed")
+    with pytest.raises(sd.CleanupIncomplete, match="systemctl status"):
+        sd.cleanup_system(
+            dropin_root=tmp_path / "run-systemd", assume_root=True, proc_mounts=tmp_path / "mounts"
+        )
+
+    def incomplete(**_kw: object) -> int:
+        raise sd.CleanupIncomplete("x")
+
+    monkeypatch.setattr(sd, "cleanup_system", incomplete)
+    assert soak.main(["--systemd-cleanup"]) == 1
+    assert "jabuka-soak: x" in capsys.readouterr().err
+
+
+def test_systemctl_children_get_their_own_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal Ctrl-C reaches only the harness (which defers it during cleanup), never a
+    `systemctl restart` client halfway (review WR-01)."""
+    seen: list[dict[str, object]] = []
+
+    def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        seen.append(kw)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sd.subprocess, "run", run)
+    b = sd.SystemdBackend(
+        "system", run_dir=tmp_path, dropin_root=tmp_path / "rs", assume_root=True, monitor=False
+    )
+    b._ctl("show", "x")
+    assert seen and seen[-1].get("start_new_session") is True, seen
+
+
+def test_run_soak_writes_the_report_before_honouring_a_deferred_signal(
+    tmp_path: Path,
+    fake_bin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pkg = tmp_path / "site-packages" / "jabuka"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+
+    def identity(self: soak.Harness) -> None:
+        self.code = soak.rep.code_identity(
+            pkg, python=None, source="units", units={CORE: "0" * 64, INGEST: "0" * 64}
+        )
+        self.code_error = None
+
+    def run(self: soak.Harness) -> dict:
+        self.sup.pending_signal = signal.SIGHUP  # a SIGHUP held back during the cleanup
+        return {"verdict": "PASS", "fail_reasons": []}
+
+    def write_report(run_dir: Path, report: dict) -> tuple[Path, Path]:
+        jpath, mpath = run_dir / "report.json", run_dir / "report.md"
+        jpath.write_text(json.dumps(report), encoding="utf-8")
+        mpath.write_text("# report\n", encoding="utf-8")
+        return jpath, mpath
+
+    monkeypatch.setattr(soak.Harness, "compute_code_identity", identity)
+    monkeypatch.setattr(soak.Harness, "run", run)
+    monkeypatch.setattr(soak.rep, "write_report", write_report)
+    out = tmp_path / "out"
+    args = soak.build_arg_parser().parse_args(
+        ["--systemd", "system", "--scenario", "tracer", "--out", str(out)]
+    )
+    assert soak.run_soak(args, load_scenario("tracer")) == 128 + signal.SIGHUP
+    reports = list(out.glob("*-tracer/report.json"))
+    assert len(reports) == 1, reports
+    assert json.loads(reports[0].read_text(encoding="utf-8"))["verdict"] == "PASS"
+    assert "report written" in capsys.readouterr().err
 
 
 def test_protect_from_oom(tmp_path: Path) -> None:
