@@ -435,7 +435,14 @@ def test_f3_laptop_report_without_code_keeps_the_git_rule(frozen: Frozen) -> Non
 LATE = "after the end of the run"
 
 
-def _edit_reports(frozen: Frozen, pattern: str = "*", drop: tuple[str, ...] = (), **kv: object) -> None:
+def _late(at: int, duration: int) -> str:
+    """The harness's late-skip reason (jabuka.tools.soak.Harness.run_faults)."""
+    return f"scheduled at {at} sim s, {LATE} ({duration})"
+
+
+def _edit_reports(
+    frozen: Frozen, pattern: str = "*", drop: tuple[str, ...] = (), **kv: object
+) -> None:
     """Rewrite every var/soak/<pattern>/report.json: drop keys, then set keys."""
     paths = sorted((frozen.root / "var" / "soak").glob(f"{pattern}/report.json"))
     assert paths
@@ -456,7 +463,7 @@ def test_f4_shortened_pi_report_fails(frozen: Frozen) -> None:
         sim_s=600.0,
         duration_s=600.0,
         faults=[],
-        skipped=[{"kind": "power-pull", "id": "p1", "reason": f"scheduled at 90000 sim s, {LATE} (600)"}],
+        skipped=[{"kind": "power-pull", "id": "p1", "reason": _late(90000, 600)}],
     )
     path.write_text(json.dumps(rep), encoding="utf-8")
     code, items, out = frozen.check()
@@ -472,7 +479,7 @@ def test_f3_shortened_laptop_report_fails(frozen: Frozen) -> None:
         frozen.soak_head,
         sim_s=1322.0,
         duration_s=900.0,
-        skipped=[{"kind": "kill-core", "id": "k1", "reason": f"scheduled at 7200 sim s, {LATE} (900)"}],
+        skipped=[{"kind": "kill-core", "id": "k1", "reason": _late(7200, 900)}],
     )
     code, items, out = frozen.check()
     assert code == 1, out
@@ -481,7 +488,7 @@ def test_f3_shortened_laptop_report_fails(frozen: Frozen) -> None:
 
 
 def test_f3_f4_a_fault_skipped_after_the_end_fails_alone(frozen: Frozen) -> None:
-    late = [{"kind": "kill-core", "id": "k9", "reason": f"scheduled at 129700 sim s, {LATE} (129600)"}]
+    late = [{"kind": "kill-core", "id": "k9", "reason": _late(129700, 129600)}]
     _edit_reports(frozen, skipped=late)
     code, items, out = frozen.check()
     assert code == 1, out

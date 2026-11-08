@@ -17,6 +17,7 @@ list, identical for the same seed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -180,6 +181,9 @@ class Scenario:
     quiet_tail_s: float
     expected_tracebacks: dict[str, list[dict[str, str]]]
     source: str = "<dict>"
+    # sha256 of the scenario file bytes as loaded (None for a dict-built scenario). freeze-check
+    # F3/F4 compare it with src/jabuka/soak/scenarios/race-36h.json at HEAD (plan 04-07, CR-01)
+    sha256: str | None = None
 
     def budget(self, key: str) -> float:
         return float(self.budgets.get(key, DEFAULT_BUDGETS[key]))
@@ -324,11 +328,15 @@ def load_scenario(name_or_path: str | Path) -> Scenario:
     if text.endswith(".json") or "/" in text:
         if not path.is_file():
             raise ValueError(f"scenario file not found: {text}")
-        return parse_scenario(json.loads(path.read_text(encoding="utf-8")), str(path))
-    res = scenario_dir() / f"{text}.json"
-    if not res.is_file():
-        raise ValueError(f"unknown scenario {text!r} (packaged: {', '.join(list_scenarios())})")
-    return parse_scenario(json.loads(res.read_text(encoding="utf-8")), f"scenarios/{text}.json")
+        raw, source = path.read_bytes(), str(path)
+    else:
+        res = scenario_dir() / f"{text}.json"
+        if not res.is_file():
+            raise ValueError(f"unknown scenario {text!r} (packaged: {', '.join(list_scenarios())})")
+        raw, source = res.read_bytes(), f"scenarios/{text}.json"
+    sc = parse_scenario(json.loads(raw.decode("utf-8")), source)
+    sc.sha256 = hashlib.sha256(raw).hexdigest()
+    return sc
 
 
 def compile_timeline(sc: Scenario, seed: int | None = None) -> list[FaultSpec]:

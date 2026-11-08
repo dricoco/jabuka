@@ -64,6 +64,9 @@ SYNTH_KINDS = frozenset({"bus-silent", "garbage", "noise", "unplug", "gps-loss",
 LOCAL_TZ = "Europe/Zagreb"
 STARTUP_TIMEOUT_S = 60.0
 FIRST_ROUTE_TIMEOUT_S = 120.0
+# the reason of a fault skipped by a shortened run (--duration). scripts/freeze-check.sh matches
+# this phrase: F3/F4 never count such a report (plan 04-07, parity-tested)
+SKIP_AFTER_END = "after the end of the run"
 
 
 class SoakAbort(Exception):
@@ -711,9 +714,7 @@ class Harness:
             if fn is None:
                 why = "not implemented"
             elif spec.at > self.duration:  # a shortened run (--duration): smoke tests
-                why = (
-                    f"scheduled at {spec.at:g} sim s, after the end of the run ({self.duration:g})"
-                )
+                why = f"scheduled at {spec.at:g} sim s, {SKIP_AFTER_END} ({self.duration:g})"
             if why is not None:
                 self.skipped.append({"kind": spec.kind, "id": spec.id, "reason": why})
                 self.log("fault_skipped", id=spec.id, kind=spec.kind, reason=why)
@@ -1059,6 +1060,11 @@ class Harness:
             "schema": rep.SCHEMA,
             "verdict": None,
             "scenario": self.sc.name,
+            # what ran, judged by freeze-check F3/F4 against race-36h.json at HEAD (plan 04-07)
+            "scenario_source": self.sc.source,
+            "scenario_sha256": self.sc.sha256,
+            "duration_s": self.duration,
+            "scenario_duration_s": self.sc.duration_s,
             "mode": self.sup.mode,
             "host": rep.host_info(),
             "git": self.git if self.git is not None else rep.git_info(self.repo),

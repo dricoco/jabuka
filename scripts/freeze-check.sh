@@ -5,16 +5,21 @@
 #
 #   F1  working tree clean (tracked files)
 #   F2  the gate: JABUKA_REQUIRE_UI=1 JABUKA_REQUIRE_ROUTE=1 bash scripts/check.sh  (--skip-gate)
-#   F3  laptop race-36h soak report (host.machine x86_64): verdict PASS, git.dirty false, and no
-#       change under src/, deploy/ (except *.md) or pyproject.toml between git.head and HEAD.
-#       A report with a `code` block (empreinte du paquet exécuté, docs/SOAK.md) must also have
-#       code.sha256 = the fingerprint of src/jabuka at HEAD and, for the Pi (source "units"),
-#       code.units = deploy/systemd at HEAD; then git.head may be null (Pi copy without .git)
+#   F3  laptop race-36h soak report (host.machine x86_64): verdict PASS, and the git rule always
+#       applies: git.head present, git.dirty false, and no change under src/, deploy/ (except
+#       *.md) or pyproject.toml between git.head and HEAD. A report with a `code` block
+#       (empreinte du paquet exécuté, docs/SOAK.md) must also have code.sha256 = the fingerprint
+#       of src/jabuka at HEAD; the fingerprint alone never suffices for F3 (git.head inconnu)
 #   F4  Pi race-36h soak report (aarch64; copy the Pi's var/soak/<run>/ back into var/soak/). It
 #       must come from `sudo bash scripts/soak.sh --systemd system …` (mode systemd, code.source
 #       units) and carry the code block: code.sha256 = the fingerprint of src/jabuka at HEAD and
 #       code.units = deploy/systemd at HEAD; git.head may then be null (Pi copy without .git).
 #       When git.head is present the F3 git rules apply on top; git alone never suffices for F4
+#   F3+F4 only a full-length run of the race-36h scenario at HEAD counts: scenario_sha256 = the
+#       sha256 of src/jabuka/soak/scenarios/race-36h.json at HEAD and the same seed, duration_s
+#       >= its duration_s and sim_s >= 0.99 x it, no fault skipped "after the end of the run"
+#       (else « essai raccourci »). The newest race-36h report of each machine is the one judged:
+#       quick runs go to --out var/soak-essais (plan 04-07)
 #   F5  sha256 of deploy/requirements.lock = the "Lock revu : sha256 <hex>" line of docs/FREEZE.md
 #   F6  deploy/wheelhouse: one wheel per lock pin, and the jabuka wheel's jabuka/ files are
 #       byte-identical to the tracked src/jabuka/ files
@@ -24,7 +29,8 @@
 #
 # One line per item: [PASS|FAIL|WARN|SKIP|HUMAN] Fn <text>. Exit 0 when no item FAILs.
 # Reads soak reports written by jabuka-soak (plan 04-01, report.json schema 1): only verdict,
-# scenario, mode, host.machine, git.head, git.dirty, code.sha256, code.source and code.units.
+# scenario, mode, host.machine, git.head, git.dirty, code.sha256, code.source, code.units, seed,
+# sim_s, duration_s, scenario_sha256 and skipped[].reason.
 set -euo pipefail
 
 GIT="${GIT:-/usr/bin/git}"
@@ -40,7 +46,7 @@ while [ $# -gt 0 ]; do
         --repo=*) REPO="$(cd "${1#--repo=}" && pwd)"; shift ;;
         --pre) PRE=1; shift ;;
         --skip-gate) SKIP_GATE=1; shift ;;
-        -h | --help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "freeze-check: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -84,10 +90,13 @@ soak() { # ID MACHINE LABEL
     # never an empty field). code_state: absent | match | differ | units-differ | units-missing |
     # error, and for aarch64 only: no-code (no valid code.sha256) | not-units (mode is not
     # systemd or code.source is not units: not a `--systemd system` soak; overrides differ,
-    # units-* and match). A helper crash becomes an error record (|| fallback), never an abort
+    # units-* and match). Both machines (plan 04-07): not-scenario (scenario_sha256 or seed is
+    # not race-36h.json at HEAD) | short (duration_s, sim_s or skipped do not prove a full-length
+    # run); they override every state except error, and race-36h.json unreadable at HEAD is an
+    # error (fail closed). A helper crash becomes an error record (|| fallback), never an abort
     # under set -e.
     found="$("$PY" - "$REPO/var/soak" "$machine" "$REPO" "$GIT" <<'PY'
-import hashlib, io, json, re, subprocess, sys, tarfile
+import hashlib, io, json, math, re, subprocess, sys, tarfile
 from pathlib import Path
 soak, machine, repo, git = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 UNITS = ("jabuka-core.service", "jabuka-ingest-fastnet.service")
@@ -150,6 +159,42 @@ def code_state(code):
     return "match", f"empreinte {sha[:12]}, {code.get('files')} fichiers"
 
 
+def head_scenario():
+    # the race-36h scenario at HEAD: (sha256 of its bytes, duration_s, seed)
+    r = subprocess.run([git, "-C", repo, "show", "HEAD:src/jabuka/soak/scenarios/race-36h.json"],
+                       capture_output=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode(errors="replace").strip() or f"git show rc {r.returncode}")
+    doc = json.loads(r.stdout.decode("utf-8"))
+    full = doc.get("duration_s")
+    if isinstance(full, bool) or not isinstance(full, (int, float)) or not math.isfinite(full) or full <= 0:
+        raise ValueError(f"duration_s {full!r}")
+    return hashlib.sha256(r.stdout).hexdigest(), float(full), int(doc.get("seed", 0))
+
+
+def number(v):
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+
+
+def run_state(r, sha, full, seed):
+    # None when the report proves a full-length run of the race-36h scenario at HEAD (plan 04-07)
+    got = r.get("scenario_sha256")
+    if got != sha:
+        shown = got[:12] if isinstance(got, str) and got else "absent"
+        return "not-scenario", f"scenario_sha256 {shown} / race-36h.json à HEAD {sha[:12]}"
+    if r.get("seed") != seed or isinstance(r.get("seed"), bool):
+        return "not-scenario", f"seed {r.get('seed')!r} / {seed} à HEAD"
+    dur, sim, skipped = r.get("duration_s"), r.get("sim_s"), r.get("skipped")
+    late = None
+    if isinstance(skipped, list):
+        late = sum(1 for s in skipped if isinstance(s, dict) and "after the end of the run" in str(s.get("reason")))
+    if (not number(dur) or not number(sim) or dur < full or sim < 0.99 * full
+            or not isinstance(skipped, list) or late):
+        return "short", (f"duration_s {dur!r} / {full:g}, sim_s {sim!r}, "
+                         f"{late if late is not None else '?'} panne(s) après la fin")
+    return None
+
+
 best = None
 for p in soak.glob("*/report.json"):
     try:
@@ -173,6 +218,17 @@ if best is not None:
             state, detail = "no-code", "-"
         elif state != "error" and (r.get("mode") != "systemd" or code.get("source") != "units"):
             state, detail = "not-units", f"mode {r.get('mode')}, source {code.get('source')}"
+    if state != "error":
+        # F3 and F4 count only a full-length run of the race-36h scenario at HEAD (plan 04-07)
+        try:
+            sha, full, seed = head_scenario()
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            state, detail = "error", f"src/jabuka/soak/scenarios/race-36h.json à HEAD illisible : {exc!r}"
+        else:
+            run = run_state(r, sha, full, seed)
+            if run is not None:
+                state, detail = run
+    detail = " ".join(str(detail).split()) or "-"
     print(p, r.get("verdict"), g.get("head") or "-", "true" if g.get("dirty") is not False else "false", state, detail, sep="\t")
 PY
 )" || found="$(printf '%s\t%s\t%s\t%s\t%s\t%s' - PASS - true error "helper F3/F4 en échec ($PY)")"
@@ -187,6 +243,10 @@ PY
         say FAIL "$id" "$label : $path : $detail"
     elif [ "$verdict" != PASS ]; then
         say FAIL "$id" "$label : $path verdict $verdict"
+    elif [ "$cstate" = not-scenario ]; then
+        say FAIL "$id" "$label : $path ne prouve pas le scénario race-36h de HEAD ($detail) : refaire le soak avec le banc actuel et --scenario race-36h (scénario packagé, sans fichier perso ni --seed) (docs/SOAK.md)"
+    elif [ "$cstate" = short ]; then
+        say FAIL "$id" "$label : $path essai raccourci ($detail) : F3/F4 ne comptent que le soak race-36h complet : le refaire sans --duration (docs/SOAK.md) ; lancer les essais rapides avec --out var/soak-essais pour ne pas masquer le vrai soak"
     elif [ "$cstate" = no-code ]; then
         say FAIL "$id" "$label : $path sans empreinte du code (pas de code.sha256) : refaire le soak du Pi avec le banc actuel : sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M (docs/SOAK.md)"
     elif [ "$cstate" = not-units ]; then
@@ -195,8 +255,10 @@ PY
         say FAIL "$id" "$label : $path code soaké (empreinte ${detail%% *}) différent de src/jabuka à HEAD (${detail##* }) : réinstaller depuis HEAD puis refaire le soak"
     elif [ "$cstate" = units-differ ] || [ "$cstate" = units-missing ]; then
         say FAIL "$id" "$label : $path unités installées différentes de deploy/systemd à HEAD ($detail) : sudo deploy/provision.sh puis refaire le soak"
-    elif [ "$cstate" = match ] && [ "$head" = - ]; then
+    elif [ "$cstate" = match ] && [ "$head" = - ] && [ "$machine" = aarch64 ]; then
         say PASS "$id" "$label : $path PASS, paquet installé = src/jabuka à HEAD ($detail)"
+    elif [ "$head" = - ]; then
+        say FAIL "$id" "$label : $path git.head inconnu (rapport sans git) : F3 exige la règle git, l'empreinte seule ne suffit pas : refaire bash scripts/soak.sh --scenario race-36h depuis le checkout"
     elif [ "$dirty" = true ]; then
         say FAIL "$id" "$label : $path fait sur un arbre dirty (git.dirty pas false) : refaire le soak sur un commit propre"
     elif [ "$head" = - ] || ! g cat-file -e "$head^{commit}" 2>/dev/null; then
