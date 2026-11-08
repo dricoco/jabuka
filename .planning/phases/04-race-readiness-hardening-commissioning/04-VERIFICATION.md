@@ -1,54 +1,66 @@
 ---
 phase: 04-race-readiness-hardening-commissioning
-verified: 2026-11-08T17:46:38Z
+verified: 2026-11-08T19:20:29Z
 status: gaps_found
-score: 35/41 must-haves verified
-covered_files: [".planning/REQUIREMENTS.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-01-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-01-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-02-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-02-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-03-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-03-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-04-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-04-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-05-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-05-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-06-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-06-SUMMARY.md", "deploy/PI-SETUP.md", "docs/COMMISSIONING-SL.md", "docs/COMMISSIONING.md", "docs/FREEZE.md", "docs/SOAK.md", "docs/SPARE-SD.md", "pyproject.toml", "scripts/commissioning-rehearsal.sh", "scripts/freeze-check.sh", "scripts/soak.sh", "src/jabuka/common/atomicio.py", "src/jabuka/core/router_service.py", "src/jabuka/nav/course.py", "src/jabuka/nav/settings.py", "src/jabuka/soak/faults.py", "src/jabuka/soak/report.py", "src/jabuka/soak/supervisor.py", "src/jabuka/soak/systemd.py", "src/jabuka/tools/rehearsal.py", "src/jabuka/tools/soak.py", "src/jabuka/web/static/i18n.js", "tests/commissioning/test_freeze_check.py", "tests/nav/test_state_corruption.py", "tests/routing/test_supervisor.py", "tests/soak/test_soak_identity.py", "tests/soak/test_soak_systemd.py"]
-covered_digest: "v1:sha256:e33378e65c269f156a2c1c89d19f73691011de67bf82a8f50416a0219a98a4a6"
+score: 43/48 must-haves verified
+covered_files: [".planning/REQUIREMENTS.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-01-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-01-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-02-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-02-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-03-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-03-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-04-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-04-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-05-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-05-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-06-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-06-SUMMARY.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-07-PLAN.md", ".planning/phases/04-race-readiness-hardening-commissioning/04-07-SUMMARY.md", "deploy/PI-SETUP.md", "docs/COMMISSIONING-SL.md", "docs/COMMISSIONING.md", "docs/FREEZE.md", "docs/SOAK.md", "docs/SPARE-SD.md", "pyproject.toml", "scripts/commissioning-rehearsal.sh", "scripts/freeze-check.sh", "scripts/soak.sh", "src/jabuka/common/atomicio.py", "src/jabuka/core/router_service.py", "src/jabuka/nav/course.py", "src/jabuka/nav/settings.py", "src/jabuka/soak/faults.py", "src/jabuka/soak/report.py", "src/jabuka/soak/scenario.py", "src/jabuka/soak/supervisor.py", "src/jabuka/soak/systemd.py", "src/jabuka/tools/rehearsal.py", "src/jabuka/tools/soak.py", "src/jabuka/web/static/i18n.js", "tests/commissioning/test_freeze_check.py", "tests/nav/test_state_corruption.py", "tests/routing/test_supervisor.py", "tests/soak/test_soak_identity.py", "tests/soak/test_soak_systemd.py"]
+covered_digest: "v1:sha256:cc254df8e343efa6e5313f0c16b1c4fa0631e914e1f52241c67cbc0e8dceb0e0"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
-  previous_score: 29/34
+  previous_score: 35/41
   gaps_closed:
-    - "02-4 / CR-01 (previous): F4 accepted a shim, --systemd user or code-less aarch64 report. CLOSED. The freeze-check helper now maps an aarch64 report with no valid code.sha256 to no-code and any report whose mode is not systemd or whose code.source is not units to not-units; both FAIL before any PASS branch (scripts/freeze-check.sh L169-175, L190-193). The six negative tests and the positive git-less system-scope test pass. A user-scope run cannot produce source units (compute_code_identity sets it only in system scope)."
-    - "Advisory WR-01 (previous): a failed restart was marked done. CLOSED: restarted = rc 0 AND both units ActiveState active (_await_active, up to 20 s); cleaned stays False otherwise, the verdict FAILs via cleanup_fail_reasons, --systemd-cleanup exits 1 via CleanupIncomplete, systemctl runs with start_new_session."
-    - "Advisory WR-02 (previous): a signal during the cleanup lost report.json. CLOSED for the cleanup window: the signal is recorded in pending_signal and run_soak returns 128+n after write_report. SOAK.md step 2 now runs the Pi soak inside tmux."
-  gaps_remaining:
-    - "02-4 (new root cause): freeze-check F3/F4 accept a shortened (--duration) race-36h run as the 36 h soak. Reproduced end to end with the real harness and the real script."
-  regressions: []
+    - "02-4 / 06-1 (previous blocker): freeze-check F3/F4 accepted a shortened `--duration` race-36h run. CLOSED. The helper's head_scenario() + run_state() (scripts/freeze-check.sh L162-195, L221-230) require scenario_sha256 and seed = race-36h.json at HEAD, duration_s >= 129600, sim_s >= 0.99 x 129600 and no skip 'after the end of the run'; not-scenario / short FAIL right after the verdict branch (L246-249), before every PASS branch; missing fields and an unreadable HEAD scenario fail closed. My own real `--scenario race-36h --duration 900` run (verdict PASS, sim_s 1318.2, 93 late skips) now gives `[FAIL] F3 portable : … essai raccourci` on a clone of HEAD 0c12a90 (the previous verification got `[PASS] F3` for the same command). The same report edited to full length gives `[PASS] F3 … PASS sur 0c12a901680b`. The real historic full runs (0832f7f, 0fff60c) have sim_s 129640.6-129654.8, seed 2026 and no skips, so a genuine run satisfies the rule."
+    - "WR-01 (previous warning, F3 fingerprint-only PASS when git.head is null): CLOSED. The PASS branch now needs `machine = aarch64` (L258); an x86_64 head-null report FAILs 'git.head inconnu (rapport sans git)' (L260-261). Reproduced on my real report with git.head nulled and a code block matching HEAD: F3 FAIL. Named test passes."
+    - "WR-02 (previous warning, a signal during shutdown()/build_report() lost report.json): CLOSED for report loss. Harness.end_signals (SignalHold) starts after the main run (soak.py L795) and is released in run_soak's finally after write_report and _give_back (L1385-1396); 128+n returned after the report. Named tests pass. BUT see the new gap: the hold now lets a PASS be written from a journal that the same signal truncated."
+  gaps_remaining: []
+  regressions:
+    - "New review CR-01 (introduced by 04-07's end-of-run hold): a terminal Ctrl-C/SIGHUP during the end of a `--systemd system` Pi soak kills journalctl (same process group), dump_journal silently writes the truncated journal, the tracebacks check sees no traceback and the verdict can be PASS, which F4 then certifies. Reproduced."
 gaps:
-  - truth: "The 2026-11-11 freeze checker passes only with a clean tree, a green gate, laptop AND Pi race-36h soak reports PASS on code identical to HEAD (04-02 truth 4; ROADMAP SC1 + SC3: the evidence is the 36 h soak). Also 04-06 truth 1: F4 PASSes an aarch64 report only when it comes from the documented `sudo bash scripts/soak.sh --systemd system … --scenario race-36h --speed 20 --logs-fs loop:512M` run."
-    status: partial
-    reason: "The previous root cause (CR-01: source/mode not checked) is closed. A different fail-open remains in the same PASS branch. The helper selects reports by scenario == 'race-36h' and host.machine only, keeps the newest run directory, and never reads sim_s, skipped or the scenario source. `jabuka-soak --duration SIM_S` keeps scenario 'race-36h' and run_faults() lists every fault scheduled after the shortened end as skipped; decide() ignores skipped, so the verdict is PASS. I ran the real harness: `.venv313/bin/python -m jabuka.tools.soak --scenario race-36h --duration 900 --out <scratchpad>` finished in about 20 s wall with verdict PASS, sim_s 1322, 1 fault run, 93 faults skipped, git at HEAD clean. Copied into var/soak of a scratch clone of HEAD, freeze-check printed `[PASS] F3 portable : var/soak/20261108T174419Z-race-36h/report.json PASS sur ee6f42709dc9, code identique à HEAD`. The review's fixture reproduction (Pi system-scope report with sim_s 600, one skipped power pull) gives `[PASS] F4 Pi : … paquet installé = src/jabuka à HEAD` and `freeze-check: ok`. The same applies to the Pi: `sudo … --systemd system … --scenario race-36h --duration 600 --logs-fs loop:512M` produces mode systemd, source units, and F4 PASSes. docs/SOAK.md L46-47 advertises --duration as the quick-test option and says skipped faults are 'jamais comptées comme passées', yet the freeze gate counts the run. Because the newest race-36h report wins, a quick sanity run made after the real soak (laptop: every run lands in var/soak; Pi: after the FREEZE step 8 re-provision) silently replaces the real 36 h evidence with a 20-second one. This is the same fail-open class as the previous CR-01, in a file this round modified, with deterministic evidence."
+  - truth: "WR-02 (04-07 truth 5): from the end of the main run until report.json is written, SIGINT/SIGTERM/SIGHUP are held, never acted on; the window covers shutdown and the journal dump. Consequence for ROADMAP SC1 / 01-5 / 02-4: the Pi soak's PASS (the evidence F4 certifies) must mean the units' journal was scanned for tracebacks."
+    status: failed
+    reason: "The hold protects only the harness process. In system scope, shutdown() calls dump_journal (src/jabuka/soak/systemd.py L730-770), which runs `journalctl … -o json` with subprocess.run(capture_output=True, timeout=120) and NO start_new_session, ignores the return code, and turns TimeoutExpired/OSError into out = \"\". scripts/soak.sh L76 runs the harness as `\"$PY\" -m jabuka.tools.soak … | tee`, so a terminal Ctrl-C (or a SIGHUP to the foreground group) reaches python (held), tee and journalctl (killed). Before 04-07 the harness died too (no report: fail-safe). Now it carries on: the partial stdout is parsed, proc/core-journal.log is truncated, scan_tracebacks (soak.py L953-970) finds fewer or no blocks, c['tracebacks'] is ok, and the verdict can be PASS. report.json records nothing about the held signal (only the exit code 128+n and a stderr line say so), and freeze-check F4 reads only the verdict. Reproduced with the real SystemdBackend.dump_journal under SignalHold (setsid, fake journalctl printing one line, sleeping 3 s, then a Traceback/RuntimeError): without a signal -> journal has the traceback, 1 block; with os.killpg(SIGINT) at 1 s -> held signal 2, journal '1.000 started\\n' only, 0 traceback blocks. Same silent-empty outcome without any signal when journalctl exceeds 120 s (mocked TimeoutExpired -> no journal file, no error recorded). docs/SOAK.md L101-104 tells the operator that a Ctrl-C during 'copie du journal' is harmless, which is false. The files were modified by 04-07 (0c44c59) and the evidence is deterministic, so the evidence gate keeps this blocking. It is the false-PASS class every earlier round treated as blocking, whereas report loss was only a warning because it never produced a false PASS."
     artifacts:
-      - path: "scripts/freeze-check.sh"
-        issue: "Helper L153-176 picks the newest scenario=='race-36h' report per machine and reads only verdict, mode, git and code. No check of sim_s against the scenario's duration_s, of skipped faults 'after the end of the run', or of where the scenario came from (a custom --scenario file named race-36h is also accepted)."
-      - path: "src/jabuka/soak/report.py"
-        issue: "decide() (L342-355) ignores report['skipped'], so a shortened run is PASS."
+      - path: "src/jabuka/soak/systemd.py"
+        issue: "dump_journal L740-744: no start_new_session, return code ignored, timeout/OSError -> silent empty journal; no journal_error recorded. Same group-sharing for unmount() L899-906 (masked by the umount -l retry)."
       - path: "src/jabuka/tools/soak.py"
-        issue: "build_report (L1055-1075) records sim_s but not the requested duration, the scenario's duration_s or the scenario source, so the report does not say it was shortened."
-      - path: "tests/commissioning/test_freeze_check.py"
-        issue: "No negative case for a shortened race-36h report."
+        issue: "compute_checks tracebacks L953-970 cannot tell a complete journal from a truncated or missing one; a signal held by end_signals is not recorded in report.json."
+      - path: "docs/SOAK.md"
+        issue: "L101-104 promise that a Ctrl-C/SIGTERM/SIGHUP during the end of the soak (including 'copie du journal') does not interrupt it."
     missing:
-      - "In the freeze-check helper: read the scenario's duration_s at HEAD (git show HEAD:src/jabuka/soak/scenarios/race-36h.json) and give a new state 'short' (FAIL for F3 and F4) when sim_s < ~0.99 × duration_s or any skipped entry says 'after the end of the run'. Bash: FAIL '… essai raccourci (sim_s X / Y) : refaire le soak race-36h complet'."
-      - "Optionally (stronger): have the harness record duration_s / scenario_duration_s / scenario_source in report.json and give a non-PASS verdict (e.g. SHORT) whenever --duration < scenario duration_s, so the report itself cannot claim PASS."
-      - "Tests: (a) Pi system-scope report with sim_s 600 and a skipped 'after the end of the run' fault → F4 FAIL; (b) same for the laptop report → F3 FAIL; (c) the full-duration Frozen reports still PASS (fixture reports must carry a realistic sim_s)."
+      - "dump_journal: subprocess.run(..., start_new_session=True, timeout ~300); record self.journal_error when rc != 0, on TimeoutExpired or OSError."
+      - "compute_checks: when journal_error is set (system/user scope), the tracebacks check is not ok (or None with a fail reason), so the verdict cannot be PASS; say 'journal dump incomplete (…)' in the detail."
+      - "Optionally: record the held end-of-run signal in report.json (e.g. end_signal) so a reader and freeze-check can see it; start_new_session for unmount() too."
+      - "Test: send SIGINT to the process group during a fake journalctl inside dump_journal under SignalHold; expect the full output or a non-PASS tracebacks check. Plus a TimeoutExpired case."
+      - "docs/SOAK.md L101-104: keep the promise only once the journal copy is isolated, or tell the operator not to press Ctrl-C at the end."
 advisory:
   - finding: "WR-04 (carried): the git-less F4 path fingerprints src/jabuka plus the two jabuka unit files only; post-soak changes to other deploy/** files or pyproject.toml do not invalidate F4"
     category: other
-    reason: "Deferred by 04-06 (T-04-06-05) with rationale: F3 git rule, F5, F6 and FREEZE step 8 re-provision cover it. Note: the F3 compensating control is skippable when a laptop report has git.head null (see WR-01 in the body)."
+    reason: "Deferred by 04-06/04-07 with rationale. Its compensating control (F3's git rule) is mandatory again since the WR-01 fix, which I confirmed."
     evidence_status: "none provided"
-  - finding: "WR-03 / IN-01 (carried): 'restauré' alerts cannot be cleared until the core restarts; the first write after a .bak restore turns the corrupt main into the .bak"
+  - finding: "WR-03 / IN-01 (04-05 era, carried): 'restauré' alerts cannot be cleared until the core restarts; the first write after a .bak restore turns the corrupt main into the .bak"
     category: other
-    reason: "Deferred by 04-06 with rationale; race-path UX / low-probability durability. 04-05 truths hold."
+    reason: "Deferred with rationale (race-path change too close to the freeze); 04-05 truths hold."
     evidence_status: "none provided"
+  - finding: "Review IN-01 (0c12a90): the newest race-36h report per machine is judged by run-dir name; a quick run left in var/soak masks an older full run (loud FAIL with the var/soak-essais remedy, never a false PASS); a backwards Pi clock could change which report is judged"
+    category: other
+    reason: "Fail-closed behaviour, tested by test_newest_quick_run_is_judged_and_named. Wording improvement only."
+    evidence_status: "test shows FAIL + remedy, not a false PASS"
+  - finding: "Review IN-02 (0c12a90): a held Ctrl-C prints nothing and tee dies on it, so the operator sees no further lines; SOAK.md's '~10 min' kill -9 threshold is close to the bounded worst case"
+    category: other
+    reason: "UX; a kill -9 loses the report (fail-safe, re-run). Becomes more relevant together with the gap above."
+    evidence_status: "code read"
+  - finding: "Review IN-03 (0c12a90): the laptop userns parent waits only 30 s after terminate() (soak.py L1499-1503) before re-raising while the child may still be writing report.json"
+    category: other
+    reason: "Laptop only, end of run normally < 30 s; never a false PASS."
+    evidence_status: "code read"
 human_verification:
-  - test: "Laptop race-36h soak on the final pre-freeze HEAD: `bash scripts/soak.sh --scenario race-36h` on a clean tree, full length (no --duration). Make sure no later shortened race-36h run sits in var/soak (the newest one is the one freeze-check reads)."
-    expected: "Verdict PASS, sim_s ≈ 129 600, no 'after the end of the run' skips. freeze-check F3 PASS (today F3 FAILs 'code modifié depuis le soak (0fff60c -> HEAD …)', as expected)."
+  - test: "Laptop race-36h soak on the final pre-freeze HEAD: `bash scripts/soak.sh --scenario race-36h` on a clean tree, full length (no --duration). Quick runs go to `--out var/soak-essais`."
+    expected: "Verdict PASS, report.json duration_s 129600, sim_s >= 129600, scenario_sha256 = sha256 of race-36h.json at HEAD (dca4d6aecc19… today), no 'after the end of the run' skips. freeze-check F3 PASS (today F3 FAILs: the 0fff60c report has no scenario_sha256)."
     why_human: "About 40 min of wall time on the owner's laptop, on the final HEAD"
-  - test: "Pi 3B system-scope soak (ROADMAP SC1). Rebuild the wheelhouse from HEAD (`bash scripts/build-wheelhouse.sh`; F6 shows the current one predates phase 4), re-provision the Pi, install tmux while it has internet. Then on the Pi inside `tmux new -s soak`: `cd ~/jabuka && sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M`. scp only that run dir back, reboot, check `systemctl cat jabuka-core | grep -c 50-jabuka-soak` = 0 and `systemctl is-active jabuka-core jabuka-ingest-fastnet` = active active."
-    expected: "Startup prints `jabuka-soak: code d42dac399a00 … source units` (fingerprint of src/jabuka at HEAD since 256a762) and no WARNING line. Verdict PASS, tick ratio >= 0.95 (else re-run at --speed 10), core/worker RSS <= 250 MB, no throttling/under-voltage, report.json systemd.cleanup.restarted true with both units active. freeze-check F4 PASS 'paquet installé = src/jabuka à HEAD'."
+  - test: "Pi 3B system-scope soak (ROADMAP SC1). Rebuild the wheelhouse from the final HEAD (`bash scripts/build-wheelhouse.sh`; F6 FAILs today), re-provision the Pi, install tmux. Inside `tmux new -s soak`: `cd ~/jabuka && sudo bash scripts/soak.sh --systemd system --python /opt/jabuka/venv/bin/python --scenario race-36h --speed 20 --logs-fs loop:512M`. Do NOT press Ctrl-C at the end until the gap above is fixed. scp only that run dir back, reboot, check `systemctl cat jabuka-core | grep -c 50-jabuka-soak` = 0 and both units active."
+    expected: "Startup prints `jabuka-soak: code <fingerprint of src/jabuka at HEAD> … source units`, no WARNING line (in particular no 'shortened run'). Exit code 0 (not 128+n), verdict PASS, proc/core-journal.log and proc/ingest-journal.log present and non-empty, tick ratio >= 0.95, core/worker RSS <= 250 MB, no throttling/under-voltage, cleanup.restarted true. freeze-check F4 PASS 'paquet installé = src/jabuka à HEAD'."
     why_human: "Needs the real Pi 3B with its installed systemd units"
   - test: "Record the Pi RSS, temperature and throttling in docs/SOAK.md 'Budgets Pi à confirmer' (also closes 03-05 'Pi memory')"
     expected: "Table filled; numbers fit the 1 GB Pi"
@@ -56,7 +68,7 @@ human_verification:
   - test: "5 real power pulls on the Pi, each followed by jabuka-logcheck (PI-SETUP §4 j, 01-UAT #7)"
     expected: "Services come back each time, logcheck OK, course and settings intact (a visible '.bak restauré' alert is acceptable)"
     why_human: "Physical power interruption"
-  - test: "Feature freeze on 2026-11-11 per docs/FREEZE.md: lock review and hash, tag race-2026, wheelhouse from the tag, Pi re-provisioned, `bash scripts/freeze-check.sh` all PASS except F8 WARN and F9 HUMAN (after the 02-4 gap is fixed)"
+  - test: "Feature freeze on 2026-11-11 per docs/FREEZE.md: lock review and hash, tag race-2026, wheelhouse from the tag, Pi re-provisioned, `bash scripts/freeze-check.sh` all PASS except F8 WARN and F9 HUMAN"
     expected: "freeze-check exit 0; only configuration changes afterwards"
     why_human: "Owner decisions and a future-dated event"
   - test: "Clone the spare SD per docs/SPARE-SD.md and boot it (ROADMAP SC3); step 5 FINGERPRINT_SH must give the same hex on both cards and equal the Pi report's code.sha256"
@@ -76,52 +88,69 @@ human_verification:
 # Phase 4: Race Readiness — Hardening & Commissioning Verification Report
 
 **Phase Goal:** The system runs about 36 h unattended at night on the Pi 3B, and on 12–13 Nov the owner can commission it on the real boat in one session by following a written runbook.
-**Verified:** 2026-11-08T17:46:38Z (main ee6f427; code identical to 256a762, later commits are .planning only)
+**Verified:** 2026-11-08T19:20:29Z (main 0c12a90; code at ee8d5e2, later commits are .planning only)
 **Status:** gaps_found
-**Re-verification:** Yes, after gap closure 04-06
+**Re-verification:** Yes, after gap closure 04-07
 
-## Verdict on the previous gap "02-4" (CR-01)
+## Verdict on the three items 04-07 had to close
 
-**The previous gap is CLOSED.** F4 no longer accepts a shim, `--systemd user` or code-less Pi report. I checked the code, not the summary:
+| Item | Status | Evidence (my own runs, not the SUMMARY) |
+| --- | --- | --- |
+| **Blocker 02-4 / 06-1**: F3/F4 accepted a shortened `--duration` race-36h run | **CLOSED** | Real `python -m jabuka.tools.soak --scenario race-36h --duration 900 --out <scratchpad>`: rc 0, verdict PASS, `WARNING: shortened run` on stderr, report.json `duration_s 900.0`, `scenario_duration_s 129600.0`, `scenario_source scenarios/race-36h.json`, `scenario_sha256 dca4d6ae…` (= sha256 of the file), `sim_s 1318.2`, 93 skips, report.md "**Essai raccourci**". In a clone of HEAD: `[FAIL] F3 portable : … essai raccourci (duration_s 900.0 / 129600, sim_s 1318.2, 93 panne(s) après la fin)`. The previous verification got `[PASS] F3` for the same command. The same report edited to full length (duration_s 129600, sim_s 129640.6, no skips) → `[PASS] F3 … PASS sur 0c12a901680b`. The 9 new fixture cases pass, including the Pi system-scope sim_s 600 case (F4 FAIL). |
+| **WR-01**: F3 fingerprint-only PASS with `git.head` null | **CLOSED** | `freeze-check.sh` L258 now needs `machine = aarch64`; L260-261 FAIL "git.head inconnu (rapport sans git)". My real report with `git` nulled (code block matching HEAD) → F3 FAIL. Named test passes. |
+| **WR-02**: end-of-run signal lost report.json | **CLOSED for report loss** | `Harness.end_signals.start()` at soak.py L795, release in `run_soak` finally after `write_report` + `_give_back` (L1385-1396), 128+n afterwards. Named tests pass. **But it introduces the new blocker below.** |
 
-- `scripts/freeze-check.sh` L169-175: for `machine == "aarch64"`, `absent` becomes `no-code`. Any state other than `error` becomes `not-units` when `mode != "systemd"` or `code.source != "units"`. Both map to FAIL branches (L190-193), placed right after the verdict check and before the only fingerprint PASS branch (L198).
-- A `--systemd user` run cannot produce `source: units`, because `compute_code_identity` sets it only in system scope.
-- The permanent tests pass: shim, user scope, children with wrong units, units with the wrong mode, git without code, malformed sha, plus the positive git-less system-scope case (92 passed in my targeted run on Python 3.13).
-- The previous advisories WR-01 (a failed restart counted as done) and WR-02 (a signal during cleanup losing the report) are also closed as specified (see the 06-x rows).
+## New review CR-01: confirmed, and blocking
 
-**But truth 02-4 is still not achieved, because of a different root cause. The new review CR-01 is confirmed, end to end.** F3 and F4 accept a shortened `--duration` run of `race-36h` as the 36 h soak:
+**Confirmed independently.** I reproduced it, then traced it through the code.
 
-- **Real harness.** I ran `.venv313/bin/python -m jabuka.tools.soak --scenario race-36h --duration 900 --out <scratchpad>`. It finished in about 20 s with `verdict PASS`, `scenario race-36h`, `sim_s 1322`, 1 fault run and 93 faults skipped "after the end of the run". `git.head` was HEAD and the tree was clean.
-- **Real script.** I put that report alone in `var/soak/` of a scratch clone of HEAD. `freeze-check --pre --skip-gate` printed `[PASS] F3 portable : var/soak/20261108T174419Z-race-36h/report.json PASS sur ee6f42709dc9, code identique à HEAD`.
-- **Review fixture.** The fixture repro (`test_repro.py`: a Pi system-scope report with `sim_s 600` and a skipped power pull) gives `[PASS] F4 Pi : … paquet installé = src/jabuka à HEAD` and `freeze-check: ok`.
+The repro uses the real `SystemdBackend.dump_journal` under the real `SignalHold`, isolated with `setsid`. A fake journalctl prints one entry, sleeps 3 s, then prints a Traceback/RuntimeError:
 
-Why this blocks the freeze truth (ROADMAP SC1/SC3):
-- freeze-check exists to certify that the 36 h soak happened on the frozen code. A 20-second smoke run gets the same green line.
-- freeze-check reads the **newest** race-36h report. A quick `--duration` sanity run made after the real soak therefore silently replaces the real evidence. On the laptop every run lands in `var/soak/`; on the Pi, a natural moment for such a run is after the FREEZE step 8 re-provision.
-- docs/SOAK.md L46-47 advertises `--duration` as the "essai rapide" option and promises that skipped faults are "jamais comptées comme passées". The freeze gate counts them anyway.
-- This is the same fail-open class as the previous CR-01. It sits in a file this round modified (`scripts/freeze-check.sh`) and has deterministic evidence, so the evidence gate keeps it blocking.
-
-It is not a regression: the hole has existed since 04-02, and previous verifications missed it. The fix is small (see Gaps).
-
-## Review findings: independent assessment
-
-| Review ID | Confirmed? | Evidence | Blocks goal / freeze truth? |
+| Run | Held signal | `core-journal.log` | `rep.scan_tracebacks` blocks |
 | --- | --- | --- | --- |
-| CR-01 (shortened `--duration` race-36h passes F3/F4) | **Yes**, end to end | Real harness run (verdict PASS, 1/94 faults) → real freeze-check F3 PASS on a scratch clone; fixture repro F4 PASS | **Yes: gap on 02-4 / 06-1** |
-| WR-01 (F3 skips the git rule when a laptop report has `git.head` null) | **Yes** | `test_repro2.py` (2 passed): after a deploy/pyproject change, `[PASS] F3 portable : … paquet installé = src/jabuka à HEAD`. L198 applies the fingerprint-only PASS to F3 too. FREEZE.md L87 says F3 is "la règle git … plus l'empreinte". | No (warning). This is the behaviour 04-04 specified (truth 04-2) and F3 left unchanged in 04-06. It needs `git_info` to fail on the dev laptop, which always has `.git`, and the fingerprint still binds `src/jabuka`. The doc/code mismatch and the weakened WR-04 compensating control are real. Fix: restrict the L198 shortcut to aarch64, about one line plus one test. |
-| WR-02 (signal during `shutdown()` / `build_report()` loses report.json) | **Yes** | `Harness.run` L781-787: only `sup.cleanup()` defers signals. A SIGTERM/SIGINT during `shutdown()` (journal dump) or `build_report()` (final logcheck) escapes as SystemExit/KeyboardInterrupt before `write_report` (L1353). | No (warning). Accepted residual T-04-06-04. The failure mode is "re-run the soak", never a false PASS. tmux removes the SIGHUP-on-SSH-drop case. |
-| IN-03 (F4 identifies "the Pi" only by aarch64; no `pi` block required) | Yes (code read) | `freeze-check.sh` L161 | No (info). |
+| no signal | None | started + 3 traceback lines | 1 |
+| `os.killpg(getpgrp(), SIGINT)` at 1 s | 2 | `'1.000 started\n'` | **0** |
+
+The second run shows the problem: the harness keeps running and the traceback evidence is gone. I also forced a `TimeoutExpired` (journalctl taking more than 120 s). That gives no journal file and no recorded error, so it is the same silent-empty result with no signal involved.
+
+How it reaches F4 in the documented Pi run:
+- `scripts/soak.sh` L76 runs the harness as `python … | tee`, so the harness, `tee` and `journalctl` share one process group under the sudo pty.
+- A Ctrl-C in the tmux pane reaches all three. Python holds it; `tee` and `journalctl` die.
+- `dump_journal` ignores the return code (systemd.py L740-744).
+- The tracebacks check (soak.py L953-970) only scans the `proc/*.log` that exist.
+- report.json does not record the held signal. F4 reads only `verdict`.
+
+**Why it blocks:**
+- 04-07 truth 5 explicitly says the hold covers "the journal dump" and that signals are "never acted on". docs/SOAK.md L101-104 tells the owner a Ctrl-C during "copie du journal" is harmless. Both are false in system scope.
+- This is a **regression introduced by 04-07**. Before the hold, the same Ctrl-C killed the harness, so no report was written (fail-safe). Now it can produce a false PASS that F4 certifies as the 36 h Pi evidence (SC1/SC3).
+- Every earlier round blocked this false-PASS class. Report loss was rated only a warning because it never certified anything.
+- The files were modified this round and the evidence is deterministic, so the evidence gate keeps it blocking.
+
+**Mitigating context (for the owner's decision):**
+- The trigger needs a group-wide signal during a short window at the very end of the run (stop, plus a dump of up to 120 s). A plain `kill <pid>` or an SSH drop under tmux does not trigger it.
+- The run then exits 130, not 0, and prints "signal 2 received at the end of the run".
+- The timeout path is older than 04-07 and its likelihood on the Pi 3B is unmeasured.
+
+**The fix is small.** It is the review's suggestion:
+- `start_new_session=True` and a `journal_error` on rc ≠ 0 or timeout.
+- A non-PASS tracebacks check when `journal_error` is set.
+- One test sending a process-group SIGINT during a fake journalctl.
+- Optionally, record the held signal in report.json.
+
+It should land before the 10 Nov Pi soak. Otherwise, follow the human item: do not press Ctrl-C at the end, accept only exit code 0, and check that both `proc/*-journal.log` files are non-empty.
+
+Review IN-01, IN-02 and IN-03 are confirmed by reading the code. They are informational: none produces a false PASS (see Advisory).
 
 ## User Flow Coverage (MVP mode)
 
-User story (same restatement as plans 04-04 to 04-06): "As a boat owner racing the X35, I want to leave the Pi 3B running about 36 h unattended at night and commission it on the real boat on 12–13 Nov in one session by following a written runbook, so that the helm tablet shows trustworthy live wind and laylines for the whole race even when parts of the data chain fail."
+User story (same restatement as plans 04-04 to 04-07): "As a boat owner racing the X35, I want to leave the Pi 3B running about 36 h unattended at night and commission it on the real boat on 12–13 Nov in one session by following a written runbook, so that the helm tablet shows trustworthy live wind and laylines for the whole race even when parts of the data chain fail."
 
 | Step | Expected | Evidence in codebase | Status |
 | --- | --- | --- | --- |
-| Prove 36 h of faults on the laptop | One command, every CONTEXT fault, budgets | Harness green in the gate; CI soak PASS at HEAD (`var/soak/20261108T173414Z-ci`, code d42dac399a00). The full race-36h re-run on HEAD is pending | ✓ code / ? human re-run |
-| Prove it on the Pi 3B | Same soak against the installed units, identity recorded, units restored | `--systemd system`, code identity, tmpfs refusal, verified restart, deferred signal, tmux in docs; tests pass | ? human (hardware) |
-| Freeze on 11 Nov | Checker green **only** for the real soaks | System-scope rule closed; **a shortened race-36h run still PASSes F3/F4** | ✗ partial (gap) |
-| Spare SD | Clone boots to the same state | SPARE-SD.md step 5 quotes FINGERPRINT_SH (test-bound) | ? human |
+| Prove 36 h of faults on the laptop | One command, every CONTEXT fault, budgets | Harness green in gate-04-07; CI soak PASS at ee8d5e2 (`var/soak/20261108T190356Z-ci`, code f7ddf1810645). Full race-36h re-run on HEAD pending | ✓ code / ? human re-run |
+| Prove it on the Pi 3B | Same soak against the installed units, identity recorded, units restored, verdict trustworthy | `--systemd system`, identity, verified restart, end-of-run hold. **A Ctrl-C at the end can truncate the journal and still give PASS** | ✗ gap (CR-01) / ? human (hardware) |
+| Freeze on 11 Nov | Checker green **only** for the real full-length soaks | Full-length rule + F3 git rule closed and reproduced | ✓ checker / ? human event |
+| Spare SD | Clone boots to the same state | SPARE-SD.md step 5 FINGERPRINT_SH | ? human |
 | Commission on 12–13 Nov | Timed runbook, rehearsed | COMMISSIONING.md + rehearsal (gate green) | ✓ doc / ? human on board |
 | Tablet trustworthy at night | Wind + laylines; no silent fallback | 04-05 `.bak` alerts; stale-route withdrawal | ✓ code / ? human on board |
 
@@ -131,102 +160,112 @@ User story (same restatement as plans 04-04 to 04-06): "As a boat owner racing t
 
 | # | Truth | Status | Evidence |
 | --- | --- | --- | --- |
-| SC1 | 36 h ~60× soak **on the Pi 3B** with faults; recovery, memory, tablet | ? HUMAN | Pi run due 2026-11-10; harness path hardened further by 04-06 |
-| SC2 | Runbook exists, dry-run against replayed capture, all listed topics | ✓ VERIFIED | test_runbook_docs / test_rehearsal green (gate-04-06: 1603 passed ×2, `check: ok`) |
-| SC3 | Frozen 2026-11-11; spare SD boots same; 12 Nov capture replays; config-only | ? HUMAN (+ 02-4 gap) | Future-dated events; freeze-gate integrity tracked under 02-4 |
+| SC1 | 36 h ~60× soak **on the Pi 3B** with faults; recovery, memory, tablet | ? HUMAN (+ CR-01 gap on verdict integrity) | Pi run due 2026-11-10 |
+| SC2 | Runbook exists, dry-run against replayed capture, all listed topics | ✓ VERIFIED | Doc/rehearsal tests in gate-04-07 (1620 passed ×2, `check: ok`, EXIT=0) |
+| SC3 | Frozen 2026-11-11; spare SD boots same; 12 Nov capture replays; config-only | ? HUMAN | Future-dated events; freeze gate now counts only full-length runs |
 | SC4 | Helm tablet shows live/manual/GRIB wind + laylines at night | ? HUMAN | Phase 2 software, unchanged |
-| 01-1 | One command, SimClock ~60×, faults, report.json + report.md | ✓ VERIFIED | Gate; my short race-36h run produced both files |
+| 01-1 | One command, SimClock ~60×, faults, report.json + report.md | ✓ VERIFIED | My short run produced both; gate |
 | 01-2 | Tablet data within budgets; route after restart; no land crossing | ✓ VERIFIED | Regression (gate) |
 | 01-3 | State survives pulls; corrupt state never stops the core | ✓ VERIFIED | Regression (gate) |
 | 01-4 | RSS/leak/fd/threads/logs within budget | ✓ VERIFIED | Regression (gate) |
-| 01-5 | No unexpected traceback / error counter | ✓ VERIFIED | Regression (gate) |
+| 01-5 | No unexpected traceback / error counter | ✓ VERIFIED (shim/user paths) | Gate. System-scope journal integrity under an end-of-run signal is the 07-5 gap |
 | 01-6 | GPS clock path end to end | ✓ VERIFIED | Regression (gate) |
-| 01-7 | CI soak in the gate on both interpreters | ✓ VERIFIED | var/gate-04-06.log; CI soak PASS at 7f71d01 |
+| 01-7 | CI soak in the gate on both interpreters | ✓ VERIFIED | gate-04-07; CI soak PASS at ee8d5e2 |
 | 02-1 | French timed runbook, nine sections | ✓ VERIFIED | Unchanged; doc tests green |
 | 02-2 | Rehearsal script PASS/FAIL/HUMAN, `--capture` | ✓ VERIFIED | Unchanged; tests green |
 | 02-3 | Runbook bound to code | ✓ VERIFIED | Unchanged; tests green |
-| 02-4 | Freeze checker passes **only** with laptop and Pi race-36h PASS on code identical to HEAD | ✗ PARTIAL | Previous root cause closed. New: shortened `--duration` race-36h run PASSes F3 (real run + real script) and F4 (fixture) |
+| 02-4 | Freeze checker passes **only** with laptop and Pi race-36h PASS on code identical to HEAD | ✓ VERIFIED (was PARTIAL) | Full-length rule (L162-195, L221-230, L246-249); real shortened run → F3 FAIL; full-length variant → PASS; 9 fixture cases pass |
 | 02-5 | SPARE-SD.md: dd + rpi-clone, checks, swap, overlay | ✓ VERIFIED | Unchanged |
-| 03-1 | Pi `--systemd system` against installed units, cleanup always | ? HUMAN (software ✓) | Cleanup now verified (ActiveState) and retryable; real run human |
-| 03-2 | User-scope e2e on the laptop | ✓ VERIFIED | test_soak_systemd.py passed |
-| 03-3 | Laptop race-36h PASS, leak fit enforced | ✓ VERIFIED (historic) | Report on 0fff60c; re-run on HEAD is a human item |
+| 03-1 | Pi `--systemd system` against installed units, cleanup always | ? HUMAN (software ✓) | Real run human |
+| 03-2 | User-scope e2e on the laptop | ✓ VERIFIED | test_soak_systemd.py passes |
+| 03-3 | Laptop race-36h PASS, leak fit enforced | ✓ VERIFIED (historic) | Reports on 0832f7f / 0fff60c; re-run on HEAD is human (F3 needs the new fields) |
 | 03-4 | Pi report records temperature/throttling | ✓ VERIFIED (code) | Unchanged |
-| 04-1 | Documented Pi run writes `code` (units' venv fingerprint, units) | ✓ VERIFIED | Unchanged since previous verification; tests pass |
-| 04-2 | F3/F4 fingerprint rule (+units for system scope) | ✓ VERIFIED (as specified, F4 tightened by 04-06) | freeze-check L128-150; WR-01 residual for F3 (warning) |
-| 04-3 | Checkout at HEAD + stale venv → F4 FAIL | ✓ VERIFIED | test passes |
-| 04-4 | Identity printed; system scope refuses without fingerprint | ✓ VERIFIED | My short run printed `jabuka-soak: code d42dac399a00 (146 files, …, source children); git ee6f42709dc9` |
-| 04-5 | tmpfs refused in system scope; harness oom -900 | ✓ VERIFIED | Regression (tests; 04-06 SUMMARY CLI check) |
-| 04-6 | Cleanup order drop-ins → reload → restart → unmount; retryable | ✓ VERIFIED | systemd.py L776-830; tests pass |
-| 04-7 | One fingerprint definition; docs quote it; parity tested | ✓ VERIFIED | Harness fingerprint d42dac399a00… = SUMMARY's HEAD value |
-| 04-8 | Docs describe the rule; gate + CI soak green | ✓ VERIFIED | gate-04-06 |
+| 04-1 | Documented Pi run writes `code` (units' venv fingerprint, units) | ✓ VERIFIED | Unchanged; tests pass |
+| 04-2 | F3/F4 fingerprint rule (+units for system scope) | ✓ VERIFIED | L137-159; F3 now also always git (L258-261) |
+| 04-3 | Checkout at HEAD + stale venv → F4 FAIL | ✓ VERIFIED | Test passes |
+| 04-4 | Identity printed; system scope refuses without fingerprint | ✓ VERIFIED | My run printed `jabuka-soak: code f7ddf1810645 (146 files, …, source children); git 0c12a901680b` |
+| 04-5 | tmpfs refused in system scope; harness oom -900 | ✓ VERIFIED | Regression (tests) |
+| 04-6 | Cleanup order drop-ins → reload → restart → unmount; retryable | ✓ VERIFIED | systemd.py L806-869; tests pass |
+| 04-7 | One fingerprint definition; docs quote it; parity tested | ✓ VERIFIED | Harness f7ddf1810645 = SUMMARY's HEAD value |
+| 04-8 | Docs describe the rule; gate + CI soak green | ✓ VERIFIED | gate-04-07 |
 | 05-1 | Corrupt course.json + valid .bak → .bak + "restauré" alert | ✓ VERIFIED | Unchanged; tests in gate |
 | 05-2 | Same for settings.json / wind_manual.json | ✓ VERIFIED | Unchanged |
 | 05-3 | Schema-invalid main falls through to .bak; else default + "illisible" | ✓ VERIFIED | Unchanged |
 | 05-4 | Happy path unchanged | ✓ VERIFIED | Unchanged |
 | 05-5 | Recycled pool with in-flight cycle → stale, retry, withdrawal | ✓ VERIFIED | Unchanged |
-| 05-6 | Gate + CI soak green | ✓ VERIFIED | gate-04-06 |
-| 06-1 | F4 PASSes an aarch64 report **only** from the documented `--systemd system … --scenario race-36h` run (mode systemd, source units, package + units = HEAD) | ✗ PARTIAL | Source/mode/code rule ✓ (L169-175, tests). But a `--duration`-shortened system-scope run is not the documented run and still PASSes (same root cause as 02-4) |
-| 06-2 | F4 FAILs shim / user-scope / code-less / malformed-sha Pi reports with an actionable message | ✓ VERIFIED | 6 named tests pass; messages name `--systemd system` / "empreinte"; no-code with git at HEAD FAILs (git no longer a fallback) |
-| 06-3 | F3 unchanged; laptop report without code judged by the git rule | ✓ VERIFIED (as specified) | test_f3_laptop_report_without_code_keeps_the_git_rule passes. WR-01: head-null + match still bypasses the git rule (pre-existing, warning) |
-| 06-4 | WR-01: verified restart; retryable; verdict FAIL; `--systemd-cleanup` exit 1; own session | ✓ VERIFIED | systemd.py L55, L80, L285 `start_new_session=True`, L312 `_await_active`, L788 `cleaned = user or restarted`, L809 restarted = rc 0 and all active, L917 raise; soak.py L1176 `cleanup_fail_reasons`, L1385-1387 exit 1. Named tests pass (fake systemctl, FAKE_ACTIVE) |
-| 06-5 | WR-02: signal during cleanup recorded; report written; return 128+n | ✓ VERIFIED (cleanup window) | systemd.py L771-772; soak.py L1353 write_report then L1363-1372. test_run_soak_writes_the_report_before_honouring_a_deferred_signal passes. Residual outside the cleanup: warning |
-| 06-6 | aarch64 shim/user run prints WARNING quoting `--systemd system` | ✓ VERIFIED | `identity_messages(..., machine=platform.machine())`; `PI_F4_COMMAND`; named test passes |
-| 06-7 | SOAK.md tmux / F4 rule / cleanup outcome; FREEZE.md F4 rule; gate + CI soak green | ✓ VERIFIED | SOAK.md L216, L229-231 (`tmux new -s soak`, `tmux attach -t soak`), L96-98, L272; FREEZE.md L44-49, L87-93; doc test passes; gate-04-06 `check: ok` EXIT=0 |
+| 05-6 | Gate + CI soak green | ✓ VERIFIED | gate-04-07 |
+| 06-1 | F4 PASSes an aarch64 report **only** from the documented `--systemd system … --scenario race-36h` run | ✓ VERIFIED (was PARTIAL) | mode/source/code rule (L214-220) + full-length rule; test_f4_shortened_pi_report_fails passes |
+| 06-2 | F4 FAILs shim / user-scope / code-less / malformed-sha Pi reports | ✓ VERIFIED | Tests pass |
+| 06-3 | F3 laptop report without code judged by the git rule | ✓ VERIFIED | Test passes; head-null now FAILs too |
+| 06-4 | Verified restart; retryable; verdict FAIL; `--systemd-cleanup` exit 1; own session | ✓ VERIFIED | `_ctl` start_new_session (L331), `_await_active`, `restarted` (L843); tests pass |
+| 06-5 | Signal during cleanup recorded; report written; return 128+n | ✓ VERIFIED | `_deferred_signals` on SignalHold (L791-804); test passes |
+| 06-6 | aarch64 shim/user run prints WARNING quoting `--systemd system` | ✓ VERIFIED | Test passes |
+| 06-7 | SOAK.md tmux / F4 rule / cleanup outcome; FREEZE.md F4 rule | ✓ VERIFIED | Doc tests pass |
+| 07-1 | F3/F4 PASS a race-36h report only when it proves a full-length run of race-36h at HEAD (sha, seed, duration_s, sim_s, no late skip); fail closed | ✓ VERIFIED | Helper L162-230; 9 named cases pass (shortened Pi/laptop, late skip alone, early stop, missing fields / skipped "x", foreign sha / absent / seed 7, scenario missing at HEAD, newest quick run, head-null) |
+| 07-2 | Real `--duration 900` run → `[FAIL] F3 … essai raccourci` on a clone of HEAD | ✓ VERIFIED | My own run (sim_s 1318.2, 93 late skips) on a clone of 0c12a90 |
+| 07-3 | Harness writes duration_s, scenario_duration_s, scenario_source, scenario_sha256; a genuine full run satisfies the rule; positive fixtures unchanged | ✓ VERIFIED | My report carries all four with correct values; real historic full runs: sim_s ≥ 129640.6, seed 2026, `skipped: []`; full-length variant → F3 PASS; 0 `assert` lines removed in `git diff c02c43a..HEAD` of the test files |
+| 07-4 | WR-01: x86_64 head-null → F3 FAIL "git.head inconnu" | ✓ VERIFIED | L258-261; my real-report variant FAILs; named test passes |
+| 07-5 | WR-02: signals held from end of main run until report written; window covers shutdown **and the journal dump**; never acted on | ✗ FAILED | Report loss closed, but in system scope the signal kills journalctl (same pgrp, no `start_new_session`) and the truncated journal yields a PASS (repro above). Behaviour-dependent: the named shim-scope tests pass, my system-scope repro fails |
+| 07-6 | Shortened run WARNING at start; report.md "Essai raccourci"; SOAK.md/FREEZE.md state the full-length rule, var/soak-essais, F3 git.head, end-of-run hold + kill -9; cleanup docstring fixed | ✓ VERIFIED (content) | WARNING and "Essai raccourci" seen in my run; FREEZE.md L41, L44, L90, L96-101; SOAK.md L48-52, L61, L227-229, L279-283; doc test passes. The L101-104 promise about the journal copy is wrong (part of the 07-5 gap) |
+| 07-7 | Both venvs pass tests/soak + tests/commissioning; CI soak PASS; gate `check: ok` / EXIT=0; REQUIREMENTS.md unchanged | ✓ VERIFIED | My targeted run: 91 passed (3.13); var/gate-04-07.log 1620 passed ×2, `check: ok`, EXIT=0; CI soak PASS; `git diff c02c43a..HEAD -- .planning/REQUIREMENTS.md` empty |
 
-**Score:** 35/41 truths verified (0 present-but-behavior-unverified; 2 partial with one root cause; 4 human-only)
+**Score:** 43/48 truths verified. 1 failed (07-5). 4 human-only (SC1, SC3, SC4, 03-1). 0 present-but-behaviour-unverified.
 
-### Advisory (New Scope, Unevidenced)
+### Prohibitions (04-07, test tier)
 
-| # | Finding | Category | Why Advisory |
-|---|---------|----------|--------------|
-| 1 | WR-04 (carried): git-less F4 covers src/jabuka + 2 units only | other | Deferred by 04-06 with rationale; the F3 compensating control is weaker than stated (WR-01) |
-| 2 | WR-03 / IN-01 (carried): "restauré" badges cannot be cleared; corrupt main becomes .bak on the next write | other | Deferred by 04-06 with rationale; 04-05 truths hold |
-
-The new review's WR-01 and WR-02 are confirmed with evidence, so they are listed as ⚠️ Warnings below rather than as advisories.
+| Prohibition | Enforcement evidence | Status |
+| --- | --- | --- |
+| F3/F4 must not PASS a shortened / early-stopped / custom-scenario / other-seed / late-skip / field-less race-36h report | 8 named FAIL tests pass + my real end-to-end run | ✓ enforced |
+| Must not reject a genuine full-length report | test_frozen_repo_passes, test_f4_non_git_pi_copy_…, test_report_records_… pass; real historic full runs fit the rule | ✓ enforced |
+| F3 must not PASS on a fingerprint alone | test_f3_laptop_report_without_git_head_… passes; my repro | ✓ enforced |
+| Must not lose a soak report to a signal between the end of the main run and write_report | Shim-scope tests pass | ✓ enforced (the hold now creates the false-PASS path in 07-5) |
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 | --- | --- | --- | --- |
-| `scripts/freeze-check.sh` | no-code / not-units states and FAIL lines; header and `-h 2,27p` | ⚠️ PARTIAL | System-scope rule present and wired; no duration/skipped check (gap) |
-| `tests/commissioning/test_freeze_check.py` | CR-01 negative cases, system-scope Frozen default | ✓ VERIFIED | 7 new cases pass; missing a shortened-run case |
-| `src/jabuka/soak/systemd.py` | RESTART_VERIFY_S, CleanupIncomplete, pending_signal, _await_active, start_new_session | ✓ VERIFIED | All present and used |
-| `src/jabuka/tools/soak.py` | cleanup_fail_reasons, run_soak 128+sig after report, identity WARNING, cleanup exit 1 | ✓ VERIFIED | Wired in Harness.run / run_soak / main |
-| `tests/soak/test_soak_systemd.py` | failed-restart, rc, own-session, report-before-signal, CLI, IN-06 | ✓ VERIFIED | Pass |
-| `tests/soak/test_soak_identity.py` | aarch64 WARNING; doc binding (tmux, F4) | ✓ VERIFIED | Pass |
-| `docs/SOAK.md`, `docs/FREEZE.md` | tmux, F4 rule, cleanup outcome | ✓ VERIFIED | Present; FREEZE.md F3 wording overstates the code (WR-01) |
+| `scripts/freeze-check.sh` | head_scenario/run_state, not-scenario/short FAILs, aarch64-only fingerprint PASS, header + `-h` | ✓ VERIFIED | `-h` contains scenario_sha256, no `set ` line |
+| `src/jabuka/soak/scenario.py` | Scenario.sha256 from raw bytes | ✓ VERIFIED | Report sha = `sha256sum` of the file |
+| `src/jabuka/tools/soak.py` | SKIP_AFTER_END, new report keys, run_length_messages, end_signals | ✓ VERIFIED | Wired; my run shows all of them |
+| `src/jabuka/soak/systemd.py` | SignalHold; `_deferred_signals` on it; docstring | ⚠️ PARTIAL | Present and wired; `dump_journal` not isolated from the held signal (gap) |
+| `src/jabuka/soak/report.py` | "Essai raccourci" | ✓ VERIFIED | Seen in my report.md |
+| `tests/commissioning/test_freeze_check.py` | 9 new cases | ✓ VERIFIED | Pass |
+| `tests/soak/test_soak_identity.py` | run-length/scenario, parity, WARNING, render_md, doc tests | ✓ VERIFIED | Pass |
+| `tests/soak/test_soak_systemd.py` | SignalHold, real Harness.run end hold, run_soak | ✓ VERIFIED | Pass; no system-scope journal case (gap) |
+| `docs/SOAK.md`, `docs/FREEZE.md` | Full-length rule, var/soak-essais, F3 git.head, hold + kill -9 | ⚠️ PARTIAL | Present; SOAK.md L101-104 overpromises for the journal copy |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 | --- | --- | --- | --- | --- |
-| freeze-check.sh | var/soak/*/report.json | aarch64: mode + code.source + code.sha256 + code.units → no-code / not-units / match | ✓ WIRED | L169-176 → L190-199 |
-| freeze-check.sh | var/soak/*/report.json | scenario duration actually run (sim_s / skipped) | ✗ NOT_WIRED | Never read (gap 02-4) |
-| tools/soak.py | soak/systemd.py | Harness.run → sup.cleanup() → cleanup_fail_reasons; run_soak → write_report → pending_signal → 128+n | ✓ WIRED | L784-792, L1353-1372 |
-| soak/systemd.py | systemctl | `_await_active` polls `show -p ActiveState`; restarted = rc 0 and all active | ✓ WIRED | L312-320, L809 |
-| docs/FREEZE.md | freeze-check.sh | F4 wording bound by test_soak_identity.py | ✓ WIRED | Doc test passes |
+| freeze-check.sh | var/soak/*/report.json | head_scenario + run_state → not-scenario / short before any PASS | ✓ WIRED | L221-230 → L246-249 |
+| tools/soak.py | soak/scenario.py | build_report writes sc.sha256 / source / duration_s / self.duration | ✓ WIRED | Values seen in my report |
+| tools/soak.py | soak/systemd.py | end_signals.start → shutdown/build_report/cleanup → write_report → release → 128+n | ✓ WIRED | L795-811, L1385-1412 |
+| SKIP_AFTER_END | freeze-check.sh | parity test | ✓ WIRED | test_freeze_check_matches_the_harness_skip_reason passes |
+| SignalHold | journalctl child | the held signal must not reach the evidence-producing child | ✗ NOT_WIRED | No `start_new_session` in dump_journal (gap) |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 | --- | --- | --- | --- | --- |
-| report.json `code` | sha256 / source | `compute_code_identity` (real run: d42dac399a00, 146 files, source children) | Yes | ✓ FLOWING |
-| report.json `systemd.cleanup` | restarted / restart_rc / active | `_cleanup_system` → `_await_active` | Yes (fake systemctl tests) | ✓ FLOWING |
-| freeze-check F3/F4 | cstate | report `code`, `mode` + git archive HEAD | Yes | ✓ FLOWING (but sim_s ignored) |
+| report.json run length | duration_s / sim_s / skipped / scenario_sha256 | Harness (real run: 900.0 / 1318.2 / 93 / dca4d6ae…) | Yes | ✓ FLOWING |
+| freeze-check F3/F4 | state short / not-scenario | report keys + `git show HEAD:…race-36h.json` | Yes | ✓ FLOWING |
+| tracebacks check (system scope) | proc/*-journal.log | journalctl stdout | Truncated or empty under a group signal or timeout, with no error recorded | ⚠️ HOLLOW under that condition |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 | --- | --- | --- | --- |
-| 04-06 test files | `.venv313/bin/python -m pytest tests/commissioning/test_freeze_check.py tests/soak/test_soak_identity.py tests/soak/test_soak_systemd.py tests/commissioning/test_runbook_docs.py` | 92 passed in 28.7 s | ✓ PASS |
-| Full gate (orchestrator log) | `tail var/gate-04-06.log` | 1603 passed, 4 skipped ×2, `check: ok`, EXIT=0 | ✓ PASS |
-| CI soak at HEAD | `var/soak/20261108T173414Z-ci/report.json` | PASS, git 7f71d01 clean, code d42dac399a00 | ✓ PASS |
-| Code unchanged since 256a762 | `git diff --stat 256a762 HEAD -- src scripts deploy pyproject.toml tests docs` | empty | ✓ PASS |
-| freeze-check on the repo | `bash scripts/freeze-check.sh --pre --skip-gate` | F1 PASS; F3 FAIL (laptop soak on 0fff60c); F4 FAIL (no Pi report); F5 FAIL (À REMPLIR); F6 FAIL (stale wheelhouse); F8 WARN 18; F9 HUMAN; rc 1 | ✓ as expected today |
-| Shortened race-36h, real harness | `python -m jabuka.tools.soak --scenario race-36h --duration 900 --out <scratchpad>` | ~20 s wall, verdict PASS, sim_s 1322, faults 1, skipped 93 | ✗ (gap evidence) |
-| Shortened run through freeze-check | scratch clone of HEAD + that report → `freeze-check --pre --skip-gate` | `[PASS] F3 portable : … PASS sur ee6f42709dc9, code identique à HEAD` | ✗ FAIL (gap confirmed) |
-| Review repro CR-01 (F4) | `pytest test_repro.py -s` | `[PASS] F4 Pi : … paquet installé = src/jabuka à HEAD`, `freeze-check: ok` | ✗ FAIL (gap confirmed) |
-| Review repro WR-01 (F3 head null) | `pytest test_repro2.py -s` | `[PASS] F3 portable : … paquet installé = src/jabuka à HEAD` after a deploy/pyproject change | ⚠️ warning confirmed |
+| 04-07 test files (3.13) | `pytest tests/commissioning/test_freeze_check.py tests/soak/test_soak_identity.py tests/soak/test_soak_systemd.py` | 91 passed in 31 s | ✓ PASS |
+| Full gate (orchestrator log) | `var/gate-04-07.log` | 1620 passed, 4 skipped ×2, `All checks passed!`, `check: ok`, EXIT=0 | ✓ PASS |
+| CI soak at HEAD code | `var/soak/20261108T190356Z-ci/report.json` | PASS, git ee8d5e2 clean, code f7ddf1810645, scenario_sha256 present | ✓ PASS |
+| Real shortened race-36h | `python -m jabuka.tools.soak --scenario race-36h --duration 900 --out <scratchpad>` | rc 0, PASS, WARNING, 4 new keys, "Essai raccourci" | ✓ PASS |
+| Shortened run through freeze-check | clone of 0c12a90 + that report → `freeze-check --pre --skip-gate` | `[FAIL] F3 portable : … essai raccourci (… 93 panne(s) après la fin)` | ✓ PASS (gap closed) |
+| Full-length variant | same report, duration_s 129600 / sim_s 129640.6 / skipped [] | `[PASS] F3 … PASS sur 0c12a901680b` | ✓ PASS |
+| WR-01 | same full report, git nulled | `[FAIL] F3 … git.head inconnu (rapport sans git)` | ✓ PASS |
+| CR-01 repro (signal) | real dump_journal under SignalHold, `setsid`, fake journalctl, killpg SIGINT at 1 s | held 2; journal truncated; 0 traceback blocks (control: 1) | ✗ FAIL (gap) |
+| CR-01 repro (timeout) | dump_journal with TimeoutExpired | no file, no error recorded | ✗ FAIL (gap) |
+| Debt markers in the 04-07 diff | grep TBD/FIXME/XXX/TODO/HACK on added lines | none | ✓ PASS |
 
 ### Probe Execution
 
@@ -236,60 +275,58 @@ No `scripts/*/tests/probe-*.sh` exist and the plans declare none. The phase's ru
 
 | Requirement | Source Plan | Description | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| REL-02 | 04-01, 04-03, 04-04, 04-05, 04-06 | ~36 h unattended on the Pi 3B, verified by an accelerated fault-injected soak | ? NEEDS HUMAN (software ✓; freeze gate partial) | Harness and Pi path ready; the Pi run is human (10 Nov). The freeze gate can certify a shortened run (gap). REQUIREMENTS.md already marks it Complete, which is premature until the Pi soak runs |
-| REL-03 | 04-02, 04-04, 04-06 | On-boat commissioning runbook for 12–13 Nov | ✓ SATISFIED (doc) | COMMISSIONING/FREEZE/SOAK/SPARE-SD; on-board execution human |
+| REL-02 | 04-01, 04-03, 04-04, 04-05, 04-06, 04-07 | ~36 h unattended on the Pi 3B, verified by an accelerated fault-injected soak | ✗ BLOCKED (gap 07-5) + ? NEEDS HUMAN | Freeze gate now sound. The Pi soak verdict can be a false PASS after an end-of-run Ctrl-C. The Pi run itself is human (10 Nov). REQUIREMENTS.md correctly unchecked ("Gaps Found") |
+| REL-03 | 04-02, 04-04, 04-06, 04-07 | On-boat commissioning runbook for 12–13 Nov | ✓ SATISFIED (doc) / ? human on board | COMMISSIONING/FREEZE/SOAK/SPARE-SD; FREEZE.md steps 1-2 now say "complet (sans `--duration`)" |
 
-No orphaned requirements. REQUIREMENTS.md maps only REL-02 and REL-03 to Phase 4, and both are claimed.
+No orphaned requirements. REQUIREMENTS.md maps only REL-02 and REL-03 to Phase 4, and both are claimed by plans.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 | --- | --- | --- | --- | --- |
-| scripts/freeze-check.sh | 153-176 | Report selection/judgement ignores sim_s and skipped faults (fail-open PASS for a shortened run) | 🛑 Blocker (gap 02-4) | F3/F4 can certify a ~20 s smoke run as the 36 h soak |
-| scripts/freeze-check.sh | 198 | Fingerprint-only PASS also applies to F3 (head null) | ⚠️ Warning (review WR-01) | Contradicts FREEZE.md L87; weakens the WR-04 compensating control |
-| src/jabuka/tools/soak.py | 781-787 vs 1353 | Signals during shutdown()/build_report() not deferred | ⚠️ Warning (review WR-02) | Report loss → re-run; never a false PASS |
-| src/jabuka/soak/systemd.py / docs/SOAK.md | docstring / step 8 | "second Ctrl-C" wording stale (review IN-01) | ℹ️ Info | Hung cleanup only stoppable with kill -9 (bounded by timeouts) |
+| src/jabuka/soak/systemd.py | 740-744 | Evidence child shares the process group of a signal-holding parent; rc ignored; timeout → silent empty | 🛑 Blocker (gap 07-5) | False PASS of the Pi soak, certified by F4 |
+| docs/SOAK.md | 101-104 | Doc promises a Ctrl-C during the journal copy is harmless | ⚠️ Warning (part of the gap) | Invites the trigger |
+| src/jabuka/soak/systemd.py | 899-906 | `unmount()` in the same group | ℹ️ Info | Masked by the `umount -l` retry |
+| src/jabuka/tools/soak.py | 1499-1503 | userns parent waits 30 s (IN-03) | ℹ️ Info | Laptop; never a false PASS |
 | docs/FREEZE.md | "Lock revu" line | `À REMPLIR` | ℹ️ Info | Intentional owner input, enforced by F5 |
-| — | — | TBD/FIXME/XXX/TODO/HACK in 04-06 files | none | Scan clean |
 
 ### Human Verification Required
 
-1. **Laptop race-36h on the final HEAD, full length.** Run without `--duration`. Leave no newer short race-36h run in `var/soak/` afterwards: until the gap is fixed, freeze-check reads the newest one.
-2. **Pi 3B system-scope soak.** Rebuild the wheelhouse first: it must reproduce d42dac399a00… Then re-provision and install tmux. Run inside `tmux new -s soak`. Expect `source units`, no WARNING, verdict PASS and `cleanup.restarted true`. Afterwards reboot and check `is-active`.
+1. **Laptop race-36h on the final HEAD, full length.** Quick runs go to `--out var/soak-essais`.
+2. **Pi 3B system-scope soak.** Rebuild the wheelhouse and re-provision first. Run inside tmux, and do not press Ctrl-C at the end. Expect exit 0 and non-empty journal copies.
 3. **Pi budgets.** Fill in SOAK.md "Budgets Pi à confirmer".
 4. **5 real power pulls.** Run logcheck after each one.
-5. **Freeze on 11 Nov.** Follow FREEZE.md. freeze-check must exit 0, after the 02-4 fix.
-6. **Spare SD.** Clone and boot it. The fingerprint must equal the original card's and the Pi report's `code.sha256`.
-7. **12 Nov capture replay.** Run the rehearsal with `--capture`.
-8. **On-board commissioning on 12–13 Nov.** The helm tablet must show wind and laylines at night.
+5. **Freeze on 11 Nov.** freeze-check must exit 0.
+6. **Spare SD.** Clone and boot it; the fingerprint must match.
+7. **12 Nov capture replay.**
+8. **On-board commissioning on 12–13 Nov.**
 9. **Runbook timings and SL proofreading.**
 
 ### Gaps Summary
 
-**Previous gap 02-4 / CR-01 (F4 accepted shim, `--systemd user` or code-less Pi reports): CLOSED.** It is verified in code, the tests pass, and the repro cases are now permanent FAIL tests. The previous advisories WR-01 (unverified restart) and WR-02 (report lost to a signal during cleanup) are closed as specified as well.
+**All three items 04-07 targeted are closed, verified by my own runs rather than the SUMMARY.**
+- The freeze gate now counts only a full-length race-36h run of the scenario at HEAD. The verifier's previous `[PASS] F3` reproduction is now `[FAIL] … essai raccourci`, while a full-length report still PASSes.
+- F3 always needs `git.head`.
+- A signal at the end of a run no longer loses report.json.
 
-**One gap remains on the same freeze truth (02-4, plus 06-1), with a new root cause.** freeze-check judges a race-36h report by its name, verdict, mode and code only. It never checks that the full scenario actually ran. I proved this end to end: a ~20-second `--scenario race-36h --duration 900` run from the real harness gets verdict PASS (93 of 94 faults "skipped") and turns F3 green on a clone of HEAD. The fixture shows the same for a system-scope Pi report on F4. Because the newest report wins, such a run made after the real soak replaces the evidence for ROADMAP SC1/SC3.
+**One new blocker, introduced by the WR-02 fix itself (review CR-01, confirmed).**
+- The end-of-run hold keeps the harness alive, but a terminal Ctrl-C or a group SIGHUP still kills its `journalctl` child.
+- `dump_journal` then silently writes a truncated journal, and the tracebacks check passes on it. A Pi soak can therefore report PASS without its traceback evidence, and F4 certifies it.
+- A journalctl timeout over 120 s gives the same silent-empty result. That path is older than 04-07.
 
-The fix is small:
-1. In the helper, compare `sim_s` with `duration_s` of `race-36h.json` at HEAD, and reject any skip "after the end of the run". Map that to a new FAIL state `short` for F3 and F4.
-2. Optionally, make the harness itself give a non-PASS verdict when `--duration` is shorter than the scenario.
-3. Add two negative tests, and give the Frozen fixture realistic `sim_s` values.
+**The fix is small:** isolate the child, record a journal error, make the tracebacks check non-PASS on that error, add one test, and correct SOAK.md L101-104. It should land before the 10 Nov Pi soak.
 
-It should land before the 11 Nov freeze. The 10 Nov Pi soak does not depend on it. Two cheap fixes can go in the same change:
-- WR-01: restrict the L198 fingerprint-only PASS to aarch64, so F3 always applies the git rule as FREEZE.md says.
-- WR-02 (optional): defer signals from `shutdown()` to `write_report`.
-
-**If the owner decides to accept this instead** (the documented commands never pass `--duration`, and report.md shows `sim_s` and the skipped faults), add to this file's frontmatter:
+**If the owner prefers to accept the residual instead,** the documented run uses tmux and no Ctrl-C, and the owner checks exit code 0 and the journal files. Add this to the frontmatter:
 
 ```yaml
 overrides:
-  - must_have: "The 2026-11-11 freeze checker passes only with a clean tree, a green gate, laptop AND Pi race-36h soak reports PASS on code identical to HEAD"
-    reason: "Documented procedures never use --duration; the owner checks sim_s ≈ 129600 and no 'after the end of the run' skips in each report.md before the freeze"
+  - must_have: "WR-02 (04-07 truth 5): from the end of the main run until report.json is written, SIGINT/SIGTERM/SIGHUP are held, never acted on; the window covers shutdown and the journal dump"
+    reason: "Pi soak runs in tmux and is never interrupted at the end; the owner accepts the Pi report only with exit code 0 (not 128+n) and non-empty proc/core-journal.log and proc/ingest-journal.log"
     accepted_by: "<owner>"
     accepted_at: "<ISO timestamp>"
 ```
 
 ---
 
-_Verified: 2026-11-08T17:46:38Z_
+_Verified: 2026-11-08T19:20:29Z_
 _Verifier: Claude (gsd-verifier)_
