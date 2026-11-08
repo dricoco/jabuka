@@ -2,8 +2,10 @@
 
 Keys read by scripts/freeze-check.sh: schema, verdict, scenario, mode, host.machine, git.head,
 git.dirty (plan 04-02), and code.sha256, code.source, code.units (plan 04-04: the fingerprint of
-the jabuka package that actually ran, see FINGERPRINT_SH; additive, schema stays 1). Check names
-are stable (04-03 reads leak_slope).
+the jabuka package that actually ran, see FINGERPRINT_SH; additive, schema stays 1), and seed,
+sim_s, duration_s, scenario_sha256 and skipped[].reason (plan 04-07: F3/F4 count only a
+full-length run of the race-36h scenario at HEAD). scenario_duration_s and scenario_source are
+recorded for the reader. Check names are stable (04-03 reads leak_slope).
 
 Verdict: FAIL when any fault is not ok or any check is ok False. A check that cannot be judged has
 ok None ("insufficient data ..." / "skipped: ...") and never makes the verdict PASS on its own:
@@ -497,6 +499,16 @@ def render_md(report: dict[str, Any]) -> str:
         f"{_fmt(report.get('speed_achieved'))}× ; {_fmt(report.get('sim_s'))} s simulées en "
         f"{_fmt(report.get('wall_s'))} s réelles",
     ]
+    dur, full = report.get("duration_s"), report.get("scenario_duration_s")
+    if (
+        all(isinstance(v, int | float) and not isinstance(v, bool) for v in (dur, full))
+        and dur < full
+    ):
+        lines.append(
+            f"- **Essai raccourci** : {_fmt(dur)} s simulées demandées sur {_fmt(full)} s du "
+            "scénario ; les pannes après la fin sont SKIPPED et freeze-check F3/F4 ne comptent "
+            "pas ce rapport"
+        )
     shim = report.get("shim") or {}
     if shim.get("overrides"):
         lines.append(f"- Shim : {shim['overrides']} (raison : {shim.get('why')})")

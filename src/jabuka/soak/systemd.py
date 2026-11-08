@@ -13,8 +13,10 @@ Two scopes:
   production configuration, then the soak log fs unmounted. It counts as done only once all of
   that ran and both units are ActiveState active again (an interrupted or failed cleanup is
   redone by the next call). SIGINT/SIGTERM/SIGHUP arriving while it runs are held back and
-  recorded in ``pending_signal``: jabuka-soak honours them only after report.json is written,
-  and ``--systemd-cleanup`` exits with the repair's own result. /run is cleared at reboot anyway.
+  recorded in ``pending_signal``; jabuka-soak also holds them over the whole end of the run
+  (shutdown, journal copy, final checks, cleanup, report written and handed back, plan 04-07)
+  and honours them only after report.json is written, and ``--systemd-cleanup`` exits with the
+  repair's own result. /run is cleared at reboot anyway.
 - **user** (the laptop, no sudo): transient units through ``systemd-run --user`` with the shipped
   Type=, Restart=, RestartSec= and WatchdogSec= (and StartLimitIntervalSec=0). The hardening
   directives (User=, ProtectSystem=, PrivateDevices=, ...) are NOT applied: a user manager cannot
@@ -51,6 +53,50 @@ RUN_LINK_DIR = Path("/run/jabuka-soak")
 REAL_GPSD_PORT = 2947
 SCOPES = ("user", "system")
 DEFERRED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+class SignalHold:
+    """Holds SIGINT, SIGTERM and SIGHUP back between start() and release(), recording the first
+    one in ``signal`` (never re-raised). Main thread only: elsewhere start() is a no-op. Used for
+    the soak cleanup and for the whole end of a soak run (review WR-02, plan 04-07)."""
+
+    def __init__(self) -> None:
+        self.signal: int | None = None
+        self._prev: dict[int, Any] = {}
+        self._active = False
+
+    def _record(self, signum: int, _frame: Any) -> None:
+        if self.signal is None:
+            self.signal = signum
+
+    def start(self) -> SignalHold:
+        if self._active or threading.current_thread() is not threading.main_thread():
+            return self
+        self._prev = {}
+        for s in DEFERRED_SIGNALS:
+            with contextlib.suppress(ValueError, OSError):
+                self._prev[s] = signal.signal(s, self._record)
+        self._active = True
+        return self
+
+    def release(self) -> int | None:
+        """Restore the previous handlers (idempotent); the first held signal, or None."""
+        if self._active:
+            for s, handler in self._prev.items():
+                with contextlib.suppress(ValueError, OSError, TypeError):
+                    signal.signal(s, handler if handler is not None else signal.SIG_DFL)
+            self._prev = {}
+            self._active = False
+        return self.signal
+
+    def __enter__(self) -> SignalHold:
+        return self.start()
+
+    def __exit__(self, *_exc: object) -> bool:
+        self.release()
+        return False
+
+
 # seconds to wait for both production units to be ActiveState "active" after the cleanup restart
 RESTART_VERIFY_S = 20.0
 OOM_SCORE_ADJ = Path("/proc/self/oom_score_adj")
@@ -749,36 +795,24 @@ class SystemdBackend:
         or raised): jabuka-soak honours it after report.json is written (review WR-02), and
         ``--systemd-cleanup`` treats the repair's result as its exit code. The original handlers
         are restored. Main thread only (signal handlers cannot be set elsewhere)."""
-        if threading.current_thread() is not threading.main_thread():
-            yield
-            return
-        got: list[int] = []
-
-        def record(signum: int, _frame: Any) -> None:
-            if not got:
-                got.append(signum)
-
-        prev: dict[int, Any] = {}
-        for s in DEFERRED_SIGNALS:
-            with contextlib.suppress(ValueError, OSError):
-                prev[s] = signal.signal(s, record)
+        hold = SignalHold().start()
         try:
             yield
         finally:
-            for s, handler in prev.items():
-                with contextlib.suppress(ValueError, OSError, TypeError):
-                    signal.signal(s, handler if handler is not None else signal.SIG_DFL)
-            if got and self.pending_signal is None:
-                self.pending_signal = got[0]
+            got = hold.release()
+            if got is not None and self.pending_signal is None:
+                self.pending_signal = got
 
     def cleanup(self) -> dict[str, Any]:
         """Always safe to call; idempotent once it has completed. System scope, in this order:
         drop-ins removed, daemon-reload, the production units restarted, then the soak log fs
         unmounted (the restarted units no longer hold it). It is marked done only at the very
-        end and only when both units are active again, so an interrupted cleanup (exception,
-        second Ctrl-C) or a failed restart is redone by the next call (atexit,
-        ``--systemd-cleanup``); SIGINT/SIGTERM/SIGHUP arriving meanwhile are recorded in
-        pending_signal (review WR-01/WR-02). User scope: transient units stopped."""
+        end and only when both units are active again, so a cleanup interrupted by an exception
+        or a kill, or a failed restart, is redone by the next call (atexit,
+        ``--systemd-cleanup``). SIGINT/SIGTERM/SIGHUP never interrupt it: they are held and
+        recorded in pending_signal (review WR-01/WR-02). A hung cleanup is bounded by the _ctl
+        timeouts and can only be stopped with kill -9, then ``--systemd-cleanup``. User scope:
+        transient units stopped."""
         if self.cleaned:
             return self.cleanup_report
         self._stop.set()

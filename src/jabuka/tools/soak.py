@@ -209,6 +209,9 @@ class Harness:
         self._course_check = 0.0
         self.rng = random.Random(self.seed)
         self.sampler: probes.Sampler | None = None
+        # held from the end of the main run until run_soak has written and handed back the
+        # report (review WR-02, plan 04-07)
+        self.end_signals = sd.SignalHold()
         self.started_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # -- timeline ----------------------------------------------------------------------------
@@ -745,6 +748,9 @@ class Harness:
         self.wait_sim(self.duration)
 
     def run(self) -> dict[str, Any]:
+        """The main run, then the end of the run (shutdown, report, cleanup). The returned report
+        comes with end_signals still holding SIGINT/SIGTERM/SIGHUP: the caller must call
+        end_signals.release() once the report is written (run_soak does)."""
         try:
             if self.scope == "system":
                 self.prepare_system()
@@ -779,18 +785,29 @@ class Harness:
         except (SoakAbort, sd.SetupError) as exc:
             self.setup_error = str(exc)
             self.log("abort", error=str(exc))
-        finally:
+        except BaseException:
+            # a signal or a crash during the main run still aborts it with no report; the atexit
+            # cleanup restores production
             self.shutdown()
+            raise
+        # review WR-02, plan 04-07: from here until run_soak has written and handed back the
+        # report, SIGINT/SIGTERM/SIGHUP are held, never acted on
+        self.end_signals.start()
         try:
-            report = self.build_report()
-        finally:
-            cleanup = self.sup.cleanup()  # system scope: production units restored
-        if self.scope is not None:
-            report["systemd"]["cleanup"] = cleanup
-            reasons = cleanup_fail_reasons(self.scope, cleanup)
-            if reasons:
-                report["verdict"] = "FAIL"
-                report.setdefault("fail_reasons", []).extend(reasons)
+            self.shutdown()
+            try:
+                report = self.build_report()
+            finally:
+                cleanup = self.sup.cleanup()  # system scope: production units restored
+            if self.scope is not None:
+                report["systemd"]["cleanup"] = cleanup
+                reasons = cleanup_fail_reasons(self.scope, cleanup)
+                if reasons:
+                    report["verdict"] = "FAIL"
+                    report.setdefault("fail_reasons", []).extend(reasons)
+        except BaseException:
+            self.end_signals.release()
+            raise
         return report
 
     def probe_pids(self) -> dict[str, int | None]:
@@ -1204,6 +1221,19 @@ PI_F4_COMMAND = (
 )
 
 
+def run_length_messages(sc: Scenario, duration: float) -> list[str]:
+    """The start WARNING of a shortened run (--duration below the scenario's): freeze-check F3/F4
+    will not count its report (plan 04-07)."""
+    if duration >= sc.duration_s:
+        return []
+    return [
+        f"jabuka-soak: WARNING: shortened run (--duration {duration:g} < scenario "
+        f"{sc.duration_s:g} sim s): faults after the end are SKIPPED and freeze-check F3/F4 will "
+        "not count this report (essai raccourci); run quick tests with --out var/soak-essais "
+        "(docs/SOAK.md)"
+    ]
+
+
 def identity_messages(
     scope: str | None,
     code: dict[str, Any] | None,
@@ -1348,30 +1378,34 @@ def run_soak(args: argparse.Namespace, sc: Scenario) -> int:
             h._tl.close()
         shutil.rmtree(run_dir, ignore_errors=True)
         return 2
-    for line in lines:
+    for line in [*lines, *run_length_messages(sc, h.duration)]:
         print(line, file=sys.stderr, flush=True)
     _ACTIVE.append(h)
     print(f"jabuka-soak: {sc.name} -> {run_dir}", flush=True)
     try:
-        report = h.run()
+        try:
+            report = h.run()
+        finally:
+            _ACTIVE.remove(h)
+        jpath, mpath = rep.write_report(run_dir, report)
+        if report["verdict"] == "PASS" and not args.keep:
+            for d in ("racepack",):
+                shutil.rmtree(run_dir / d, ignore_errors=True)
+        _give_back(run_dir)
     finally:
-        _ACTIVE.remove(h)
-    jpath, mpath = rep.write_report(run_dir, report)
-    if report["verdict"] == "PASS" and not args.keep:
-        for d in ("racepack",):
-            shutil.rmtree(run_dir / d, ignore_errors=True)
-    _give_back(run_dir)
+        held = h.end_signals.release()  # plan 04-07: held since the end of the main run
     with contextlib.suppress(OSError, ValueError):  # SSH gone: stdout may be a dead pipe
         print(f"jabuka-soak: report {mpath}", flush=True)
         print(f"jabuka-soak: verdict {report['verdict']}", flush=True)
         for r in report.get("fail_reasons", []):
             print(f"jabuka-soak:   {r}", flush=True)
-    sig = getattr(h.sup, "pending_signal", None)
-    if sig is not None:  # held back during the cleanup (review WR-02): the report comes first
+    # held back at the end of the run or during the cleanup (review WR-02): the report first
+    sig = held if held is not None else getattr(h.sup, "pending_signal", None)
+    if sig is not None:
         with contextlib.suppress(OSError, ValueError):
             print(
-                f"jabuka-soak: signal {int(sig)} received during the cleanup: report written, "
-                f"exiting {128 + int(sig)}",
+                f"jabuka-soak: signal {int(sig)} received at the end of the run: report "
+                f"written, exiting {128 + int(sig)}",
                 file=sys.stderr,
                 flush=True,
             )
