@@ -99,6 +99,11 @@ Règle par élément :
   Sinon « essai raccourci » ou « ne prouve pas le scénario race-36h de HEAD ». `freeze-check`
   juge le rapport race-36h le plus récent de chaque machine : garder les essais rapides hors de
   `var/soak/` (`--out var/soak-essais`).
+- **F3 et F4 (soak terminé sans signal)** : un rapport dont `end_signal` n'est pas null (Ctrl-C,
+  SIGTERM ou SIGHUP reçu à la fin du soak : sortie 128 + signal), ou absent (banc antérieur au
+  plan 04-08), donne « soak interrompu » ; un rapport en mode systemd dont
+  `systemd.journal.complete` n'est pas true donne « copie du journal des unités incomplète ». Il
+  faut alors refaire le soak, en attendant `jabuka-soak: verdict` sans Ctrl-C.
 
 ## Correctif d'urgence après le gel
 

@@ -58,7 +58,7 @@ Chaque exécution crée `var/soak/<horodatage UTC>-<scénario>/` :
 | Fichier | Contenu |
 |---|---|
 | `report.md` | verdict, **mesures et budgets** (valeur mesurée à côté de chaque budget du CONTEXT), chronologie des pannes, tableau des contrôles |
-| `report.json` | la même chose, schéma 1 (lu par `scripts/freeze-check.sh`, plan 04-02) ; bloc `code` (plan 04-04 : empreinte `sha256` du paquet exécuté, nombre de `files`, `package_dir`, `source` `units` ou `children`, `units` = sha256 des unités installées en portée system) ; clés du plan 04-07 : `duration_s` (durée simulée visée), `scenario_duration_s`, `scenario_source` et `scenario_sha256` (sha256 du fichier de scénario exécuté), que `freeze-check` compare avec `src/jabuka/soak/scenarios/race-36h.json` à HEAD, avec `seed`, `sim_s` et les pannes SKIPPED ; en mode systemd, bloc `systemd` (portée, unités, `n_restarts`, nettoyage, `harness_oom_score_adj`), sur un Pi, bloc `pi` |
+| `report.json` | la même chose, schéma 1 (lu par `scripts/freeze-check.sh`, plan 04-02) ; bloc `code` (plan 04-04 : empreinte `sha256` du paquet exécuté, nombre de `files`, `package_dir`, `source` `units` ou `children`, `units` = sha256 des unités installées en portée system) ; clés du plan 04-07 : `duration_s` (durée simulée visée), `scenario_duration_s`, `scenario_source` et `scenario_sha256` (sha256 du fichier de scénario exécuté), que `freeze-check` compare avec `src/jabuka/soak/scenarios/race-36h.json` à HEAD, avec `seed`, `sim_s` et les pannes SKIPPED ; en mode systemd, bloc `systemd` (portée, unités, `n_restarts`, nettoyage, `harness_oom_score_adj`), sur un Pi, bloc `pi` ; clés du plan 04-08 : `end_signal` (numéro du signal reçu à la fin du soak, sinon null) et, en mode systemd, `systemd.journal` (`complete`, `error`, `entries` par rôle) |
 | `samples.csv` | une ligne par seconde réelle et par rôle : RSS, fd, threads, CPU ; sur un Pi, une ligne `pi` toutes les 10 s (`temp_c`, `throttled`) |
 | `timeline.jsonl` | événements : démarrages, READY, sorties, pannes, corruption |
 | `proc/<rôle>-<n>.log` | sortie horodatée de chaque processus (n = numéro de démarrage) ; en mode systemd, `proc/<rôle>-journal.log` (journal de l'unité) |
@@ -100,9 +100,16 @@ redémarrages faits par systemd (`NRestarts`, bloc `systemd` de `report.json`).
   `restarted: false` dans `report.json` (avec les états des unités), verdict FAIL, nettoyage
   refait à la sortie, et `--systemd-cleanup` rend le code 1. Un Ctrl-C, SIGTERM ou SIGHUP reçu
   pendant toute la **fin du soak** (arrêt des unités, copie du journal, contrôles finaux,
-  nettoyage, écriture et remise du rapport) ne l'interrompt plus et ne fait plus perdre le
-  rapport : le signal est retenu jusqu'à ce que `report.json` soit écrit, puis le banc sort avec
-  le code 128 + signal. Un drop-in resté d'une exécution interrompue bloque
+  nettoyage, écriture et remise du rapport) ne fait plus perdre le rapport : le banc le retient
+  et l'annonce par une ligne `jabuka-soak: signal … held`, termine, écrit `report.json`, puis
+  sort avec le code 128 + signal. `journalctl`, `umount` et `vcgencmd` tournent dans leur
+  **propre session** : le Ctrl-C du terminal ne les tue pas et la copie du journal reste
+  complète. Mais l'exécution compte alors comme un **soak interrompu** : `report.json` →
+  `end_signal`, et freeze-check F3/F4 la refusent. Si la copie du journal échoue (code de retour
+  de `journalctl` non nul, plus de 300 s, erreur, ou aucune ligne pour une unité en portée
+  system), le contrôle `tracebacks` est FAIL (« journal dump incomplete ») et le verdict aussi,
+  avec le détail dans `report.json` → `systemd.journal` (plan 04-08). Un drop-in resté d'une
+  exécution interrompue bloque
   toute nouvelle exécution ; `sudo bash scripts/soak.sh --systemd system --systemd-cleanup`
   répare. `/run` est de toute façon vidé au redémarrage du Pi. En portée system, le banc (root)
   abaisse aussi son propre `oom_score_adj` à -900 : un OOM-kill du banc sauterait le nettoyage.
@@ -113,7 +120,9 @@ redémarrages faits par systemd (`NRestarts`, bloc `systemd` de `report.json`).
   SIGSTOP, pas un défaut de l'unité.
 - Les traces sont lues dans le journal des unités (`journalctl -u … -o json`), recopiées dans
   `proc/<rôle>-journal.log` au même format que les journaux du superviseur, avec les lignes de
-  systemd (« Main process exited », « Watchdog timeout », « Scheduled restart job »).
+  systemd (« Main process exited », « Watchdog timeout », « Scheduled restart job »). La copie
+  tourne dans sa propre session, en 300 s au plus, et un échec n'est jamais silencieux
+  (« journal dump incomplete », voir le nettoyage ci-dessus).
 
 Validation sur le portable (systemd 260, gestionnaire utilisateur), 2026-11-07, commit 38c275a :
 
@@ -265,7 +274,10 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
    scp -r pi@10.42.0.1:jabuka/var/soak/<ts>-race-36h var/soak/   # depuis le portable
    ```
 
-   (ou l'adresse Ethernet du Pi). Le dossier appartient à l'utilisateur qui a lancé sudo.
+   (ou l'adresse Ethernet du Pi). Le dossier appartient à l'utilisateur qui a lancé sudo. Ne
+   rapatrier qu'une exécution dont le banc est sorti avec le code 0, au verdict PASS, et dont
+   `proc/core-journal.log` et `proc/ingest-journal.log` ne sont pas vides (`end_signal` null et
+   `systemd.journal.complete` true dans `report.json`).
 7. **Redémarrer le Pi**, puis vérifier qu'il n'y a plus aucun drop-in du soak :
 
    ```bash
@@ -279,8 +291,12 @@ tablette). Prévoir ~2 h à 20× (~4 h si l'on doit repasser à 10×).
 8. **Si le soak a été interrompu** (coupure, SSH perdu, Ctrl-C pendant le soak) :
    `cd ~/jabuka && sudo bash scripts/soak.sh --systemd system --python
    /opt/jabuka/venv/bin/python --systemd-cleanup`. La fin du soak ne s'arrête plus sur un Ctrl-C
-   (il est retenu jusqu'à l'écriture de `report.json`) ; si elle semble bloquée (plus de ~10 min
-   sans nouvelle ligne), `sudo kill -9 <pid du banc>`, puis la commande ci-dessus. Code 0 quand
+   (il est retenu jusqu'à l'écriture de `report.json`) ; si elle semble bloquée (plus de ~15 min
+   sans nouvelle ligne), `sudo kill -9 <pid du banc>`, puis la commande ci-dessus. **Ne pas
+   appuyer sur Ctrl-C à la fin du soak** : attendre la ligne `jabuka-soak: verdict …`. Un Ctrl-C
+   à la fin donne un « soak interrompu » (sortie 128 + signal) que F4 refuse, et le soak est à
+   refaire. Depuis le plan 04-08, le terminal garde les dernières lignes du banc après un Ctrl-C
+   (`tee -i`). Code 0 quand
    `systemctl cat jabuka-core` ne contient plus `50-jabuka-soak` **et** que les deux unités sont
    actives ; code 1 sinon :
    `systemctl status jabuka-core jabuka-ingest-fastnet`, puis redémarrer le Pi (étape 7).

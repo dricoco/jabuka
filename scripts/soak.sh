@@ -73,7 +73,9 @@ ARGS=(--scenario "$SCENARIO" --out "$OUT")
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
 set +e
-"$PY" -m jabuka.tools.soak "${ARGS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} 2>&1 | tee "$LOG"
+# the harness holds a Ctrl-C at the end of the soak (plans 04-07/04-08); tee -i ignores it too, so
+# the terminal and $LOG keep the report path and the verdict
+"$PY" -m jabuka.tools.soak "${ARGS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} 2>&1 | tee -i "$LOG"
 RC=${PIPESTATUS[0]}
 REPORT="$(grep -o 'jabuka-soak: report .*' "$LOG" | tail -1 | sed 's/^jabuka-soak: report //')"
 VERDICT="$(grep -o 'jabuka-soak: verdict .*' "$LOG" | tail -1 | sed 's/^jabuka-soak: verdict //')"
