@@ -423,3 +423,24 @@ def test_docs_describe_the_f4_system_scope_rule_and_tmux() -> None:
     freeze = _doc("FREEZE.md")
     for word in ("code.source", "--systemd system", "--systemd user"):
         assert word in freeze, word
+
+
+def test_docs_describe_the_full_length_rule_and_the_f3_git_rule() -> None:
+    """Plan 04-07: only a full-length race-36h soak counts for F3/F4, quick runs go to
+    var/soak-essais, F3 needs git.head, and the end of the soak holds Ctrl-C (kill -9 escape)."""
+    text = _doc("SOAK.md")
+    for word in ("essai raccourci", "var/soak-essais", "scenario_sha256", "WARNING: shortened run"):
+        assert word in text, word
+    pi = text[text.index("## Soak sur le Pi 3B") : text.index("## Budgets Pi à confirmer")]
+    assert "sans `--duration`" in pi, pi
+    step8 = pi[pi.index("8. ") : pi.index("9. ")]
+    assert "kill -9" in step8, step8
+    cleanup = text[text.index("- **Nettoyage, toujours**") : text.index("- **Chien de garde**")]
+    assert "fin du soak" in cleanup, cleanup
+    freeze = _doc("FREEZE.md")
+    for word in ("essai raccourci", "scenario_sha256", "var/soak-essais", "git.head inconnu"):
+        assert word in freeze, word
+    steps = freeze[
+        freeze.index("1. **Endurance sur le portable**") : freeze.index("3. **Porte verte**")
+    ]
+    assert steps.count("sans `--duration`") == 2, steps
