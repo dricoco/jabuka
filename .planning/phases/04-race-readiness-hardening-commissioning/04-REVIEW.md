@@ -1,152 +1,167 @@
 ---
 phase: 04-race-readiness-hardening-commissioning
-reviewed: 2026-11-08T19:14:34Z
+reviewed: 2026-11-08T20:27:39Z
 depth: standard
-scope: incremental (ee6f427..HEAD, gap-closure plan 04-07)
-files_reviewed: 10
+scope: incremental (0c12a90..HEAD 1e86482, gap-closure plan 04-08)
+files_reviewed: 11
 files_reviewed_list:
   - docs/FREEZE.md
   - docs/SOAK.md
   - scripts/freeze-check.sh
+  - scripts/soak.sh
+  - src/jabuka/soak/probes.py
   - src/jabuka/soak/report.py
-  - src/jabuka/soak/scenario.py
   - src/jabuka/soak/systemd.py
   - src/jabuka/tools/soak.py
   - tests/commissioning/test_freeze_check.py
   - tests/soak/test_soak_identity.py
   - tests/soak/test_soak_systemd.py
 findings:
-  critical: 1
-  warning: 0
-  info: 3
-  total: 4
+  critical: 0
+  warning: 1
+  info: 4
+  total: 5
 status: issues_found
 ---
 
-# Phase 4: Code Review Report (incremental, 04-07)
+# Phase 4: Code Review Report (incremental, 04-08)
 
-**Reviewed:** 2026-11-08T19:14:34Z
-**Depth:** standard (diff ee6f427..HEAD plus the surrounding code)
-**Files Reviewed:** 10
+**Reviewed:** 2026-11-08T20:27:39Z
+**Depth:** standard (diff 0c12a90..HEAD plus the surrounding code)
+**Files Reviewed:** 11
 **Status:** issues_found
 
 ## Narrative Findings (AI reviewer)
 
 ## Summary
 
-Plan 04-07 closes all three prior findings it targeted:
+Plan 04-08 closes the prior CR-01. The fix works in three layers:
 
-- **Prior CR-01:** F3 and F4 now require `scenario_sha256` to equal the sha256 of `race-36h.json` at HEAD, the HEAD seed, `duration_s >= 129600`, `sim_s >= 0.99 x` that, and no fault skipped "after the end of the run". Each check fails closed.
-- **Prior WR-01:** F3 now FAILs a report with no `git.head`.
-- **Prior WR-02:** SIGINT, SIGTERM and SIGHUP are held from the end of the main run until `report.json` has been written.
+- `journalctl`, `umount` and `vcgencmd` now run with `start_new_session=True`. A terminal Ctrl-C or an SSH SIGHUP can no longer cut the journal copy.
+- A non-zero rc, a timeout (now 300 s, with partial stdout kept), an exception, or a system-scope unit with zero entries sets `systemd.journal.complete = false`. The `tracebacks` check is then FAIL, so the verdict is FAIL.
+- Any signal held at the end of the run is recorded as `end_signal`. freeze-check F3/F4 refuse a non-null or absent `end_signal`, and refuse a systemd-mode report whose `systemd.journal.complete` is not `true`.
 
-The 91 in-scope tests pass (`.venv313`).
+The 104 in-scope tests pass (`.venv313`, 36 s).
 
-I traced the genuine full-length paths and found no false FAIL in them. The laptop path is shim plus userns re-exec. The Pi path is `--systemd system` from the installed wheel with no `.git`, at `--speed 20`. In detail:
+I traced the genuine full-length paths and found no false FAIL, no end-of-run hang and no deterministic false PASS:
 
-- The compiled race-36h timeline ends at 115200 s and has no draw past 129600, so a full run never gets a late skip.
-- `sim_now()` can only reach or pass `duration` when `wait_sim` returns.
-- The wheel ships `scenarios/race-36h.json` byte-identical to the source; F6 enforces that.
-- On the Pi, `python -m` from the copied checkout resolves `jabuka` from the venv.
-
-I found no new false-PASS path in freeze-check itself.
-
-The new end-of-run signal hold does introduce a **false PASS of the soak verdict itself** (CR-01, reproduced). A Ctrl-C or SIGHUP at the end of a `--systemd system` run still kills the `journalctl` child, which shares the harness's process group. The harness, which now survives that signal, then builds the tracebacks check from a truncated or empty journal. Before 04-07 the same signal lost the report, which is fail-safe. Now it can certify PASS without the evidence.
+- **Laptop F3 (shim, userns re-exec):** `journal_problem()` returns None for the shim backend, and `end_signal` stays null unless a signal is actually received.
+- **Pi F4 (`--systemd system --speed 20`, installed wheel, no `.git`):**
+  - **Zero-entry rule:** PID 1 always logs `Started` / `Stopping` / `Stopped` with `UNIT=<unit>` after `--since @t0-1`, and `dump_journal` matches the `UNIT` field. Both the core and ingest roles therefore get at least one entry.
+  - **Exit code when nothing matches:** on systemd 260, `journalctl` exits 0 with no output when nothing matches (checked for both `-u` and `--user -u`), so an empty match does not become a spurious rc error.
+  - **Journal volume:** the units' journal is small. Existing copies have 79 lines for the ci scenario, so 300 s is ample on a Pi 3B.
+  - **End-of-run time budget:** the worst case is about 13 min (stop 60 + journal 300 + daemon-reload 60 + restart 180 + verify 20 + umount 60 + cat 60, plus joins). That is within the "~15 min" printed by the held-signal line and stated in SOAK.md step 8.
+- **`soak.sh` with `tee -i`:** bash keeps going after a held Ctrl-C because the harness exits normally with 130, not by signal. RC, REPORT and VERDICT are still parsed.
 
 Nothing in this plan touches the race path. The diff is limited to soak, tools, scripts, docs and tests.
 
-## Prior findings (ee6f427 04-REVIEW)
+The remaining findings are fail-open corners of the new "journal copy is never silent" guarantee:
+
+- **WR-01:** a `--systemd user` copy with zero entries is accepted.
+- **IN-01:** a journal thinned by journald itself is accepted as complete.
+- **IN-02 to IN-04:** wording and UX issues, plus one test that can become vacuous.
+
+## Prior findings (0c12a90 04-REVIEW, plan 04-07 review)
 
 | ID | Status | Notes |
 |---|---|---|
-| CR-01 (shortened or custom race-36h run PASSes F3/F4) | **resolved** | Covered by `run_state()` (freeze-check.sh:179-195): sha, seed, duration, sim_s and late skips are checked, and a missing key fails closed. The harness records `scenario_sha256` and `duration_s`, warns at start, and `report.md` marks "Essai raccourci". `SKIP_AFTER_END` parity is tested. The newest-report rule still applies, so a later short run in `var/soak/` masks a valid one. That is now a loud FAIL with instructions, not a false PASS (see IN-01). |
-| WR-01 (F3 fingerprint-only shortcut when `git.head` is null) | **resolved** | The shortcut now requires `machine = aarch64` (line 258). Any other head-less report hits `git.head inconnu` FAIL (line 260). The header and FREEZE.md are updated, and a test covers it. With the git rule mandatory for F3, the compensating control that the deferred WR-04 relied on holds again for the laptop soak. |
-| WR-02 (signal outside the cleanup loses report.json) | **resolved for report loss, but introduces CR-01 below** | `Harness.end_signals` (a `SignalHold`) is started after the main run and released in `run_soak`'s `finally` after `write_report` and `_give_back`. The nested cleanup hold restores `end_signals._record`, so neither hold loses a signal. A test covers the real `Harness.run` end path. |
-| IN-01 (stale "second Ctrl-C" wording) | **resolved** | The `cleanup()` docstring and SOAK.md step 8 now describe the uninterruptible end and the `kill -9` plus `--systemd-cleanup` escape. |
-| IN-02 (deferred-signal path not tested end to end) | **resolved (mostly)** | `test_signal_at_the_end_of_the_run_is_held_until_the_report_is_written` drives the real `Harness.run` end path (shim scope). The system-scope cleanup inside it is still only unit-tested. The outer hold now covers it anyway. |
-| IN-03 (F4 identifies the Pi only by `host.machine == aarch64`) | open | Not addressed in 04-07. |
-| WR-03, WR-04, IN-04, IN-05 (older, deferred) | open (deferred) | Not re-reviewed. WR-04 is mitigated again by the F3 git rule, as above. |
+| CR-01 (held Ctrl-C/SIGHUP kills `journalctl` → truncated journal → false PASS) | **resolved** | `dump_journal` (systemd.py:770-825) runs journalctl in its own session. The rc, timeout and exception paths are recorded and never silent. `journal_problem()` (soak.py:1209) FAILs `tracebacks` (soak.py:968-976). `end_signal` is written (soak.py:1413-1416), and freeze-check `end_state()` (freeze-check.sh:203-217) refuses interrupted runs and incomplete journals. `unmount()` and `pi_probe` were also moved to their own sessions.<br><br>**Reproduced:** the real `dump_journal` under `SignalHold` with a process-group SIGINT keeps the whole journal. The new test `test_group_sigint_during_the_journal_copy_keeps_the_whole_journal` makes this permanent.<br><br>**Residual fail-open corners:** WR-01 and IN-01 below. |
+| IN-01 (short run masks an older full soak; dir-name ordering) | **resolved (message)** | The not-scenario and short FAIL texts now tell the operator to move the newer run to `var/soak-essais/`. Ordering is still by dir name (Pi clock), unchanged. That is acceptable, since the outcome is a loud FAIL, never a false PASS. |
+| IN-02 (no feedback on held signal; 10 min kill -9 threshold too close) | **resolved** | The first held signal writes `HELD_SIGNAL_MESSAGE` via `os.write(2)` (async-safe, `OSError` suppressed). The SOAK.md threshold is now ~15 min. `tee -i` keeps the terminal output. See IN-02 below for the wording outside the end of a run. |
+| IN-03 (userns parent waits only 30 s after `terminate()`) | open | Not addressed. Impact is now UX-only: such a run is `end_signal` ≠ null and is refused by F3 anyway. |
+| IN-03 older (F4 identifies the Pi only by `host.machine == aarch64`), WR-03, WR-04, IN-04, IN-05 (older, deferred) | open (deferred) | Not re-reviewed. |
 
-## Critical Issues
+## Warnings
 
-### CR-01: A Ctrl-C or SIGHUP at the end of a Pi soak truncates the journal dump, and the soak can then report PASS with no traceback evidence
+### WR-01: A `--systemd user` soak with an empty journal copy is "complete", so F3 can PASS with no unit-output evidence
 
 **File:**
-- `src/jabuka/soak/systemd.py:730-771` (`dump_journal`: `subprocess.run(cmd, capture_output=True, timeout=120)`, no `start_new_session`, return code ignored, `TimeoutExpired` → `out = ""`)
-- `src/jabuka/tools/soak.py:795-799` (hold started, then `shutdown()` → `dump_journal`)
-- `src/jabuka/tools/soak.py:953-969` (tracebacks check)
+- `src/jabuka/soak/systemd.py:817-825` (the zero-entry rule applies only when `not self.user`)
+- `scripts/freeze-check.sh:209-215` (`end_state`)
+- `src/jabuka/tools/soak.py:1209-1219` (`journal_problem`)
 
-**Issue:** In system scope, the only process-output evidence the tracebacks check scans is `proc/<role>-journal.log`, written by `dump_journal`, plus `synth.log`. `journalctl` is spawned in the harness's own process group. `_ctl` uses `start_new_session=True`; `dump_journal` does not.
+**Issue:** In user scope, the units' stdout and stderr go only to the user journal, and the harness reads them back only through `dump_journal`. A copy with zero entries for both units is recorded as `{"complete": true, "error": null, "entries": {"core": 0, "ingest": 0}}`, so `journal_problem()` returns None. The `tracebacks` check then sees no unit blocks and is `ok: True`.
 
-A terminal Ctrl-C therefore reaches `journalctl`, and the default action kills it. The same goes for SIGHUP when the SSH session drops (the sudo `use_pty` pty forwards ^C to the whole foreground group).
+F3 (x86_64) accepts any mode, so it counts such a report. Unlike F4, there is no `not-units` rule for x86_64. The cause can be a volatile or unreadable user journal (the case the code comment itself names), a wrong `journalctl` on PATH, or `--user` mismatched to the bus. This is exactly the "no traceback evidence → PASS" class that 04-08 was meant to close. It is only kept open for the user scope.
 
-- **Before 04-07:** the harness also died, so no report was written. That is safe: the operator had to redo the soak.
-- **Now:** `end_signals` holds the signal in the harness, so only `journalctl` dies. `subprocess.run` returns the partial stdout with rc -2. `dump_journal` ignores the rc and writes the truncated log. `scan_tracebacks` sees fewer or no blocks, `c["tracebacks"]` is `ok: True`, and the verdict can be PASS.
+The exemption is not needed:
 
-The report and exit code (128 + n) show that a signal was received, but nothing ties that signal to a degraded tracebacks check. F4 reads only `verdict`, so it will certify that run.
+- On this laptop (systemd 260), a transient `systemd-run --user` unit produces a manager entry `USER_UNIT=<unit> MESSAGE="Started …"`, which `dump_journal` already matches through `USER_UNIT`, plus its own `_SYSTEMD_USER_UNIT` output.
+- The documented F3 path (`bash scripts/soak.sh`) is the shim, which does not depend on the journal. Requiring entries in user scope therefore cannot false-FAIL the documented F3.
 
-The same silent-empty path exists on `TimeoutExpired`: a journalctl run of more than 120 s gives `out = ""` and zero tracebacks. That timeout is plausible on a Pi 3B dumping 2–4 h of JSON journal for two units with dozens of restarts.
+**Reproduced** against the real code (scratch dir): a fake journalctl that exits 0 with no output, `SystemdBackend("user", …)` with core and ingest. The result was `journal = {"complete": true, "error": null, "entries": {"core": 0, "ingest": 0}}` and `journal_problem(b) = None`. Classified WARNING because the trigger depends on host journald configuration.
 
-**Reproduced** with the real `SystemdBackend.dump_journal` under `SignalHold`, in a scratch dir via `setsid`, using a fake journalctl. The fake prints one line, sleeps 3 s, then prints a `Traceback` / `RuntimeError` pair. `os.killpg(getpgrp(), SIGINT)` was sent at 1 s. Result:
-
-- held signal: `2`
-- `core-journal.log` = `'1.000 started\n'`: the traceback lines are lost
-- the harness carried on normally
-
-**Fix:** Isolate the child, and make a failed dump block a PASS:
+**Fix:** Apply the zero-entry rule in both scopes. Alternatively, make freeze-check refuse a systemd-mode report with any `entries[role] == 0`:
 
 ```python
 # systemd.py dump_journal
-self.journal_error = None
-try:
-    r = subprocess.run(cmd, capture_output=True, timeout=300, start_new_session=True)
-    out = r.stdout.decode("utf-8", "replace")
-    if r.returncode != 0:
-        self.journal_error = f"journalctl rc {r.returncode}: {r.stderr.decode(errors='replace')[:200]}"
-except (OSError, subprocess.SubprocessError) as exc:
-    out, self.journal_error = "", repr(exc)
+if error is None:
+    # both scopes: the soak started and stopped these units, so their manager logged them
+    empty = [self.unit(r) for r, n in counts.items() if n == 0]
+    if empty:
+        error = "; ".join(f"no journal entry for {u}" for u in empty)
 ```
 
-```python
-# soak.py compute_checks, after classify_tracebacks
-jerr = getattr(self.sup, "journal_error", None)
-c["tracebacks"] = rep.check(
-    False if jerr else not unexp, len(unexp), 0,
-    (f"journal dump incomplete ({jerr}); " if jerr else "") + detail)
-```
-
-Also pass `start_new_session=True` to the other end-of-run children that share the group: `unmount()` in systemd.py:902 (its `umount -l` retry hides it today), and the `vcgencmd` probe in probes.py:102. Add a test that sends SIGINT to the process group during a fake journalctl in `dump_journal`. It should expect the full output, or a non-PASS tracebacks check.
+If a volatile laptop journal must stay usable, record `complete: None` for the user-scope empty case instead. `journal_problem()` should then return a reason for it, which keeps the verdict out of PASS. SOAK.md should state that F3 is the shim run.
 
 ## Info
 
-### IN-01: A short run masks an older valid full soak, and the FAIL text sends the operator to redo it
+### IN-01: Journal loss inside journald (32 MiB volatile vacuum, rate limiting, backward clock step) still reads as a complete copy
 
-**File:** `scripts/freeze-check.sh:198-209`, `scripts/freeze-check.sh:248-249`
+**File:**
+- `src/jabuka/soak/systemd.py:770-825`
+- `deploy/systemd/journald-jabuka.conf` (`Storage=volatile`, `RuntimeMaxUse=32M`)
 
-**Issue:** The newest race-36h report of each machine is the only one judged, by run-dir name. A short run left in `var/soak/` yields "essai raccourci … le refaire sans --duration", even when an older full PASS run on the same code sits next to it. Three days before the race, that can cost a needless 2 h Pi re-soak.
+**Issue:** `complete` only proves that `journalctl` exited 0 and that each unit has at least one entry. Some ways of losing entries pass both tests:
 
-Run-dir names come from the Pi clock. The Pi has no RTC, and gpsd may have no fix on the bench. If that clock goes backwards between runs, a different report than the latest one is judged.
+- journald vacuuming the oldest runtime files once the whole system journal exceeds 32 MiB during the soak;
+- journald's per-unit rate limit ("Suppressed N messages");
+- a backward clock step on the RTC-less Pi, which pushes entries below the `--since @t0-1` wall-clock bound.
 
-**Fix:** Add to the short and not-scenario messages: "si un soak complet plus ancien existe, déplacer `<path>` vers var/soak-essais/ et relancer freeze-check". Optionally order by `t0_wall` or `started_utc` rather than by dir name, and print it.
+In each case the early traceback disappears while the final `Stopping` / `Stopped` lines of PID 1 survive.
 
-### IN-02: The end-of-run hold gives no feedback, and the SOAK.md kill -9 threshold is close to the worst case
+**Reproduced** against the real code: a fake journalctl that returns only the two "Stopped" entries gives `complete: true, entries {core: 1, ingest: 1}` and `journal_problem() = None`. A traceback logged earlier in the run would be lost silently.
 
-**File:** `src/jabuka/soak/systemd.py:69-71` (`SignalHold._record`), `docs/SOAK.md` step 8
+It is classified Info because, at the measured unit-journal volume (tens of lines), a 32 MiB vacuum within a 2 h soak is unlikely. It does contradict the SOAK.md claim "un échec n'est jamais silencieux".
 
-**Issue:** A held Ctrl-C prints nothing. `tee` in `scripts/soak.sh` also dies on the same Ctrl-C, so later lines are not shown either. Step 8 says to `kill -9` after "~10 min sans nouvelle ligne", but the bounded worst case is close to that: stop 60 s + journal 120 s + logcheck + daemon-reload 60 s + restart 180 s + verify 20 s + umount 60 s per mount + cat 60 s. A `kill -9` also skips atexit and loses the report.
+**Fix:** Cross-check the copy against what the harness itself observed. The monitor already tracks `InvocationID` (SHOW_PROPS). Require every invocation ID seen for a unit to appear in the copy, as `_SYSTEMD_INVOCATION_ID` or `INVOCATION_ID`. Alternatively, require a PID-1 `Started` entry count of at least `svc.starts`. Optionally replace `--since @t0` by a cursor captured at start (`journalctl --show-cursor -n 0`), which does not depend on the clock.
 
-**Fix:** On the first held signal, write one line with `os.write(2, b"jabuka-soak: signal held, finishing report.json (up to ~12 min)\n")`. `os.write` is async-signal-safe, unlike `print`. Raise the SOAK.md threshold to about 15 min.
+### IN-02: The held-signal line promises "report.json" also where no report will be written
 
-### IN-03: The userns parent still waits only 30 s after `terminate()` and then exits while the child is still finishing
+**File:**
+- `src/jabuka/soak/systemd.py:62-65` (`HELD_SIGNAL_MESSAGE`)
+- `src/jabuka/soak/systemd.py:854` (`SignalHold()` in `_deferred_signals`, default `announce_fd=2`)
+- `src/jabuka/soak/systemd.py:1009` (`cleanup_system`)
 
-**File:** `src/jabuka/tools/soak.py:1499-1503`
+**Issue:** The nested cleanup hold announces with the same end-of-soak text in two places where that text is wrong:
 
-**Issue:** On the laptop, the soak re-execs into a user namespace. On Ctrl-C at the end of the run, the parent sends SIGTERM to the child, which now holds it. The parent then waits 30 s and re-raises. If the child's end of run takes longer, the shell prompt returns while an orphaned child is still writing `report.json`, and its final messages go to a dead pipe. On a laptop this is normally under 30 s (`STOP_TIMEOUT_S = 5`), hence Info.
+- **Main-run abort:** a Ctrl-C during the main run aborts it with no report, then the atexit `cleanup()` runs. A second Ctrl-C during that cleanup prints "held until the end of the soak is finished (journal copy, checks, cleanup, report.json …)". No report.json will exist.
+- **`--systemd-cleanup` repair:** pressing Ctrl-C during the repair prints the same text.
 
-**Fix:** After `terminate()`, wait for as long as the child's end of run can take (for example 600 s). Or print "le rapport s'écrit encore dans <run_dir>" before re-raising.
+At the end of a normal run, a second signal after the first can also print the line a second time, because the nested hold's `signal` is still None. An operator following SOAK.md might then wait for a report that never comes, or go hunting for one.
+
+**Fix:** Give `SignalHold` a message parameter. Use a cleanup-specific text in `_deferred_signals`, for example "signal held until the production units are restored". Pass `announce_fd=None` when an outer hold has already announced.
+
+### IN-03: A signal that lands after `end_signal` is computed exits 128+n with `end_signal: null` in the report
+
+**File:** `src/jabuka/tools/soak.py:1413-1423`
+
+**Issue:** `report["end_signal"]` is read before `write_report` and `_give_back`, but the hold lasts until the `finally`. A Ctrl-C in that window returns 130, while `report.json` says `end_signal: null` and F4 accepts it.
+
+The evidence is complete, so this is not a false PASS. It does contradict SOAK.md step 6, which says to bring back only a run that exited with code 0 and whose `end_signal` is null: the report then says null while the run exited with 130.
+
+**Fix:** Either document that the report is authoritative, or re-check `h.end_signals.signal` after `write_report` and rewrite `end_signal` if it changed. That rewrite is cheap, since the report is already serialised.
+
+### IN-04: The group-SIGINT test can pass without exercising the race on a loaded machine
+
+**File:** `tests/soak/test_soak_systemd.py` (`_GROUP_SIGINT_DRIVER`, `fire()` sleeps 0.5 s)
+
+**Issue:** The SIGINT is timed only by a sleep. If spawning the fake journalctl takes longer than 0.5 s, for example on a loaded CI box, the signal is delivered before the child exists. The hold records it, and the child then starts unaffected. The assertions still pass, but they no longer prove that journalctl survives a group signal. This is a regression-guard reliability issue, not a flaky failure.
+
+**Fix:** Have the fake journalctl `touch "$MARK"` after its first line. Make `fire()` poll for that marker before `os.killpg`, and assert that the marker existed when the signal was sent.
 
 ---
 
-_Reviewed: 2026-11-08T19:14:34Z_
+_Reviewed: 2026-11-08T20:27:39Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
