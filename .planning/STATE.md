@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 4
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
-stopped_at: Completed 04-11-PLAN.md
-last_updated: "2026-11-09T12:04:00.107Z"
+stopped_at: Completed 04-12-PLAN.md
+last_updated: "2026-11-09T12:38:44.810Z"
 last_activity: 2026-11-09
-last_activity_desc: 04-11 executed (helm takeovers G-4-R01/R03/R08)
-state_head: 736bc9a7a57c6fd66ee131a1c4b0032424a3d818
+last_activity_desc: 04-12 executed (tablet hardening G-4-R07/R09/R10/R11)
+state_head: 0af2dc3ebef41a7eacc6ad6c7597c04ea2fff256
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 27
-  completed_plans: 26
+  completed_plans: 27
   percent: 0
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 4 (race-readiness-hardening-commissioning) — EXECUTING
-Plan: 11 of 12
-Status: Executing gap closure 5 — 04-09, 04-10, 04-11 done (G-4-R01, R02, R03, R04, R05, R06, R08, R12 closed); 04-12 pending
-Last activity: 2026-11-09 — 04-11 executed (helm primary-box takeovers: VIREZ/EMPANNEZ cue inverted, VENT PÉRIMÉ on stale manual wind, PAS DE GPS badge/label; gate green; src/jabuka fingerprint 2afba8c4…)
+Plan: 12 of 12
+Status: Gap closure 5 complete — 04-09..04-12 done (G-4-R01..R12 all closed); full gate green over the four plans; phase verification and human UAT pending
+Last activity: 2026-11-09 — 04-12 executed (tablet hardening: release-only unlock 2–4 s, night text floor rgb(110,0,0), glanceable primary label, Diag red-on-black at night, no selection/callout/pull-to-refresh; gate green 1670 passed on 3.14 and 3.13; src/jabuka fingerprint c1bab550…)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -66,6 +66,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P09 | 30 min | 2 tasks | 4 files |
 | Phase 04 P10 | 31 min | 3 tasks | 12 files |
 | Phase 04 P11 | 46min | 3 tasks | 14 files |
+| Phase 04 P12 | 33min | 3 tasks | 18 files |
 
 ## Accumulated Context
 
@@ -90,6 +91,10 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-10: routing worker raises its oom_score_adj to max(500, inherited) in _pool_init; Plan B units StartLimitIntervalSec=0
 - [Phase 04]: 04-11: helm takeovers in primaryView priority order navFailed > PAS DE GPS > VENT PÉRIMÉ > VIREZ/EMPANNEZ cue > route > Phase 2; no core change for stale manual wind (UI-only)
 - [Phase 04]: 04-11: noPosition keys on a boat block carrying lat/lon keys with null values (core shape); a frozen cue loses its red box on link loss
+- [Phase 4]: 04-12: the padlock unlocks only on lifting the primary pointer after a 2-4 s press (inclusive); a press past 4 s is void, so a resting water drop never unlocks
+- [Phase 4]: 04-12: night text tiers floored at rgb(110, 0, 0) (TEXT_FLOOR); --line and the map dim freely
+- [Phase 4]: 04-12: primary label at --f-label (= --f-word) in var(--fg), single-id rule so 04-11 alert/cue colours win; landscape fallback not needed
+- [Phase 4]: 04-12: Diag night variant before first paint via classic diag-theme.js; final src/jabuka fingerprint c1bab550…
 
 ### Pending Todos
 
@@ -131,6 +136,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T12:04:00.048Z
-Stopped at: Completed 04-11-PLAN.md
+Last session: 2026-11-09T12:38:44.743Z
+Stopped at: Completed 04-12-PLAN.md
 Resume file: None

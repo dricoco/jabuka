@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 11/12 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12)
+**Plans:** 12/12 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12)
 
 Plans:
 **Wave 1**
@@ -150,7 +150,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 04-12-PLAN.md — Gap closure 5d (tablet hardening, G-4-R07/R09/R10/R11): the padlock unlocks only on release after a 2–4 s press; night text is floored at rgb(110,0,0) and the primary label is glanceable; Diag is red-on-black at night from the first paint; no selection, callout or pull-to-refresh on the helm surfaces. Runs the first full gate over all four gap plans and records the freeze fingerprint
+- [x] 04-12-PLAN.md — Gap closure 5d (tablet hardening, G-4-R07/R09/R10/R11): the padlock unlocks only on release after a 2–4 s press; night text is floored at rgb(110,0,0) and the primary label is glanceable; Diag is red-on-black at night from the first paint; no selection, callout or pull-to-refresh on the helm surfaces. Runs the first full gate over all four gap plans and records the freeze fingerprint
 - [x] 04-03-PLAN.md — Pi `--systemd` mode (system scope via /run drop-ins, proven end to end on laptop user-scope systemd), Pi temperature/throttling metrics, the full 36 h-equivalent laptop run with its fixes, Pi soak procedure and results in docs/SOAK.md
 
 **Notes**: The read-only overlay FS is optional: test it once by 2026-11-09, otherwise skip it and rely on atomic writes + the spare SD card. Re-verifies REL-01 (Phase 1) and CRSE-05 (Phase 2) under power-pull faults.
@@ -165,7 +165,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 11/12 | In Progress|  |
+| 4. Race Readiness — Hardening & Commissioning | 12/12 | In Progress|  |
 
 ---
 *Roadmap created: 2026-11-06*
