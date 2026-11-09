@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 9/12 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12)
+**Plans:** 10/12 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12)
 
 Plans:
 **Wave 1**
@@ -145,7 +145,7 @@ Plans:
 - [x] 04-07-PLAN.md — Gap closure 3 (freeze gate counts only a full-length race-36h): the soak report records duration_s, scenario_duration_s, scenario_source and scenario_sha256, and freeze-check F3/F4 FAIL a shortened, early-stopped, foreign-scenario or other-seed run (fail closed; CR-01, gap 02-4). F3 always needs git.head (WR-01). Signals at the end of a soak are held until report.json is written (WR-02). SOAK/FREEZE docs updated (IN-01)
 - [x] 04-08-PLAN.md — Gap closure 4 (the Pi soak verdict needs the whole journal): journalctl, umount and vcgencmd run in their own session, so a Ctrl-C/SIGHUP at the end of a soak can no longer truncate the units' journal copy. A failed copy (rc, 300 s timeout, error, empty unit) is recorded in report.json and FAILs the tracebacks check (CR-01, gap 07-5). report.json records end_signal, and freeze-check F3/F4 FAIL an interrupted soak or an incomplete journal copy (fail closed). Held signal announced, `tee -i`, actionable short-run FAIL, SOAK.md promise corrected (IN-01, IN-02)
 - [x] 04-09-PLAN.md — Gap closure 5a (nav math, G-4-R02/R04): a zone exit counts as a rounding only past the mark (incoming leg; at a hairpin, past along the incoming leg since entering and now past along the outgoing one), so an approach-side retreat no longer advances the course (`_abeam` and CR-02 unchanged). The helm polar uses the router's VMG-linear rule on deep segments, so the downwind target is 180° from 14 kn and helm and router targets agree
-- [ ] 04-10-PLAN.md — Gap closure 5b (runtime robustness, G-4-R05/R06/R12): an opt-in durability thread in atomicio moves every log fsync and the fsync/.bak/rename tail of atomic writes off the core and ingest event loops. Synchronous temp writes keep the 503/alert on a full disk, and the per-file FIFO order is kept. The routing worker raises its oom_score_adj to +500. The Plan B units get StartLimitIntervalSec=0
+- [x] 04-10-PLAN.md — Gap closure 5b (runtime robustness, G-4-R05/R06/R12): an opt-in durability thread in atomicio moves every log fsync and the fsync/.bak/rename tail of atomic writes off the core and ingest event loops. Synchronous temp writes keep the 503/alert on a full disk, and the per-file FIFO order is kept. The routing worker raises its oom_score_adj to +500. The Plan B units get StartLimitIntervalSec=0
 - [ ] 04-11-PLAN.md — Gap closure 5c (helm primary box, G-4-R01/R03/R08): VIREZ/EMPANNEZ plus the tack to go to takes over the big box when the tack is due or the boat is on the wrong tack; stale manual wind reads VENT PÉRIMÉ with blocks 1–2 dimmed; a lost position shows a red PAS DE GPS badge and label (FR/EN/SL, docs)
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -165,7 +165,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 9/12 | In Progress|  |
+| 4. Race Readiness — Hardening & Commissioning | 10/12 | In Progress|  |
 
 ---
 *Roadmap created: 2026-11-06*

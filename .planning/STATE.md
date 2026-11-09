@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 4
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
-stopped_at: Completed 04-09-PLAN.md
-last_updated: "2026-11-09T10:44:27.337Z"
+stopped_at: Completed 04-10-PLAN.md
+last_updated: "2026-11-09T11:17:08.665Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 4 execution started
-state_head: 7dc3eda58bf3693f6e15bf8b160d6007f6ca84d7
+state_head: 3c59c04b276136f0526951aadd74bf973b36d6cf
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 27
-  completed_plans: 24
+  completed_plans: 25
   percent: 0
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 4 (race-readiness-hardening-commissioning) — EXECUTING
-Plan: 9 of 12
-Status: Executing gap closure 5 — 04-09 done (G-4-R02, G-4-R04 closed); 04-10, 04-11, 04-12 pending
-Last activity: 2026-11-09 — 04-09 executed (zone exit counts only past the mark; helm polar VMG-linear on deep segments)
+Plan: 10 of 12
+Status: Executing gap closure 5 — 04-09, 04-10 done (G-4-R02, R04, R05, R06, R12 closed); 04-11, 04-12 pending
+Last activity: 2026-11-09 — 04-10 executed (durability thread: no fsync on the core/ingest event loops; routing worker oom_score_adj +500; Plan B StartLimitIntervalSec=0)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -64,6 +64,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P07 | 35 min | 3 tasks | 10 files |
 | Phase 04 P08 | 37 min | 3 tasks | 11 files |
 | Phase 04 P09 | 30 min | 2 tasks | 4 files |
+| Phase 04 P10 | 31 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-08: end-of-run journalctl/umount/vcgencmd in own session; incomplete journal copy FAILs tracebacks+verdict; report.json end_signal; F3/F4 refuse interrupted soak or incomplete journal (fail closed)
 - [Phase 04]: 04-09: a zone exit advances the course only past the mark (incoming leg; hairpin: _beyond latch since entering + past along the outgoing leg); CR-02 sets the latch, the 2 nm gate resets it
 - [Phase 04]: 04-09: helm polar adopts the router VMG-linear rule on segments with both knots >= 120 deg; X35 run target 180 deg from 14 kn on helm and router; 9/11/13 kn tail residual deferred
+- [Phase 04]: 04-10: in jabuka-core and jabuka-ingest-fastnet every fsync and atomic-write tail runs on one FIFO thread (jabuka-durable); atomic_write_json callers unchanged; tests/tools stay synchronous
+- [Phase 04]: 04-10: background atomic write = synchronous .NAME.<n>.tmp write (disk-full/read-only errors still 503 on the caller), then fsync -> .bak -> rename -> dir fsync queued; an API 200 may precede the fsync during an SD stall (accepted; drain 20 s at exit)
+- [Phase 04]: 04-10: routing worker raises its oom_score_adj to max(500, inherited) in _pool_init; Plan B units StartLimitIntervalSec=0
 
 ### Pending Todos
 
@@ -124,6 +128,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T10:44:27.270Z
-Stopped at: Completed 04-09-PLAN.md
+Last session: 2026-11-09T11:17:08.604Z
+Stopped at: Completed 04-10-PLAN.md
 Resume file: None
