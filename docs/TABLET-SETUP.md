@@ -90,8 +90,9 @@ only feature the page uses with it.
 | `LIVE` | True wind computed from the boat instruments, fresh |
 | `LIVE B&G` | True wind taken from the B&G (Hercules) TWD/TWS |
 | `MANUEL 12 min` | Wind typed in by hand, 12 min ago |
-| `PÉRIMÉ` | The wind in use is too old: treat targets and laylines with suspicion |
+| `PÉRIMÉ` | The wind in use is too old: the big box reads **VENT PÉRIMÉ** and the steering numbers are dimmed; enter a fresh manual wind |
 | `PAS DE VENT` | No wind at all: no targets, no laylines |
+| `PAS DE GPS` | No GPS position: no targets, no laylines, no route; check the VK-162 and gpsd |
 | `CAP NON FIABLE` | Heading not trusted (e.g. the magnetic anomaly near Jabuka): cross-check with COG |
 | `COURANT` | Laylines include the current |
 | `ANGLES RÉELS` | Laylines use the tacking angles actually sailed, not the polar |
@@ -104,7 +105,10 @@ the map on the right two thirds (the boat is centred there). In portrait they si
 the top, with the map below. The column has three blocks:
 1. **Steering.** The big number is the **target TWA** upwind (↑) or downwind (↓), or the
    **course to steer** (°M) on a reach, then the tack. Under it is the deviation with
-   **LOFER / ABATTRE** (or **◄ BÂBORD / TRIBORD ►** on a course to steer).
+   **LOFER / ABATTRE** (or **◄ BÂBORD / TRIBORD ►** on a course to steer). When the route says
+   tack now (or the boat is on the wrong tack), the box turns inverted and reads **VIREZ** /
+   **EMPANNEZ** with the tack to go to. With stale manual wind it reads **VENT PÉRIMÉ**, and
+   without a position, **PAS DE GPS**.
 2. **Route and tack.** The tack/gybe countdown, then one line each for the cost of not tacking,
    the route state, the route age, the route heading and the GRIB bias, then the **ON RESTE**
    button.

@@ -225,7 +225,7 @@ Phrases courtes, à lire de nuit. Tout est calculé par le Pi ; la tablette ne f
 | `TWA CIBLE` / `CAP À SUIVRE` | Pas de route valide : ce sont les laylines (Phase 2). |
 | `LOFER` / `ABATTRE` / `◄ BÂBORD` | L'écart à la cible de la route. |
 | `Virement dans 08:30` | Temps avant le virement de la route. `Empannage dans …` au portant. |
-| `VIREZ` (inversé) | C'est maintenant. Reste affiché 2 min. |
+| `VIREZ` (inversé) | C'est maintenant. Reste affiché 2 min. Le grand cadre passe aussi en `VIREZ` / `EMPANNEZ` + le bord (bâbord/tribord) tant que le virement est dû, ou tant que le bateau est sur le mauvais bord (`MAUVAIS BORD`). |
 | `Route mise à jour…` | Virement conseillé manqué depuis 2 min : le Pi recalcule. Ne pas virer sur l'ancien conseil. |
 | `Layline à 1,5 nm` | Distance à la layline (seulement quand le compte à rebours vient des laylines). |
 | `Ne pas virer : +4 min` | Ce que coûte de rester sur ce bord (`< 1 min` : sans importance). |
