@@ -212,7 +212,8 @@ def build():
             cr = cr.cut(box(xs_ * CR_W - 1.0, xs_ * CR_W + 1.0, yf - 1, y_ap + 4.5, zt - 6.5, zt + 6.5))
     cr = cr.fuse(cyl(7.0, 8.0, V(0, yb, 0), V(0, 1, 0)))                     # pivot pin
     cr = cr.cut(cyl(3.3, yb + 8.01 - (y_ap + 1.0), V(0, y_ap + 1.0, 0), V(0, 1, 0)))  # M6 clearance bore (pin + body)
-    cr = cr.cut(box(-NUT_AF / 2 - 1.0, CR_W + 1, yb - NUT_T, yb, -NUT_W / 2, NUT_W / 2))  # captive M6 nut, side slot (+x)
+    # captive M6 nut, side slot (+x), sunk 2.5 mm below the pin root so the pin keeps its full section on the body
+    cr = cr.cut(box(-NUT_AF / 2 - 1.0, CR_W + 1, yb - 2.5 - NUT_T, yb - 2.5, -NUT_W / 2, NUT_W / 2))
     # ---- slider (global orientation, origin at (x_slider, LEG_Y, Z_CLAMP)) ----
     ys1 = yb + S_T
     yfb = ys1 + GAP_S                     # beam front face (local)
