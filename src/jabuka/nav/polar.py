@@ -3,7 +3,11 @@
 speed(tws, twa): |TWA| folded into [0, 180]; linear in TWA inside each of the two bracketing TWS
 curves, then linear across TWS. Every curve gets an implicit (0 deg, 0 kn) point and there is an
 implicit all-zero TWS 0 curve. Above the highest TWS the speed is clamped (no extrapolation);
-beyond the last TWA of a curve the last speed is held.
+beyond the last TWA of a curve the last speed is held. Within a curve, segments whose two angles
+are both >= VMG_SEGMENT_MIN_DEG (120 deg) are interpolated linearly in downwind VMG, as in the
+router's PolarGrid: the 180 deg run target from 14 kn is shared and helm and router agree (G-4-R04).
+The tail beyond the last given angle still holds the last speed (router: 0.9x tail; review LOW,
+deferred).
 
 targets(tws): max upwind VMG (bsp * cos) over [25, 90] and max downwind VMG (-bsp * cos) over
 [90, deepest TWA of the polar at that TWS], on a 0.5 deg grid plus every explicit polar angle, so a
@@ -33,6 +37,9 @@ from typing import Any, NamedTuple
 DEFAULT_POLAR_FILE = "x35-orc-od-2019.exp"
 DEFAULT_POLAR_NAME = "X35 ORC OD 2019 (intérim)"
 UP_RANGE = (25.0, 90.0)
+# same rule and threshold as route/polar_grid.py: linear speed between 150 and 180 deg invents a
+# VMG bump (helm 170 deg vs router 180 deg at >= 14 kn, G-4-R04)
+VMG_SEGMENT_MIN_DEG = 120.0
 GRID_STEP = 0.5
 
 Curve = tuple[float, list[tuple[float, float]]]
@@ -68,6 +75,32 @@ def _interp(xs: list[float], ys: list[float], x: float) -> float:
     if x1 == x0:
         return ys[hi]
     return ys[lo] + (ys[hi] - ys[lo]) * (x - x0) / (x1 - x0)
+
+
+def _interp_curve(xs: list[float], ys: list[float], x: float) -> float:
+    """Like _interp (end values held), but a segment whose two angles are both
+    >= VMG_SEGMENT_MIN_DEG is interpolated linearly in downwind VMG (bsp x -cos TWA), then divided
+    back by -cos(x) (>= 0.5 there): the router's rule (route/polar_grid.py)."""
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    lo, hi = 0, len(xs) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if xs[mid] <= x:
+            lo = mid
+        else:
+            hi = mid
+    x0, x1 = xs[lo], xs[hi]
+    if x1 == x0:
+        return ys[hi]
+    f = (x - x0) / (x1 - x0)
+    if x0 >= VMG_SEGMENT_MIN_DEG and x1 >= VMG_SEGMENT_MIN_DEG:
+        v0 = -ys[lo] * math.cos(math.radians(x0))
+        v1 = -ys[hi] * math.cos(math.radians(x1))
+        return (v0 + (v1 - v0) * f) / -math.cos(math.radians(x))
+    return ys[lo] + (ys[hi] - ys[lo]) * f
 
 
 @dataclass
@@ -122,11 +155,11 @@ class Polar:
             a = 360.0 - a
         i, j, f = self._bracket(tws_kn)
         _, xa, ya = self._prepared[i]
-        s0 = _interp(xa, ya, a)
+        s0 = _interp_curve(xa, ya, a)
         if j == i:
             return s0
         _, xb, yb = self._prepared[j]
-        return s0 + (_interp(xb, yb, a) - s0) * f
+        return s0 + (_interp_curve(xb, yb, a) - s0) * f
 
     def _deepest(self, tws_kn: float) -> float:
         """Deepest TWA the polar covers at this TWS (interpolated across the bracketing curves)."""
