@@ -179,6 +179,10 @@ class FastnetIngest:
             # raw-first is a guarantee: losing the raw log must be visible (WR-06)
             "raw_errors": self.raw_errors,
             "send_errors": self.send_errors,
+            # background fsync failures of this process (raw-log cadence/rotation fsyncs on
+            # jabuka-durable), which no longer reach raw_errors since 04-10; shown in the Diag
+            # Fastnet table like the core's bg_write_errors (review WR-02)
+            "bg_write_errors": atomicio.background_status()["errors"],
             "raw_file": self.rawlog.current_path.name if self.rawlog.current_path else None,
             **self._disk(),
         }
@@ -445,10 +449,15 @@ async def _run(args: argparse.Namespace) -> int:
         for signum in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(signum)
         reader.close()
-        rawlog.close()  # final flush + fsync (queued on the durability thread)
-        if not atomicio.disable_background(20.0):
-            log.warning("durability thread not drained in 20 s: the SD may be stalled")
-        sock.close()
+        # WR-07: a raw-log close error must not skip the drain nor the socket close
+        try:
+            rawlog.close()  # final flush + fsync (queued on the durability thread)
+        except Exception:
+            log.exception("raw log close failed at exit")
+        finally:
+            if not atomicio.disable_background(20.0):
+                log.warning("durability thread not drained in 20 s: the SD may be stalled")
+            sock.close()
     return rc
 
 

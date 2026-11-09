@@ -208,7 +208,14 @@ class RotatingAppendLog:
                 if self._fsync_inflight:  # the previous one is still stalled: retry next time
                     return
                 self._fsync_inflight = True
-                atomicio.fsync_fd(fh.fileno(), on_done=self._fsync_done)
+                try:
+                    atomicio.fsync_fd(fh.fileno(), on_done=self._fsync_done)
+                except BaseException:
+                    # WR-03: fsync_fd can raise before the job exists (os.dup EMFILE, or the
+                    # durability thread failing to start on a 1 GB Pi), and then on_done never
+                    # runs: clear the flag so the next cadence retries
+                    self._fsync_inflight = False
+                    raise
                 self._last_fsync = now
                 self._dirty = False
 
