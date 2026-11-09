@@ -23,17 +23,23 @@ the mark. A zone exit counts only past the mark. At a normal turn: past it along
 leg at any time since entering the zone (the latch), or now, or now past it along the outgoing
 leg after having come within the leg radius + MARK_TOL_NM (0.1 nm) of it, so a committee mark
 entered off the real buoy still advances (CR-01). At a hairpin: the latch and now past it along
-the outgoing leg. A zone exit on the approach side never advances (G-4-R02). Gate d <= 2 nm.
+the outgoing leg. A zone exit on the approach side never advances (G-4-R02); the accepted
+false-advance residuals R1, R9 and R10 (plans 04-13 to 04-15) are the exceptions. Gate d <= 2 nm.
 The rounding evidence restarts when the active mark, its radius or the previous mark changes
-(WR-01). A change of the side or of the next mark (the outgoing leg) only restarts the 10 s
-debounce: the evidence never depended on them (CR-01 of review 93cb8b3).
+(WR-01). A change of the side or of the next mark (the outgoing leg) keeps the evidence and the
+Annuler suppression and only restarts the 10 s debounce (CR-01 of reviews 93cb8b3 and ccbbdc2);
+through add_mark, delete_leg and reorder it also drops a pending Annuler banner.
 The candidate must hold DEBOUNCE_S consecutive seconds of t_mono; then the next
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
 Annuler). undo() restores the previous mark and suppresses that mark until the boat has left its
 zone; leaving that zone past the mark (along either leg at a normal mark; as before at a
 hairpin) then counts as the rounding (WR-01, 10 s debounce), so the real rounding after
-an early advance + Annuler still advances. The finish leg finishes on entering its radius
+an early advance + Annuler still advances. At a normal mark the stay in the suppressed zone
+stands in for "came near", so an exit on the inside of the turn advances even if the boat never
+came within radius + MARK_TOL_NM (accepted residual R10). An edit that keeps the active leg (same
+index and mark) and does not make it the finish keeps the suppression (_carry_suppress, CR-01 of
+review ccbbdc2). The finish leg finishes on entering its radius
 ("ARRIVÉE — <nom>"), no further advance.
 Hairpin marks (course change > 90 deg, Jabuka in both courses: in 203 deg, out 009/038 deg) need
 more than abeam of the incoming leg, which comes half a lap before the island is rounded (WR-01):
@@ -664,8 +670,11 @@ class CourseStore:
         judged against, through the turn, the hairpin side rule and dot_out. The stored
         evidence never depended on it: _abeam and _past_mark read it fresh on every tick. So a
         change (next mark moved, added at the default position, deleted or reordered, or the
-        side changed) restarts only the debounce. Review CR-01 of 93cb8b3: wiping the evidence
-        there left the course stuck on the mark just rounded."""
+        side changed) keeps the evidence and the Annuler suppression (_carry_suppress, review
+        ccbbdc2 CR-01) and restarts only the debounce. add_mark, delete_leg and reorder also
+        drop the banner, so such an edit inside the 60 s window removes the Annuler offer
+        (review ccbbdc2 IN-01). Review CR-01 of 93cb8b3: wiping the evidence there left the
+        course stuck on the mark just rounded."""
         return (self.course.seq[idx].side, self._seq_pos(idx + 1))
 
     def _tick_banner(self, t: float) -> None:
@@ -836,9 +845,11 @@ class CourseStore:
                 # At a normal mark, the stay inside the suppressed zone stands in for "came
                 # near" (_near), not for the incoming-leg latch: Annuler is tapped when the crew
                 # thinks the mark is not rounded yet, so the exit must still be past the mark
-                # along either leg (dot_in > 0, or dot_out > 0 with _near), and an approach-side
-                # retreat never advances (review WR-01, G-4-R02). At a hairpin, or without a
-                # usable outgoing leg, it still stands in for the latch, as before (CR-02).
+                # along either leg (dot_in > 0, or dot_out > 0 with _near). A retreat on the
+                # outside of the turn (dot_out <= 0) never advances (review WR-01, G-4-R02); one
+                # on the inside of the turn (dot_out > 0) does, whether or not the boat came
+                # near (accepted residual R10). At a hairpin, or without a usable outgoing leg,
+                # it still stands in for the latch, as before (CR-02).
                 self._near = True
                 exit_dots = self._leg_dots(lat, lon, idx, mark)
                 if exit_dots is None or exit_dots[2] is None or abs(exit_dots[2]) > HAIRPIN_DEG:
