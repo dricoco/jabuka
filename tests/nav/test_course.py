@@ -1145,3 +1145,186 @@ def test_one_fix_past_the_abeam_line_then_an_approach_side_exit_advances(tmp_pat
     t = run(cs, at(b_in + 210, 0.8), t, 30)
     assert cs.course.active_idx == 2
     assert len(_advances(log)) == 1
+
+
+# -- Annuler, then an edit that keeps the active leg (CR-01 of review ccbbdc2); residual R10 -------
+def _jabuka_annuler(cs: CourseStore) -> tuple[tuple[float, float], float]:
+    """The CR-02 track of test_hairpin_annuler_then_real_rounding_advances: an early far-side
+    advance at Jabuka, Annuler, then 5 s suppressed in the zone (300 deg, 0.7 nm). Returns
+    (Jabuka's position, next t)."""
+    cs.activate(2)
+    jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
+    t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)
+    t = run(cs, at(203, 0.6, mark=jab), t, 3)
+    t = run(cs, at(285, 0.6, mark=jab), t, 11)
+    assert cs.course.active_idx == 3
+    cs.undo(cs.status()["banner"]["token"], t)
+    t = run(cs, at(300, 0.7, mark=jab), t, 5)
+    assert cs.course.active_idx == 2 and cs.course.suppress_idx == 2
+    return jab, t
+
+
+def _jabuka_edit(kind: str, cs: CourseStore, jab: tuple[float, float]) -> None:
+    if kind == "move_next":
+        bl = cs.marks["blitvenica"]
+        cs.edit_mark("blitvenica", lat=bl.lat + 0.001, lon=bl.lon)
+    elif kind == "finir_ici_next":
+        cs.set_finish(3)
+    elif kind == "add_default":
+        cs.add_mark("Comité", *at(15, 4.0, mark=jab))
+    elif kind == "select_B":
+        cs.select("B")
+    elif kind == "delete_next":
+        cs.delete_leg(3)
+    elif kind == "activate_same":
+        cs.activate(2)
+    elif kind == "reorder_later":
+        cs.reorder(3, 4)
+    else:
+        assert kind == "none"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "none",
+        "move_next",
+        "finir_ici_next",
+        "add_default",
+        "select_B",
+        "delete_next",
+        "activate_same",
+        "reorder_later",
+    ],
+)
+def test_jabuka_annuler_then_an_edit_that_keeps_the_active_leg_still_advances(
+    tmp_path: Path, kind: str
+) -> None:
+    """CR-01 (review ccbbdc2): after Annuler at Jabuka, a crew edit that keeps Jabuka active
+    (« Finir ici » at Blitvenica, « Ajouter » at the default position, A -> B, deleting or
+    reordering a later leg, « Rendre active » on Jabuka) keeps the Annuler suppression, so the
+    zone exit after the real rounding still advances exactly once more."""
+    cs, log = store(tmp_path)
+    jab, t = _jabuka_annuler(cs)
+    _jabuka_edit(kind, cs, jab)
+    assert cs.course.active_idx == 2 and active_id(cs) == "jabuka"
+    assert cs.course.suppress_idx == 2
+    t = run(cs, at(300, 0.7, mark=jab), t, 5)  # still in the zone: suppressed
+    for k in range(40):  # heading north out of the zone along 009 deg
+        t = run(cs, at(9, 0.75 + 0.05 * k, mark=jab), t, 1)
+    t = run(cs, at(9, 2.6, mark=jab), t, 15)
+    assert cs.course.active_idx == 3
+    assert cs.course.suppress_idx is None
+    assert len(_advances(log)) == 2
+
+
+def _committee_annuler_rounded(
+    cs: CourseStore, turn: float
+) -> tuple[tuple[float, float], float, float]:
+    """An abeam advance inside the committee mark's zone, Annuler, then the real rounding while
+    suppressed: the boat ends at b_in + turn + 45 deg, 0.2 nm, still in the 0.30 nm zone.
+    Returns (mark, b_in, next t)."""
+    m, b_in = _committee(cs, turn)
+    _after_next(cs, m, b_in, turn)
+    t = run(cs, at(b_in + 180, 0.5, m), 0.0, 3)
+    t = run(cs, at(b_in + 210, 0.2, m), t, 3)
+    t = run(cs, at(b_in - 80, 0.2, m), t, 11)
+    assert cs.course.active_idx == 2
+    cs.undo(cs.status()["banner"]["token"], t)
+    t += 1
+    t = run(cs, at(b_in - 30, 0.02, m), t, 3)
+    t = run(cs, at(b_in + turn + 45, 0.02, m), t, 3)
+    t = run(cs, at(b_in + turn + 45, 0.2, m), t, 3)
+    assert cs.course.active_idx == 1 and cs.course.suppress_idx == 1
+    return m, b_in, t
+
+
+def _committee_edit(
+    kind: str, cs: CourseStore, m: tuple[float, float], b_in: float, turn: float
+) -> None:
+    if kind == "edit_next":
+        mid = cs.course.seq[2].mark_id
+        mk = cs.marks[mid]
+        q = geo.offset(mk.lat, mk.lon, 0.0, NUDGE_NM)
+        cs.edit_mark(mid, lat=q[0], lon=q[1])
+    elif kind == "side":
+        cs.set_leg(1, side="port")
+    elif kind == "add_default":
+        cs.add_mark("Nouvelle", *geo.offset(*m, math.radians(b_in + turn - 5), 2.0))
+    elif kind == "delete_next":
+        cs.delete_leg(2)
+    elif kind == "finir_ici_next":
+        cs.set_finish(2)
+    elif kind == "activate_same":
+        cs.activate(1)
+    else:
+        assert kind == "reorder_later"
+        cs.reorder(3, 2)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "edit_next",
+        "side",
+        "add_default",
+        "delete_next",
+        "finir_ici_next",
+        "activate_same",
+        "reorder_later",
+    ],
+)
+@pytest.mark.parametrize("turn", [60, 75])
+def test_committee_annuler_then_an_edit_that_keeps_the_active_leg_still_advances(
+    tmp_path: Path, turn: float, kind: str
+) -> None:
+    """CR-01 (review ccbbdc2) at a committee mark (radius 0.05 nm, zone 0.30 nm): Annuler, the
+    real rounding while suppressed, then an edit that keeps the active leg. The beat out of the
+    zone advances exactly once more. edit_next and side never cleared the suppression."""
+    cs, log = store(tmp_path)
+    m, b_in, t = _committee_annuler_rounded(cs, turn)
+    _committee_edit(kind, cs, m, b_in, turn)
+    assert cs.course.active_idx == 1 and cs.course.suppress_idx == 1
+    for k in range(30):
+        t = run(cs, at(b_in + turn + 45, 0.2 + 0.05 * k, m), t, 1)
+    t = run(cs, at(b_in + turn + 45, 1.7, m), t, 20)
+    assert cs.course.active_idx == 2
+    assert cs.course.suppress_idx is None
+    assert len(_advances(log)) == 2
+
+
+@pytest.mark.parametrize(
+    "kind", ["finish_here_active", "activate_other", "next", "insert_before", "select_A"]
+)
+def test_an_edit_that_changes_the_active_leg_or_makes_it_the_finish_clears_the_suppression(
+    tmp_path: Path, kind: str
+) -> None:
+    """The limits of _carry_suppress: « Finir ici » on the active leg (it must finish on
+    entering its radius), activating another leg, « Suiv. », an index shift of the active leg
+    (residual R6) and a select() that puts another mark active all clear the suppression."""
+    cs, _ = store(tmp_path)
+    m, b_in, t = _committee_advance_then_annuler(cs, 60)
+    t = run(cs, at(b_in + 210, 0.2, m), t, 5)  # in the zone, suppressed
+    assert cs.course.suppress_idx == 1
+    if kind == "finish_here_active":
+        cs.set_finish(1)
+        assert cs.course.active_idx == 1 and cs.course.suppress_idx is None
+        t = run(cs, at(b_in + 210, 0.03, m), t, 1)  # inside the 0.05 nm finish radius
+        assert cs.course.finished
+        assert cs.status()["banner"]["kind"] == "finish"
+        return
+    if kind == "activate_other":
+        cs.activate(2)
+        assert cs.course.active_idx == 2
+    elif kind == "next":
+        cs.next()
+        assert cs.course.active_idx == 2
+    elif kind == "insert_before":
+        cs.add_mark("Avant", *geo.offset(*m, math.radians(b_in + 180), 1.5), insert_at=1)
+        assert cs.course.active_idx == 2
+        assert cs.marks[active_id(cs)].name == "Comité"
+    else:
+        assert kind == "select_A"
+        cs.select("A")
+        assert cs.course.active_idx == 1 and active_id(cs) == "plic-sestre"
+    assert cs.course.suppress_idx is None
