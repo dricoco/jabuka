@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 4
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
-stopped_at: Completed 04-10-PLAN.md
-last_updated: "2026-11-09T11:17:08.665Z"
+stopped_at: Completed 04-11-PLAN.md
+last_updated: "2026-11-09T12:04:00.107Z"
 last_activity: 2026-11-09
-last_activity_desc: Phase 4 execution started
-state_head: 3c59c04b276136f0526951aadd74bf973b36d6cf
+last_activity_desc: 04-11 executed (helm takeovers G-4-R01/R03/R08)
+state_head: 736bc9a7a57c6fd66ee131a1c4b0032424a3d818
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 27
-  completed_plans: 25
+  completed_plans: 26
   percent: 0
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 4 (race-readiness-hardening-commissioning) — EXECUTING
-Plan: 10 of 12
-Status: Executing gap closure 5 — 04-09, 04-10 done (G-4-R02, R04, R05, R06, R12 closed); 04-11, 04-12 pending
-Last activity: 2026-11-09 — 04-10 executed (durability thread: no fsync on the core/ingest event loops; routing worker oom_score_adj +500; Plan B StartLimitIntervalSec=0)
+Plan: 11 of 12
+Status: Executing gap closure 5 — 04-09, 04-10, 04-11 done (G-4-R01, R02, R03, R04, R05, R06, R08, R12 closed); 04-12 pending
+Last activity: 2026-11-09 — 04-11 executed (helm primary-box takeovers: VIREZ/EMPANNEZ cue inverted, VENT PÉRIMÉ on stale manual wind, PAS DE GPS badge/label; gate green; src/jabuka fingerprint 2afba8c4…)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -65,6 +65,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P08 | 37 min | 3 tasks | 11 files |
 | Phase 04 P09 | 30 min | 2 tasks | 4 files |
 | Phase 04 P10 | 31 min | 3 tasks | 12 files |
+| Phase 04 P11 | 46min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-10: in jabuka-core and jabuka-ingest-fastnet every fsync and atomic-write tail runs on one FIFO thread (jabuka-durable); atomic_write_json callers unchanged; tests/tools stay synchronous
 - [Phase 04]: 04-10: background atomic write = synchronous .NAME.<n>.tmp write (disk-full/read-only errors still 503 on the caller), then fsync -> .bak -> rename -> dir fsync queued; an API 200 may precede the fsync during an SD stall (accepted; drain 20 s at exit)
 - [Phase 04]: 04-10: routing worker raises its oom_score_adj to max(500, inherited) in _pool_init; Plan B units StartLimitIntervalSec=0
+- [Phase 04]: 04-11: helm takeovers in primaryView priority order navFailed > PAS DE GPS > VENT PÉRIMÉ > VIREZ/EMPANNEZ cue > route > Phase 2; no core change for stale manual wind (UI-only)
+- [Phase 04]: 04-11: noPosition keys on a boat block carrying lat/lon keys with null values (core shape); a frozen cue loses its red box on link loss
 
 ### Pending Todos
 
@@ -128,6 +131,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T11:17:08.604Z
-Stopped at: Completed 04-10-PLAN.md
+Last session: 2026-11-09T12:04:00.048Z
+Stopped at: Completed 04-11-PLAN.md
 Resume file: None
