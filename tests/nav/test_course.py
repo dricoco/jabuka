@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import random
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -844,4 +846,223 @@ def test_a_rename_keeps_the_rounding_debounce(tmp_path: Path) -> None:
     t = run(cs, at(81, 0.4), t, 6)
     cs.edit_mark("plic-sestre", name="Plić")
     t = run(cs, at(81, 0.4), t, 5)
+    assert cs.course.active_idx == 2
+
+
+# -- an outgoing edit after the rounding keeps the evidence (CR-01 of review 93cb8b3) -------------
+NUDGE_NM = 0.00054  # about 1 m
+
+
+def _round_edit(
+    cs: CourseStore,
+    buoy: tuple[float, float],
+    mark: tuple[float, float],
+    b_in: float,
+    heading_change: float,
+    r: float,
+    edit: Callable[[CourseStore], None],
+    *,
+    kn: float = 7.0,
+    edit_at_nm: float = 0.2,
+    noise_m: float = 0.0,
+    seed: int = 0,
+    steer_to: Callable[[CourseStore], tuple[float, float]] | None = None,
+) -> int | None:
+    """Like _round, with a crew edit on the way out: on the first out tick at least edit_at_nm
+    from the entered mark (still inside the 0.3 nm committee zone), edit(cs) runs once; then the
+    boat steers straight to steer_to(cs), or holds its heading. noise_m: each fix is offset by a
+    random direction, then abs(gauss(0, noise_m)) metres (seeded). Returns the out-tick k of the
+    advance, or None."""
+    rng = random.Random(seed)
+    v = kn / 3600.0
+    sgn = 1.0 if heading_change > 0 else -1.0
+    idx0 = cs.course.active_idx
+    n = int(1.5 / v)
+    t = 0.0
+
+    def tick(p: tuple[float, float]) -> None:
+        nonlocal t
+        q = p
+        if noise_m:
+            q = geo.offset(*p, rng.uniform(0, 2 * math.pi), abs(rng.gauss(0, noise_m)) / 1852.0)
+        cs.on_tick(q[0], q[1], t)
+        t += 1.0
+
+    for k in range(-n, 1):
+        tick(
+            geo.offset(
+                *geo.offset(*buoy, math.radians(b_in), k * v), math.radians(b_in - 90 * sgn), r
+            )
+        )
+    assert cs.course.active_idx == idx0, "advanced during the approach"
+    steps = max(1, int(abs(math.radians(heading_change)) * r / v))
+    p = buoy
+    for k in range(1, steps + 1):
+        p = geo.offset(*buoy, math.radians(b_in - 90 * sgn + heading_change * k / steps), r)
+        tick(p)
+    found = 0 if cs.course.active_idx != idx0 else None
+    edited = False
+    target = None
+    for k in range(1, n + 1):
+        if not edited and geo.bearing_distance(*p, *mark)[1] >= edit_at_nm:
+            assert found is None, "advanced before the edit"
+            edit(cs)
+            edited = True
+            target = steer_to(cs) if steer_to is not None else None
+        b = math.radians(b_in + heading_change)
+        if target is not None:
+            b, _ = geo.bearing_distance(*p, *target)
+        p = geo.offset(*p, b, v)
+        tick(p)
+        if found is None and cs.course.active_idx != idx0:
+            found = k
+    assert edited, "the edit never ran"
+    return found
+
+
+def _after_next(cs: CourseStore, mark: tuple[float, float], b_in: float, turn: float) -> None:
+    """A 4th leg "N2" right after "N", at a course change of turn - 10 deg from the active mark,
+    so that deleting "N" leaves a usable next leg (the delete_next edit)."""
+    q = geo.offset(*mark, math.radians(b_in + turn - 10), 3.0)
+    cs.add_mark("N2", q[0], q[1], insert_at=3)
+
+
+def _outgoing_edit(
+    kind: str, mark: tuple[float, float], b_in: float, turn: float
+) -> Callable[[CourseStore], None]:
+    """An edit of the outgoing leg of the active committee mark (the next mark is "N" of
+    _committee). Every new turn stays at 90 deg or less: an edit that turns the mark into a
+    hairpin is residual R3, pinned separately."""
+
+    def edit(cs: CourseStore) -> None:
+        nid = cs.course.seq[2].mark_id
+        if kind == "nudge_next":
+            n = cs.marks[nid]
+            q = geo.offset(n.lat, n.lon, 0.0, NUDGE_NM)
+            cs.edit_mark(nid, lat=q[0], lon=q[1])
+        elif kind == "move_next":
+            q = geo.offset(*mark, math.radians(b_in + turn - 10), 3.0)
+            cs.edit_mark(nid, lat=q[0], lon=q[1])
+        elif kind == "add_default":  # no insert_at: the default position, active_idx + 1
+            q = geo.offset(*mark, math.radians(b_in + turn - 10), 2.0)
+            cs.add_mark("Nouvelle", q[0], q[1])
+        elif kind == "side":
+            cs.set_leg(1, side="port")
+        elif kind == "delete_next":  # "N2" (_after_next) becomes the next mark
+            cs.delete_leg(2)
+        else:
+            raise AssertionError(kind)
+
+    return edit
+
+
+# (turn, tack, r, kn, err_nm): an exact mark rounded at 0.01 nm advances by the abeam rule before
+# the edit, so it is left out on purpose
+OUTGOING_EDIT_CASES = [
+    *[(75, 45, 0.005, 7.0, e) for e in (0.0, 0.011, 0.05, 0.09)],
+    *[(89, 50, 0.008, 9.0, e) for e in (0.0, 0.011, 0.05, 0.09)],
+    *[(60, 45, 0.01, 7.0, e) for e in (0.011, 0.05, 0.09)],
+    *[(45, 50, 0.01, 7.0, e) for e in (0.011, 0.05, 0.09)],
+]
+
+
+@pytest.mark.parametrize("noise_m", [0.0, 3.0])
+@pytest.mark.parametrize("kind", ["nudge_next", "move_next", "add_default", "side", "delete_next"])
+@pytest.mark.parametrize("turn,tack,r,kn,err_nm", OUTGOING_EDIT_CASES)
+def test_an_outgoing_edit_in_the_zone_after_the_rounding_still_advances(
+    tmp_path: Path,
+    turn: float,
+    tack: float,
+    r: float,
+    kn: float,
+    err_nm: float,
+    kind: str,
+    noise_m: float,
+) -> None:
+    """CR-01 (review 93cb8b3): moving the next mark (1 m or 10 deg further in), adding a mark at
+    the default position, deleting the next mark or changing the side while still in the zone
+    after the rounding keeps the rounding evidence and restarts only the 10 s debounce: the
+    course advances once."""
+    cs, log = store(tmp_path)
+    mark, b_in = _committee(cs, turn)
+    if kind == "delete_next":
+        _after_next(cs, mark, b_in, turn)
+    buoy = geo.offset(*mark, math.radians(b_in + 180), err_nm)
+    k = _round_edit(
+        cs,
+        buoy,
+        mark,
+        b_in,
+        turn + tack,
+        r,
+        _outgoing_edit(kind, mark, b_in, turn),
+        kn=kn,
+        noise_m=noise_m,
+    )
+    assert k is not None and k < 300
+    assert len(_advances(log)) == 1
+
+
+def test_an_edit_that_makes_an_off_buoy_mark_a_hairpin_needs_a_manual_next(
+    tmp_path: Path,
+) -> None:
+    """Accepted residual R3 by edit (plan 04-14): a mark entered 0.05 nm off the buoy, and a new
+    next mark added at the default position turns it into a hairpin (95 deg). The hairpin rule
+    needs the latch, which an off-buoy mark never gets: the crew uses « Suiv. »."""
+    cs, log = store(tmp_path)
+    mark, b_in = _committee(cs, 85)
+    buoy = geo.offset(*mark, math.radians(b_in + 180), 0.05)
+
+    def edit(c: CourseStore) -> None:
+        q = geo.offset(*mark, math.radians(b_in + 95), 2.0)
+        c.add_mark("Nouvelle", q[0], q[1])
+
+    k = _round_edit(cs, buoy, mark, b_in, 130, 0.01, edit)
+    assert k is None and cs.course.active_idx == 1 and _advances(log) == []
+    cs.next()
+    assert cs.course.active_idx == 2
+    assert cs.marks[cs.course.seq[2].mark_id].name == "Nouvelle"
+
+
+@pytest.mark.parametrize("delta", [-60, -90, -120])
+@pytest.mark.parametrize(
+    "turn,tack,r,err_nm", [(60, 45, 0.01, 0.011), (60, 45, 0.01, 0.05), (75, 45, 0.005, 0.0)]
+)
+def test_after_a_big_next_mark_change_steering_to_the_new_mark_advances(
+    tmp_path: Path, turn: float, tack: float, r: float, err_nm: float, delta: float
+) -> None:
+    """The next mark moved by 60 deg or more in the zone after the rounding: a boat that steers
+    to the new mark advances once."""
+    cs, log = store(tmp_path)
+    mark, b_in = _committee(cs, turn)
+    buoy = geo.offset(*mark, math.radians(b_in + 180), err_nm)
+    new = geo.offset(*mark, math.radians(b_in + turn + delta), 3.0)
+
+    def edit(c: CourseStore) -> None:
+        c.edit_mark(c.course.seq[2].mark_id, lat=new[0], lon=new[1])
+
+    k = _round_edit(cs, buoy, mark, b_in, turn + tack, r, edit, steer_to=lambda c: new)
+    assert k is not None and k < 600
+    assert len(_advances(log)) == 1
+
+
+@pytest.mark.parametrize("delta", [-60, -90, -120])
+def test_a_big_next_mark_change_while_sailing_the_old_leg_needs_a_manual_next(
+    tmp_path: Path, delta: float
+) -> None:
+    """Accepted residual R8 (plan 04-14): a mark entered 0.05 nm off the buoy (no latch), the
+    next mark moved by 60 deg or more in the zone after the rounding, and the boat keeps
+    sailing the old leg: by the new outgoing leg it is on the approach side, so no advance; the
+    crew uses « Suiv. »."""
+    cs, log = store(tmp_path)
+    mark, b_in = _committee(cs, 60)
+    buoy = geo.offset(*mark, math.radians(b_in + 180), 0.05)
+    new = geo.offset(*mark, math.radians(b_in + 60 + delta), 3.0)
+
+    def edit(c: CourseStore) -> None:
+        c.edit_mark(c.course.seq[2].mark_id, lat=new[0], lon=new[1])
+
+    k = _round_edit(cs, buoy, mark, b_in, 105, 0.01, edit)
+    assert k is None and _advances(log) == []
+    cs.next()
     assert cs.course.active_idx == 2
