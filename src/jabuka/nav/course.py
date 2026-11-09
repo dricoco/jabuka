@@ -18,8 +18,11 @@ confirm the sides. Every edit keeps the active mark on the same leg object.
 
 Rounding state machine (CRSE-03, RESEARCH Pattern 6, Pitfall 11), active mark only:
 APPROACH -> IN_ZONE when d(P, M) <= radius + 0.25 nm; then a rounding candidate when the boat has
-passed abeam of M relative to the incoming leg (dot(P - M, u_in) > 0) or has left the zone again.
-Gate d <= 2 nm. The candidate must hold DEBOUNCE_S consecutive seconds of t_mono; then the next
+passed abeam of M relative to the incoming leg (dot(P - M, u_in) > 0) or has left the zone past
+the mark. A zone exit counts only past the mark: along the incoming leg; at a hairpin, after
+having been past it along the incoming leg since entering the zone and now past it along the
+outgoing leg. A zone exit on the approach side never advances (G-4-R02). Gate d <= 2 nm.
+The candidate must hold DEBOUNCE_S consecutive seconds of t_mono; then the next
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
 Annuler). undo() restores the previous mark and suppresses that mark until the boat has left its
@@ -29,7 +32,7 @@ an early advance + Annuler still advances. The finish leg finishes on entering i
 Hairpin marks (course change > 90 deg, Jabuka in both courses: in 203 deg, out 009/038 deg) need
 more than abeam of the incoming leg, which comes half a lap before the island is rounded (WR-01):
 the boat must also be past the mark along the outgoing leg (the far side of the island), or have
-left the zone. Debounce state lives in memory.
+left the zone past the mark (above). Debounce state lives in memory.
 """
 
 from __future__ import annotations
@@ -242,6 +245,9 @@ class CourseStore:
         self._entered = False
         self._cand_since: float | None = None
         self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
+        # the boat has been past the active mark along the incoming leg since entering its zone;
+        # a hairpin's zone exit needs it (G-4-R02)
+        self._beyond = False
         self._last_fsm_t: float | None = None  # t_mono of the previous position sample
         self._banner_until: float | None = None  # t_mono end of the banner window
         parsed, source = load_json_status(self.path, None, validate=_parse_course_file)
@@ -588,6 +594,7 @@ class CourseStore:
         self._entered = False
         self._cand_since = None
         self._suppressed_in_zone = False
+        self._beyond = False
 
     def _tick_banner(self, t: float) -> None:
         b = self.course.banner
@@ -639,6 +646,47 @@ class CourseStore:
         vx, vy = geo.unit(out)
         return px * vx + py * vy > 0.0
 
+    def _leg_dots(
+        self, lat: float, lon: float, idx: int, mark: Mark
+    ) -> tuple[float, float | None, float | None] | None:
+        """(dot_in, dot_out, turn_deg) of P - M in local nm: along the incoming leg, along the
+        outgoing leg and the course change (+ right, - left). None without an incoming leg (no
+        previous mark, or on the same spot); dot_out and turn_deg None without an outgoing leg."""
+        c = self.course
+        prev = c.marks.get(c.seq[idx - 1].mark_id)
+        if prev is None:
+            return None
+        bearing, dist = geo.bearing_distance(prev.lat, prev.lon, mark.lat, mark.lon)
+        if dist < 1e-6:
+            return None
+        px, py = geo.to_local(lat, lon, mark.lat, mark.lon)
+        ux, uy = geo.unit(bearing)
+        dot_in = px * ux + py * uy
+        nxt = c.marks.get(c.seq[idx + 1].mark_id) if idx + 1 < len(c.seq) else None
+        if nxt is None:
+            return dot_in, None, None
+        out, out_dist = geo.bearing_distance(mark.lat, mark.lon, nxt.lat, nxt.lon)
+        if out_dist < 1e-6:
+            return dot_in, None, None
+        turn = math.degrees(math.remainder(out - bearing, 2 * math.pi))
+        vx, vy = geo.unit(out)
+        return dot_in, px * vx + py * vy, turn
+
+    def _past_mark(self, dots: tuple[float, float | None, float | None] | None) -> bool:
+        """A zone exit counts only past the mark (G-4-R02, review repro on Plić Sestre: a tack
+        away on the approach side used to advance the course). Past along the incoming leg; at
+        a hairpin (turn > HAIRPIN_DEG, Jabuka) the approach side is also "past along the
+        outgoing leg", so the boat must first have been past the mark along the incoming leg
+        since entering the zone (the latch), the far-side evidence _abeam uses, and be past it
+        along the outgoing leg now. No incoming leg to judge against: the zone exit alone, as
+        before."""
+        if dots is None:
+            return True
+        dot_in, dot_out, turn = dots
+        if turn is None or dot_out is None or abs(turn) <= HAIRPIN_DEG:
+            return dot_in > 0.0
+        return self._beyond and dot_out > 0.0
+
     def on_tick(self, lat: float | None, lon: float | None, t_mono: float) -> None:
         """Record the boat position and run the rounding state machine (never raises)."""
         if lat is not None and lon is not None:
@@ -688,6 +736,9 @@ class CourseStore:
             # still needs a fresh entry.
             if left_this_zone:
                 self._entered = True
+                # the stay inside the suppressed zone after Annuler is the rounding evidence: it
+                # stands in for the incoming-leg latch, which the suppressed ticks never update
+                self._beyond = True
         if idx >= self.last_idx:  # the finish
             if d <= max(leg.radius_nm, FINISH_MIN_NM):
                 self._finish(t, idx, mark)
@@ -695,12 +746,16 @@ class CourseStore:
         if d > max(GATE_NM, zone + GATE_OVER_ZONE_NM):  # a zone past 2 nm can still be left
             self._entered = False
             self._cand_since = None
+            self._beyond = False
             return
         if d <= zone:
             self._entered = True
         if not self._entered:
             return
-        if d > zone or self._abeam(lat, lon, idx, mark):
+        dots = self._leg_dots(lat, lon, idx, mark)
+        if dots is not None and dots[0] > 0.0:
+            self._beyond = True
+        if self._abeam(lat, lon, idx, mark) or (d > zone and self._past_mark(dots)):
             if self._cand_since is None:
                 self._cand_since = t
             elif t - self._cand_since >= DEBOUNCE_S:
