@@ -19,9 +19,13 @@ confirm the sides. Every edit keeps the active mark on the same leg object.
 Rounding state machine (CRSE-03, RESEARCH Pattern 6, Pitfall 11), active mark only:
 APPROACH -> IN_ZONE when d(P, M) <= radius + 0.25 nm; then a rounding candidate when the boat has
 passed abeam of M relative to the incoming leg (dot(P - M, u_in) > 0) or has left the zone past
-the mark. A zone exit counts only past the mark: along the incoming leg; at a hairpin, after
-having been past it along the incoming leg since entering the zone and now past it along the
-outgoing leg. A zone exit on the approach side never advances (G-4-R02). Gate d <= 2 nm.
+the mark. A zone exit counts only past the mark. At a normal turn: past it along the incoming
+leg at any time since entering the zone (the latch), or now, or now past it along the outgoing
+leg after having come within the leg radius + MARK_TOL_NM (0.1 nm) of it, so a committee mark
+entered off the real buoy still advances (CR-01). At a hairpin: the latch and now past it along
+the outgoing leg. A zone exit on the approach side never advances (G-4-R02). Gate d <= 2 nm.
+The state machine restarts when the active mark, its leg (side, radius) or the previous/next
+mark changes (WR-01): the evidence is only valid for the geometry it was measured against.
 The candidate must hold DEBOUNCE_S consecutive seconds of t_mono; then the next
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
@@ -70,6 +74,10 @@ FSM_GAP_S = 3.0  # a longer gap between position samples restarts the debounce (
 BANNER_S = 60.0  # Annuler window
 FINISH_MIN_NM = 0.05  # finish radius floor (a radius-0 custom finish is still reachable)
 HAIRPIN_DEG = 90.0  # course change above which abeam also needs "past the mark" on the way out
+# CR-01: a committee mark tapped or typed up to this far from the real buoy (beyond the leg's
+# rounding radius) still advances on a zone exit along the next leg. Below ZONE_MARGIN_NM, so an
+# approach-side retreat that never comes this close never advances.
+MARK_TOL_NM = 0.1
 
 Side = Literal["port", "stbd", "none"]
 
@@ -241,13 +249,17 @@ class CourseStore:
         self.on_event = on_event
         self.wall = wall
         # rounding state machine (memory only)
-        self._fsm_key: tuple[int, str] | None = None
+        # the geometry the rounding evidence is measured against (WR-01, _fsm_geometry)
+        self._fsm_key: tuple | None = None
         self._entered = False
         self._cand_since: float | None = None
         self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
         # the boat has been past the active mark along the incoming leg since entering its zone;
         # a hairpin's zone exit needs it (G-4-R02)
         self._beyond = False
+        # since entering the zone, the boat has come within the leg radius + MARK_TOL_NM of the
+        # mark (CR-01)
+        self._near = False
         self._last_fsm_t: float | None = None  # t_mono of the previous position sample
         self._banner_until: float | None = None  # t_mono end of the banner window
         parsed, source = load_json_status(self.path, None, validate=_parse_course_file)
@@ -595,6 +607,28 @@ class CourseStore:
         self._cand_since = None
         self._suppressed_in_zone = False
         self._beyond = False
+        self._near = False
+
+    def _fsm_geometry(self, idx: int) -> tuple:
+        """What the rounding evidence (entry, debounce, latch, near) is measured against: the
+        active leg (index, mark, side, radius) and the positions of the previous, active and
+        next marks. Any change restarts the state machine (review WR-01: a mark moved after the
+        latch must be rounded again). A course switch with select() (A<->B) that keeps the
+        active mark but gives it a different previous or next mark restarts it too, on purpose:
+        the latch and near evidence were measured against the old incoming and outgoing legs
+        (direction, turn, hairpin or not), so they are not valid for the new ones; if the boat
+        has already left the zone, the crew uses « Suiv. » (plan 04-13 residual R6). A rename
+        keeps it."""
+        c = self.course
+        leg = c.seq[idx]
+
+        def pos(i: int) -> tuple[str, float, float] | None:
+            if not 0 <= i < len(c.seq):
+                return None
+            m = c.marks.get(c.seq[i].mark_id)
+            return None if m is None else (m.id, m.lat, m.lon)
+
+        return (idx, leg.mark_id, leg.side, leg.radius_nm, pos(idx - 1), pos(idx), pos(idx + 1))
 
     def _tick_banner(self, t: float) -> None:
         b = self.course.banner
@@ -674,17 +708,34 @@ class CourseStore:
 
     def _past_mark(self, dots: tuple[float, float | None, float | None] | None) -> bool:
         """A zone exit counts only past the mark (G-4-R02, review repro on Plić Sestre: a tack
-        away on the approach side used to advance the course). Past along the incoming leg; at
-        a hairpin (turn > HAIRPIN_DEG, Jabuka) the approach side is also "past along the
-        outgoing leg", so the boat must first have been past the mark along the incoming leg
-        since entering the zone (the latch), the far-side evidence _abeam uses, and be past it
-        along the outgoing leg now. No incoming leg to judge against: the zone exit alone, as
-        before."""
+        away on the approach side used to advance the course).
+
+        At a normal turn (<= HAIRPIN_DEG, or no usable outgoing leg), any of (CR-01):
+        - the latch: past the mark along the incoming leg at any tick since entering the zone
+          (a tight rounding spends less than the 10 s debounce past the abeam line);
+        - past it along the incoming leg now;
+        - past it along the outgoing leg now, after having come within the leg radius +
+          MARK_TOL_NM of it: the entered point may be up to MARK_TOL_NM off the real buoy, so
+          the boat rounding the buoy is never past the entered point along the incoming leg.
+        The G-4-R02 retreats never come that near, or leave with dot_out <= 0.
+        At a hairpin (turn > HAIRPIN_DEG, Jabuka) the approach side is also "past along the
+        outgoing leg", so the boat must have the latch (the far-side evidence _abeam uses) and
+        be past the mark along the outgoing leg now. No incoming leg to judge against: the zone
+        exit alone, as before.
+
+        Accepted residuals (plan 04-13 R2, R3): a normal mark entered so far beyond the buoy
+        that the boat never comes within radius + MARK_TOL_NM of it does not auto-advance. A
+        hairpin mark entered beyond the buoy along the incoming leg does not auto-advance. In
+        both cases the crew uses « Suiv. »."""
         if dots is None:
             return True
         dot_in, dot_out, turn = dots
         if turn is None or dot_out is None or abs(turn) <= HAIRPIN_DEG:
-            return dot_in > 0.0
+            return (
+                self._beyond
+                or dot_in > 0.0
+                or (dot_out is not None and dot_out > 0.0 and self._near)
+            )
         return self._beyond and dot_out > 0.0
 
     def on_tick(self, lat: float | None, lon: float | None, t_mono: float) -> None:
@@ -713,7 +764,7 @@ class CourseStore:
         mark = c.marks.get(leg.mark_id)
         if mark is None:
             return
-        key = (idx, leg.mark_id)
+        key = self._fsm_geometry(idx)
         if key != self._fsm_key:
             self._reset_fsm()
             self._fsm_key = key
@@ -737,7 +788,9 @@ class CourseStore:
             if left_this_zone:
                 self._entered = True
                 # the stay inside the suppressed zone after Annuler is the rounding evidence: it
-                # stands in for the incoming-leg latch, which the suppressed ticks never update
+                # stands in for the incoming-leg latch, which the suppressed ticks never update.
+                # The latch counts at every mark (CR-01), so this path advances at normal marks
+                # too, not only at hairpins
                 self._beyond = True
         if idx >= self.last_idx:  # the finish
             if d <= max(leg.radius_nm, FINISH_MIN_NM):
@@ -747,9 +800,12 @@ class CourseStore:
             self._entered = False
             self._cand_since = None
             self._beyond = False
+            self._near = False
             return
         if d <= zone:
             self._entered = True
+            if d <= leg.radius_nm + MARK_TOL_NM:
+                self._near = True
         if not self._entered:
             return
         dots = self._leg_dots(lat, lon, idx, mark)
