@@ -210,10 +210,21 @@ def test_route_on_the_map_and_the_helm_steers_it(page, feeder) -> None:
         " return t.includes('Virement dans') || t.includes('Route :'); }",
         timeout=30000,
     )
+    # the route drives the primary box: its target (TWA ROUTE / CAP ROUTE), or, when the advised
+    # tack is due or the boat is on the other tack than the route's, the VIREZ / EMPANNEZ cue
+    # (G-4-R03, MAINTENANT / MAUVAIS BORD)
     pg.wait_for_function(
-        "() => document.getElementById('primary-label').textContent.includes('ROUTE')",
+        "() => { const t = document.getElementById('primary-label').textContent;"
+        " return t.includes('ROUTE') || t === 'MAINTENANT' || t === 'MAUVAIS BORD'; }",
         timeout=30000,
     )
+    box = pg.evaluate(
+        "() => [document.getElementById('primary-label').textContent,"
+        " document.getElementById('primary').textContent,"
+        " document.querySelector('#helm-steer .primary-box').classList.contains('cue')]"
+    )
+    if "ROUTE" not in box[0]:
+        assert box[1] in ("VIREZ", "EMPANNEZ") and box[2] is True, box
     countdown = pg.locator("#helm-countdown").inner_text()
     assert countdown == "" or "dans" in countdown or countdown in ("VIREZ", "EMPANNEZ"), countdown
     # the route layers are on the map and visible
