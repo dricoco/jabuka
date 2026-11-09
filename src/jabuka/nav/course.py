@@ -303,11 +303,35 @@ class CourseStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, {"version": version, "course": course.model_dump()})
 
+    def _carry_suppress(self, new: Course) -> Course:
+        """An edit that keeps the active leg (same index, same mark) and does not make it the
+        finish keeps the Annuler suppression, and with it the CR-02 "left the suppressed zone"
+        stand-in (review ccbbdc2 CR-01): dropping it while the boat was still in the zone after
+        the real rounding left the course stuck on the mark just rounded. « Suiv. »/« Préc. »,
+        activating another leg, an index shift (R6), a select() that puts another mark active
+        and « Finir ici » on the active leg still clear it: on the finish leg the boat must
+        finish on entering its radius."""
+        old = self.course
+        if old.suppress_idx is None or old.suppress_idx != old.active_idx:
+            return new
+        if new.suppress_idx is not None or new.banner is not None or new.finished:
+            return new
+        if new.active_idx != old.active_idx:
+            return new
+        if new.seq[new.active_idx].mark_id != old.seq[old.active_idx].mark_id:
+            return new
+        last = new.finish_idx if new.finish_idx is not None else len(new.seq) - 1
+        if not new.active_idx < last:
+            return new
+        return new.model_copy(update={"suppress_idx": new.active_idx})
+
     def _commit(
         self, course: Course, base_version: int | None = None, event: dict | None = None
     ) -> None:
-        """Version check, atomic write, then (and only then) the new state in memory."""
+        """Version check, atomic write, then (and only then) the new state in memory. An edit
+        that keeps the active leg keeps the Annuler suppression (_carry_suppress)."""
         self._check_version(base_version)
+        course = self._carry_suppress(course)
         version = self.version + 1
         self._write(course, version)
         self._clear_write_alert()
