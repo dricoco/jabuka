@@ -16,12 +16,15 @@
 # during planning, 2026-11-06), but the guarantee no longer depends on that.
 #
 # Upstream's unit binds to the ttyUSB0 device; that is dropped here (it is started by hand).
+# StartLimitIntervalSec=0: a crash loop must not leave Plan B permanently dead (systemd's default
+# is 5 starts in 10 s, then failed), the same as the main units.
 
 [Unit]
 Description=fastnet2ip Plan B (Fastnet to NMEA 0183 on UDP 2002) via the read-only relay, manual start only
 BindsTo=jabuka-fastnet-relay.service
 After=jabuka-fastnet-relay.service
 Conflicts=jabuka-ingest-fastnet.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

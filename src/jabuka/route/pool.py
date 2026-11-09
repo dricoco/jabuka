@@ -14,6 +14,8 @@ coalescing (CONTEXT §Router, RESEARCH Pattern 9).
   "superseded").
 - Nothing blocking runs on the event loop: submitting (which may spawn the worker) and killing
   happen in a thread.
+- The worker raises its oom_score_adj to +500 (``raise_oom_score_adj``): it must not keep the
+  core's OOMScoreAdjust=-500 (review B/R06).
 
 Job functions and the initializer must be importable module-level functions (pickled by name).
 """
@@ -30,6 +32,12 @@ from typing import Any, NamedTuple
 
 WORKER_START_METHOD: str | None = None  # set inside the worker by _pool_init
 
+# The worker inherits jabuka-core's OOMScoreAdjust=-500 through the forkserver. As the biggest
+# allocator it must be killed first, before gpsd, NetworkManager (the AP) or journald (review
+# B/R06); the core recreates it on demand.
+OOM_SCORE_ADJ_PATH = "/proc/self/oom_score_adj"
+WORKER_OOM_SCORE_ADJ = 500
+
 
 class PoolOutcome(NamedTuple):
     status: str  # ok | timeout | crashed | error | superseded
@@ -38,11 +46,30 @@ class PoolOutcome(NamedTuple):
     error: str | None
 
 
+def raise_oom_score_adj(target: int = WORKER_OOM_SCORE_ADJ, path: str | None = None) -> int | None:
+    """Raise this process's oom_score_adj to target when it is below; never lower it (an
+    unprivileged process may raise its own value, not lower it). Returns the value in effect, or
+    None when it cannot be read or written (best effort: never raises)."""
+    p = path if path is not None else OOM_SCORE_ADJ_PATH
+    try:
+        with open(p) as fh:
+            current = int(fh.read().strip())
+        if current >= target:
+            return current
+        with open(p, "w") as fh:
+            fh.write(f"{target}\n")
+        return target
+    except (OSError, ValueError):
+        return None
+
+
 def _pool_init(
     nice: int, start_method: str, init_fn: Callable[..., Any] | None, init_args: tuple
 ) -> None:
-    """Worker initializer: lower the priority, record the start method, then the user init."""
+    """Worker initializer: raise oom_score_adj, record the start method, lower the priority,
+    then the user init."""
     global WORKER_START_METHOD
+    raise_oom_score_adj(WORKER_OOM_SCORE_ADJ)  # first: killed before the services (R06)
     WORKER_START_METHOD = start_method
     if nice:
         try:

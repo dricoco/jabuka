@@ -8,12 +8,15 @@
 # it writes into the pty is read back by the relay, discarded and logged, never sent on the wire.
 #
 # Conflicts=jabuka-ingest-fastnet.service: only one process may own the port (exclusive lock).
+# StartLimitIntervalSec=0: a crash loop must not leave Plan B permanently dead (systemd's default
+# is 5 starts in 10 s, then failed), the same as the main units.
 
 [Unit]
 Description=Jabuka receive-only Fastnet relay for Plan B (fastnet2ip)
 Documentation=file:///opt/jabuka/PI-SETUP.md
 Conflicts=jabuka-ingest-fastnet.service
 StopWhenUnneeded=yes
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify

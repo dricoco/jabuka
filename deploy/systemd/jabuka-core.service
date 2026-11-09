@@ -27,6 +27,8 @@ Restart=always
 RestartSec=2
 WatchdogSec=30
 StateDirectory=jabuka
+# the routing worker (forkserver child) raises its own oom_score_adj to +500 (route/pool.py), so
+# the kernel kills it before gpsd/NetworkManager/journald
 OOMScoreAdjust=-500
 Environment=PYTHONUNBUFFERED=1
 NoNewPrivileges=yes

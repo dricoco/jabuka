@@ -22,7 +22,8 @@ def init_probe(tag: Any = None) -> None:
 
 
 def whoami(_arg: Any = None) -> dict[str, Any]:
-    """Identity of the worker process: pid, parent pid, niceness, tag, start method."""
+    """Identity of the worker process: pid, parent pid, niceness, tag, start method,
+    oom_score_adj (None when unreadable)."""
     from jabuka.route import pool as _pool  # the worker records how it was started
 
     return {
@@ -32,7 +33,16 @@ def whoami(_arg: Any = None) -> dict[str, Any]:
         "tag": _TAG,
         "start_method": _pool.WORKER_START_METHOD,
         "default_start_method": multiprocessing.get_start_method(allow_none=True),
+        "oom_score_adj": _oom_score_adj(),
     }
+
+
+def _oom_score_adj() -> int | None:
+    try:
+        with open("/proc/self/oom_score_adj") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def sleep_for(seconds: float) -> float:
