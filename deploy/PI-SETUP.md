@@ -320,7 +320,8 @@ its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. 
   The switch runs detached: an SSH session over Wi-Fi drops, then reconnect through the phone
   (`ssh drico@<hostname>.local` or the address in the phone's hotspot client list). The phone
   profile never autoconnects: if joining fails, or the hotspot disappears later, the AP comes back
-  on its own, and a reboot always starts on the AP. Re-running provision keeps the profile.
+  on its own, and a reboot always starts on the AP. Re-running provision keeps the profile. To
+  build the race weather on the Pi itself, see section 8 (`sudo prerace`).
 
 - **Tablet cannot join, or joins and drops:** some clients do not get along with PMF disabled or
   enabled on the Pi's brcmfmac radio. Toggle it, then forget and rejoin on the tablet:
@@ -383,3 +384,75 @@ its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. 
   with its rollback: [docs/SPARE-SD.md](../docs/SPARE-SD.md).
 - Feature freeze of 2026-11-11 (tag `race-2026`, wheelhouse, lock review, config-only changes
   afterwards, `bash scripts/freeze-check.sh`): [docs/FREEZE.md](../docs/FREEZE.md).
+
+## 8. Weather on the Pi (laptop dead): sudo prerace
+
+Use this when the laptop is dead or absent at the dock. The Pi carries its own copy of the
+weather-prep tools in `/opt/jabuka-prep/venv`, separate from the app venv `/opt/jabuka/venv`.
+Provision step g2 installs it, hash-locked and offline, from `deploy/wheelhouse/prep`, which
+`bash scripts/build-wheelhouse.sh` builds with the rest of the wheelhouse. It never modifies the
+app.
+
+Check after provisioning:
+
+```bash
+/opt/jabuka-prep/venv/bin/python -c "import pygrib, shapely, netCDF4"
+jabuka-prep-pi --help
+```
+
+One-time prerequisite: save the phone hotspot password with `sudo jabuka-wifi phone`, then go back
+with `sudo jabuka-wifi ap` (see section 6).
+
+**Main path:** `sudo prerace`. It:
+
+1. runs detached as the unit `jabuka-prerace`, so an SSH session over the boat AP that drops does
+   not stop it;
+2. uses the phone hotspot only if the Pi has no internet, and always comes back to the `jabuka` AP
+   at the end, even on failure;
+3. copies the current pack to `/var/lib/jabuka/racepack.new`, then runs ICON-EU `wind` (fatal on
+   error), EWAM `waves` (optional) and `check` there, as the `jabuka` user;
+4. swaps the new pack in, keeps the previous one as `/var/lib/jabuka/racepack.prev`, and restarts
+   jabuka-core.
+
+Follow it and read the result:
+
+```bash
+journalctl -fu jabuka-prerace
+sudo prerace status
+```
+
+- `OK` = the new pack is installed and jabuka-core restarted.
+- `MÉTÉO INCOMPLÈTE` = installed anyway: read the coverage lines shown by `sudo prerace status`
+  and the section "Reading the coverage report" of [docs/WEATHER-PACK.md](../docs/WEATHER-PACK.md).
+- `ÉCHEC` = the old pack is untouched (the reason and the end of the log are in the status).
+
+Cost and timing: about 100 MB of mobile data per ICON-EU run, plus a few MB for the waves. The Pi 3
+is several times slower than the laptop, so start well before the weather window. The SSH session
+drops when the Wi-Fi switches to the phone and again when it comes back; reconnect afterwards.
+
+Organiser forecast: `sudo prerace --organiser FILE` also writes `wind_organiser` beside the pack,
+unused. To route with it, rename it to `wind.npz` / `wind.json` as described in
+[docs/WEATHER-PACK.md](../docs/WEATHER-PACK.md), then restart jabuka-core.
+
+Rollback to the previous pack:
+
+```bash
+sudo mv /var/lib/jabuka/racepack /var/lib/jabuka/racepack.bad
+sudo mv /var/lib/jabuka/racepack.prev /var/lib/jabuka/racepack
+sudo systemctl restart jabuka-core
+```
+
+**Manual fallback** (if `prerace` itself fails):
+
+```bash
+sudo jabuka-wifi phone
+sudo -u jabuka /opt/jabuka-prep/venv/bin/jabuka-prep wind --out /var/lib/jabuka/racepack --cache /var/lib/jabuka/cache/prep
+sudo systemctl restart jabuka-core
+sudo jabuka-wifi ap
+```
+
+- `--cache` is required: the default cache path (`var/cache/prep`) is relative to the current
+  directory, which the `jabuka` user cannot write.
+- The manual path writes the live pack in place (no staging copy, no `racepack.prev`).
+- `jabuka-prep grib FILE` works the same way, with FILE readable by `jabuka` (e.g. copied to
+  `/tmp`) and the same `--out` / `--cache`, optionally with `--name wind_organiser`.

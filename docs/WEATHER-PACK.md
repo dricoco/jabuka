@@ -168,3 +168,5 @@ La fenêtre météo commence à 18:00 locale (17:00 UTC) : tout doit être fini 
   seul ; prendre un autre GRIB (organisateur, OpenSkiron via XyGrib) avec `jabuka-prep grib`.
 - Pas d'internet du tout : garder le pack de la veille (même procédure de copie). La route sera
   moins juste ; le biais GRIB corrige une partie de l'écart en course.
+- Portable en panne : le Pi prépare la météo lui-même avec `sudo prerace` (partage du téléphone,
+  ~100 Mo par run ICON-EU) ; voir [deploy/PI-SETUP.md §8](../deploy/PI-SETUP.md).
