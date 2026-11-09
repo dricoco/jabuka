@@ -122,7 +122,7 @@ def test_switch_to_slovenian_then_english_persists_and_fits(page, feeder) -> Non
     assert _text(pg, "#night-toggle") == "Dan"
     pg.click("#lock-btn")
     assert pg.locator("#lock-overlay").is_visible()
-    assert _text(pg, "#lock-overlay .lock-hint") == "ZAKLENJENO · pridrži 2 s"
+    assert _text(pg, "#lock-overlay .lock-hint") == "ZAKLENJENO · pridrži 2 s, nato spusti"
     assert pg.locator("#lock-btn").get_attribute("aria-label") == "Zakleni zaslon"
     pg.reload()  # still locked after the reload, still in Slovenian, still at night
     _wait_text(pg, "helm-countdown", "Obrat čez")

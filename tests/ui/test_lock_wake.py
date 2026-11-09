@@ -1,6 +1,7 @@
 """Lock mode and screen awake in a real browser (HELM-04): while locked nothing on the screen
-reacts (tabs, map drag, wheel), only a continuous 2 s press of the padlock unlocks, a second finger
-or a short press never does, and the state survives a reload. The screen-awake badge says which
+reacts (tabs, map drag, wheel), only a 2–4 s press released on the padlock unlocks (G-4-R07); a
+hold that never lifts, a hold past 4 s, a second finger or a short press never does, and the state
+survives a reload. The screen-awake badge says which
 mechanism holds the screen: Wake Lock, the NoSleep video, or nothing (as an alert)."""
 
 from __future__ import annotations
@@ -110,8 +111,19 @@ def test_lock_swallows_everything_and_unlocks_on_a_long_press(page, feeder) -> N
     assert _locked(pg)
     pg.wait_for_function("() => window.jabuka.map.dragPan.isEnabled() === false")
 
-    # a 2.1 s press unlocks; everything works again
-    _hold(pg, 2100)
+    # a 5 s hold then release does nothing: the press is void after 4 s (G-4-R07)
+    _hold(pg, 5000)
+    pg.wait_for_timeout(300)
+    assert _locked(pg)
+
+    # a 2.5 s hold stays locked until the lift; the padlock shows "lift now"; the lift unlocks
+    x, y = _centre(pg, "#unlock-btn")
+    pg.mouse.move(x, y)
+    pg.mouse.down()
+    pg.wait_for_timeout(2500)
+    assert _locked(pg)
+    assert pg.evaluate("() => document.getElementById('unlock-btn').classList.contains('ready')")
+    pg.mouse.up()
     pg.wait_for_function("() => document.getElementById('lock-overlay').hidden")
     assert pg.evaluate("() => localStorage.getItem('jabuka.locked')") == "0"
     assert pg.evaluate("() => window.jabuka.map.dragPan.isEnabled()") is True
