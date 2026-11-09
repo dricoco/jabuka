@@ -1066,3 +1066,82 @@ def test_a_big_next_mark_change_while_sailing_the_old_leg_needs_a_manual_next(
     assert k is None and _advances(log) == []
     cs.next()
     assert cs.course.active_idx == 2
+
+
+# -- Annuler in the zone at a normal mark (WR-01) and the accepted WR-02 residual (R9) ------------
+def test_annuler_in_the_zone_then_an_approach_side_retreat_never_advances(tmp_path: Path) -> None:
+    """WR-01 (review 93cb8b3): Annuler after an abeam advance at Plić, back in front of the
+    abeam line inside the zone, then the G-4-R02 NNW retreat: the mark stays, one advance."""
+    cs, log = store(tmp_path)
+    t = run(cs, at(61, 0.4), 0.0, 2)
+    t = run(cs, at(81, 0.4), t, 11)
+    assert cs.course.active_idx == 2
+    cs.undo(cs.status()["banner"]["token"], t)
+    t = run(cs, at(61, 0.4), t + 1, 5)  # in the zone, suppressed
+    t = run(cs, at(341, 0.8), t, 30)
+    assert cs.course.active_idx == 1
+    assert len(_advances(log)) == 1
+
+
+def _committee_advance_then_annuler(
+    cs: CourseStore, turn: float
+) -> tuple[tuple[float, float], float, float]:
+    """An abeam advance inside the 0.3 nm zone of the committee mark, then Annuler. Returns
+    (mark, b_in, next t)."""
+    m, b_in = _committee(cs, turn)
+    t = run(cs, at(b_in + 180, 0.5, m), 0.0, 3)
+    t = run(cs, at(b_in + 210, 0.2, m), t, 3)
+    t = run(cs, at(b_in - 80, 0.2, m), t, 11)
+    assert cs.course.active_idx == 2
+    cs.undo(cs.status()["banner"]["token"], t)
+    return m, b_in, t + 1
+
+
+@pytest.mark.parametrize("turn", [45, 60, 90])
+def test_annuler_in_the_zone_at_a_committee_mark_then_an_approach_side_retreat_never_advances(
+    tmp_path: Path, turn: float
+) -> None:
+    """WR-01: b_in + 210 deg is strictly inside the approach quadrant (dot_in < 0, dot_out < 0)
+    for these turns: the suppressed-zone exit there never advances."""
+    cs, log = store(tmp_path)
+    m, b_in, t = _committee_advance_then_annuler(cs, turn)
+    t = run(cs, at(b_in + 210, 0.2, m), t, 5)  # in the zone, suppressed
+    t = run(cs, at(b_in + 210, 0.6, m), t, 30)
+    assert cs.course.active_idx == 1
+    assert len(_advances(log)) == 1
+
+
+@pytest.mark.parametrize("turn", [45, 60, 90])
+def test_annuler_in_the_zone_then_leaving_past_the_mark_along_the_next_leg_advances(
+    tmp_path: Path, turn: float
+) -> None:
+    """CR-02 kept at normal marks: leaving the suppressed zone past the mark along the next leg
+    (dot_out > 0, dot_in < 0) advances after the 10 s debounce."""
+    cs, log = store(tmp_path)
+    m, b_in, t = _committee_advance_then_annuler(cs, turn)
+    out = b_in + 90 + turn / 2
+    t = run(cs, at(out, 0.2, m), t, 5)  # in the zone, suppressed
+    t = run(cs, at(out, 0.6, m), t, 10)
+    assert cs.course.active_idx == 1
+    t = run(cs, at(out, 0.6, m), t, 1)
+    assert cs.course.active_idx == 2
+    assert len(_advances(log)) == 2
+
+
+def test_one_fix_past_the_abeam_line_then_an_approach_side_exit_advances(tmp_path: Path) -> None:
+    """Accepted residual R9 (plan 04-14 "WR-02: decision with evidence"): the latch sets on one
+    fix past the abeam line (here about 9 m past it, e.g. sailing a layline that is the abeam
+    line), so a later approach-side zone exit advances. Every candidate fix measured either did
+    not lower these false advances or added stuck roundings; the crew fallback is the 60 s
+    banner (Annuler). A later fix changes this test together with the residual table."""
+    cs, log = store(tmp_path)
+    vod = cs.marks["vodice"]
+    b, _ = geo.bearing_distance(vod.lat, vod.lon, PLIC[0], PLIC[1])
+    b_in = math.degrees(b)
+    t = run(cs, at(b_in + 180, 0.6), 0.0, 3)
+    t = run(cs, at(b_in + 265, 0.28), t, 3)
+    t = run(cs, at(b_in + 271, 0.28), t, 1)  # one fix past the abeam line
+    t = run(cs, at(b_in + 265, 0.28), t, 3)
+    t = run(cs, at(b_in + 210, 0.8), t, 30)
+    assert cs.course.active_idx == 2
+    assert len(_advances(log)) == 1
