@@ -152,11 +152,28 @@ export function deviationView(nav) {
   return { text, hint, cls: deviationClass(dev) };
 }
 
-// Badges next to the source badge: {key, text, cls}.
+// G-4-R08: the core sent a boat block without a position (GPS lost or stale: nav_service always
+// sends lat/lon, null when unknown). Partial messages without a boat block or without the lat/lon
+// keys, and a failed nav computation (ERREUR CALCUL), are not "no position".
+export function noPosition(nav) {
+  if (navFailed(nav)) return false;
+  const boat = nav?.boat;
+  if (!boat || typeof boat !== "object") return false;
+  if (!("lat" in boat) && !("lon" in boat)) return false;
+  return !(isNum(boat.lat) && isNum(boat.lon));
+}
+
+// G-4-R01: the wind in use is too old (MANUEL older than manual_wind_max_age_min).
+export function windStale(nav) {
+  return nav?.wind?.stale === true;
+}
+
+// Badges next to the source badge: {key, text, cls}; PAS DE GPS (red) leads.
 export function helmFlags(nav) {
   const out = [];
   const wind = nav?.wind;
   const lay = nav?.layline;
+  if (noPosition(nav)) out.push({ key: "gps", text: t("flag.noGps"), cls: "bad" });
   if (wind && wind.heading_trusted === false) out.push({ key: "cap", text: t("flag.cap"), cls: "bad" });
   if (lay?.current) out.push({ key: "courant", text: t("flag.current"), cls: "warn" });
   if (lay?.src === "sailed") out.push({ key: "angles", text: t("flag.sailed"), cls: "warn" });
@@ -167,11 +184,19 @@ const plain = (label, value) => ({ label, value, main: value, unit: "" });
 
 // Primary number by point of sail (D-6): {label, value, main, unit}; value is the full text
 // ("38°", "115°M"), main + unit the same split so the °M/°T suffix can be drawn smaller.
-// Takeovers, in priority order: nav failure (ERREUR CALCUL), then the tack cue (G-4-R03:
-// VIREZ / EMPANNEZ + the tack to go to, cue: true), then the route primary, then the Phase 2
-// helm primary.
+// Takeovers, in priority order: nav failure (ERREUR CALCUL), no position (G-4-R08: PAS DE GPS),
+// stale wind (G-4-R01: VENT PÉRIMÉ), the tack cue (G-4-R03: VIREZ / EMPANNEZ + the tack to go to,
+// cue: true), then the route primary, then the Phase 2 helm primary.
 export function primaryView(nav) {
   if (navFailed(nav)) return plain(t("badge.calcError"), "—");
+  if (noPosition(nav)) return { ...plain(t("flag.noGps"), "—"), alert: true };
+  // G-4-R01: stale manual wind still drives the numbers (Phase 2 contract), but never as a
+  // confident live target; no tack cue either, since wrong_tack and the follower's target use the
+  // stale TWD
+  if (windStale(nav)) {
+    const p = routePrimary(nav) ?? helmPrimary(nav);
+    return { ...p, label: t("helm.windStale"), alert: true, stale: true };
+  }
   const cue = tackCue(nav?.route);
   if (cue) {
     const value = cue.tack ? `${cue.word} ${cue.tack}` : cue.word;
@@ -231,12 +256,20 @@ export function helmView(nav) {
   const lay = nav?.layline;
   const bsp = isNum(boat.bsp_kn) ? fmtDec(boat.bsp_kn, 1) : "—";
   const tgt = isNum(polar.target_bsp_kn) ? fmtDec(polar.target_bsp_kn, 1) : "—";
-  const dev = deviationView(nav);
+  const stale = windStale(nav);
+  let dev = deviationView(nav);
   const other = lay ? fmtHeading(lay.other_tack_hdg_t, nav?.display) : "—";
   const markName = mark?.name ? String(mark.name) : "—";
   const dtw = fmtDistance(mark?.dtw_nm);
   const ttw = fmtDuration(mark?.ttw_s);
-  const cd = countdownView(nav);
+  let cd = countdownView(nav);
+  if (stale) {
+    // G-4-R01: no LOFER/ABATTRE, no colours, no alert countdown on stale wind; the countdown line
+    // must not say the tack the primary box refuses to cue (the route's due-tack cue is the only
+    // "alert" countdownView emits). countdownView stays unchanged; other texts stay, dimmed.
+    dev = { ...dev, hint: "", cls: "" };
+    cd = { ...cd, text: cd.cls === "alert" ? t("helm.windStale") : cd.text, cls: "" };
+  }
   return {
     primary: primaryView(nav),
     dev,
@@ -257,5 +290,7 @@ export function helmView(nav) {
     badge: windBadge(nav),
     flags: helmFlags(nav),
     alerts: navAlerts(nav),
+    windStale: stale,
+    noGps: noPosition(nav),
   };
 }

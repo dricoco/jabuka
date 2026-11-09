@@ -13,8 +13,9 @@
 //                        (localStorage jabuka.mapMode, jabuka.centred; overlays.js turns the map)
 //   map padding:         the camera centre sits in the visible part of the map (map.js
 //                        setMapPadding), on Barre only, kept up to date on resize/orientation/tab
-//   #badges:             wind source (app.js) + CAP NON FIABLE / COURANT / ANGLES RÉELS + one red
-//                        badge per nav alert (B&G cross-check, unreadable files, nav failure...)
+//   #badges:             wind source (app.js) + PAS DE GPS (red, G-4-R08) / CAP NON FIABLE /
+//                        COURANT / ANGLES RÉELS + one red badge per nav alert (B&G cross-check,
+//                        unreadable files, nav failure...)
 import { helmView } from "./helm_logic.js";
 import { t } from "./i18n.js";
 import { setMapPadding } from "./map.js";
@@ -147,6 +148,9 @@ export function render(nav, badge) {
   const cue = Boolean(v.primary.cue);
   $("helm-steer")?.querySelector(".primary-box")?.classList.toggle("cue", cue);
   $("primary")?.classList.toggle("cue-word", cue);
+  // G-4-R01 / R08: VENT PÉRIMÉ / PAS DE GPS in the alert colour; stale wind dims blocks 1-2
+  $("primary-label")?.classList.toggle("alert", Boolean(v.primary.alert));
+  $("tab-barre")?.classList.toggle("wind-stale", Boolean(v.windStale));
   setText("helm-deviation", v.dev.text, v.dev.cls);
   setText("helm-hint", v.dev.hint, v.dev.cls);
   setText("helm-speed", v.speed);
@@ -171,7 +175,7 @@ export function render(nav, badge) {
   setText("helm-other", v.otherTack);
   if (badge) {
     const keys = new Set(v.flags.map((f) => f.key));
-    for (const key of ["cap", "courant", "angles"]) if (!keys.has(key)) badge(`flag-${key}`, null);
+    for (const key of ["gps", "cap", "courant", "angles"]) if (!keys.has(key)) badge(`flag-${key}`, null);
     for (const f of v.flags) badge(`flag-${f.key}`, f.text, f.cls);
     // nav alerts (CR-01): one red badge each in the top bar, so they show on every tab
     const n = Math.max(v.alerts.length, shownAlerts);

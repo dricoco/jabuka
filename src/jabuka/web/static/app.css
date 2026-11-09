@@ -173,6 +173,8 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
 #primary.cue-word { font-size: var(--f-cue); }
 .primary-box.cue { background: var(--bad); color: var(--bg); border-radius: 8px; padding: 2px 4px; }
 .primary-box.cue #primary-label, .primary-box.cue #primary, .primary-box.cue #primary-unit { color: var(--bg); }
+/* G-4-R01 / R08: VENT PÉRIMÉ / PAS DE GPS (inside the inverted cue box the var(--bg) rule wins) */
+#primary-label.alert { color: var(--bad); }
 .cell { display: flex; flex-direction: column; align-items: center; min-width: 0; }
 .num { font-size: var(--f-num); font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .num.good { color: var(--good); }
@@ -251,6 +253,13 @@ button.stay-btn.active { color: var(--bg); background: var(--fg); }
 #tab-barre.stale .helm-block *:not(.stale-msg) { color: var(--dim) !important; }
 /* a frozen VIREZ / EMPANNEZ cue loses its inverted box too (G-4-R03) */
 #tab-barre.stale .primary-box.cue { background: transparent; }
+/* G-4-R01: stale manual wind is never shown as live (same idea as the link-lost rule above,
+   colour only, no grey filter at night): the steering numbers and the route band dim; the ON RESTE
+   button is an action, not a number, and keeps its colours */
+#tab-barre.wind-stale #primary, #tab-barre.wind-stale #primary-unit,
+#tab-barre.wind-stale #helm-deviation, #tab-barre.wind-stale #helm-hint,
+#tab-barre.wind-stale .countdown, #tab-barre.wind-stale #helm-layline-dist,
+#tab-barre.wind-stale .route-band *:not(.stay-btn) { color: var(--dim) !important; }
 
 #diag-frame { width: 100%; height: 100%; border: 0; background: #fff; }
 

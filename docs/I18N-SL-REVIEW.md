@@ -77,6 +77,7 @@ Terms chosen (to confirm first):
 | `helm.time` | Temps | Time | Čas |
 | `helm.bearing` | Relèvement | Bearing | Azimut |
 | `helm.stale` | PERTE DONNÉES | DATA LOST | NI PODATKOV |
+| `helm.windStale` | VENT PÉRIMÉ | WIND STALE | VETER ZASTAREL |
 | `helm.northUp` | Nord en haut | North up | Sever gor |
 | `helm.courseUp` | Cap en haut | Course up | Smer gor |
 | `helm.centre` | Centrer | Centre | Centriraj |
@@ -97,6 +98,7 @@ Terms chosen (to confirm first):
 | `flag.cap` | CAP NON FIABLE | HEADING UNRELIABLE | SMER NI ZANESLJIVA |
 | `flag.current` | COURANT | CURRENT | TOK |
 | `flag.sailed` | ANGLES RÉELS | SAILED ANGLES | DEJANSKI KOTI |
+| `flag.noGps` | PAS DE GPS | NO GPS | NI GPS |
 | `tack.stbd` | tribord | starboard | desno |
 | `tack.port` | bâbord | port | levo |
 
