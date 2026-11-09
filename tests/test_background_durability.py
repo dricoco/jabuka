@@ -62,6 +62,14 @@ def background(stall):
     assert atomicio.disable_background(timeout_s=10.0) is True
 
 
+def _wait_for(pred, timeout: float = 5.0) -> None:
+    """The worker may not have been scheduled yet (GIL switch interval): poll briefly."""
+    deadline = time.monotonic() + timeout
+    while not pred():
+        assert time.monotonic() < deadline, "condition not met"
+        time.sleep(0.01)
+
+
 class FakeMono:
     def __init__(self) -> None:
         self.t = 100.0
@@ -87,7 +95,7 @@ def test_tracer_a_stalled_fsync_never_blocks_the_core_tick(
             ctx.tick_once()
             durations.append(time.perf_counter() - t)
         assert max(durations) < PROMPT_S, durations
-        assert stall.worker_calls() >= 1, stall.names
+        _wait_for(lambda: stall.worker_calls() >= 1)
         assert stall.main_calls() == 0, stall.names
         stall.release.set()
         assert atomicio.drain(10.0) is True

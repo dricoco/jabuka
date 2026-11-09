@@ -18,7 +18,7 @@ from typing import Any
 
 import uvicorn
 
-from jabuka.common import messages, sdnotify
+from jabuka.common import atomicio, messages, sdnotify
 from jabuka.common.clock import Clock, SimClock, make_clock
 from jabuka.core.bus import start_udp_listener
 from jabuka.core.derived_log import DerivedLogger
@@ -35,6 +35,7 @@ log = logging.getLogger("jabuka.core")
 
 
 EVENT_MIN_INTERVAL_S = 1.0
+DRAIN_TIMEOUT_S = 20.0  # bounded wait for the durability thread at exit (G-4-R05)
 
 
 @dataclass
@@ -202,7 +203,8 @@ class CoreContext:
 
     # -- events ------------------------------------------------------------------------------
     def record_event(self, label: str) -> dict | None:
-        """Append an fsync'd event marker. Returns None when rate-limited (1 per second)."""
+        """Append an event marker; its fsync is queued at once on the durability thread in the
+        running core. Returns None when rate-limited (1 per second)."""
         now = self.clock.monotonic()
         if self.last_event_mono is not None and now - self.last_event_mono < EVENT_MIN_INTERVAL_S:
             return None
@@ -525,6 +527,9 @@ def build_context(args: argparse.Namespace) -> CoreContext:
 
 
 async def serve(args: argparse.Namespace) -> int:
+    # No fsync on the core's event loop (G-4-R05): a multi-second SD stall must not freeze the
+    # tick, the WebSocket pushes and the UDP intake, nor trip WatchdogSec=30.
+    atomicio.enable_background()
     ctx = build_context(args)
     app = create_app(ctx)
     config = uvicorn.Config(
@@ -541,6 +546,10 @@ async def serve(args: argparse.Namespace) -> int:
         await server.serve()
     finally:
         ctx.close_logs()  # idempotent; covers a failed startup too
+        if not atomicio.disable_background(DRAIN_TIMEOUT_S):
+            log.warning(
+                "durability thread not drained in %.0f s: the SD may be stalled", DRAIN_TIMEOUT_S
+            )
     return 0 if server.started or server.signalled else 1
 
 

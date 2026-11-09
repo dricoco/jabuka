@@ -7,6 +7,11 @@ create, so an existing file is never truncated or overwritten.
 
 Durability: flush() at most every flush_s, os.fsync at most every fsync_s (both measured on the
 injected monotonic clock), plus on rotation and close(); write_json(fsync_now=True) for events.
+Every fsync goes through atomicio.fsync_fd: in background mode (jabuka-core, jabuka-ingest-fastnet,
+G-4-R05) it runs on the durability thread on a dup of the fd, so an SD stall never blocks the
+caller and rotation closes the file at once. A cadence fsync is skipped while the previous one is
+still running, so a dead SD never piles up jobs. fsync_now hands the line to the OS synchronously
+and queues its fsync at once. Without background mode every fsync is synchronous, as before.
 Rotation: on UTC-hour change of the injected wall clock, or when a line would push the file past
 max_bytes. Disk space is managed for the whole data volume by jabuka.ingest.retention (one policy
 with per-category budgets), not per log.
@@ -26,12 +31,14 @@ from __future__ import annotations
 import errno
 import json
 import logging
-import os
+import os  # noqa: F401 - kept: tests patch rawlog.os.fsync (the process-wide os.fsync)
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
+
+from jabuka.common import atomicio
 
 log = logging.getLogger("jabuka.rawlog")
 
@@ -86,6 +93,7 @@ class RotatingAppendLog:
         self._last_flush = 0.0
         self._last_fsync = 0.0
         self._dirty = False
+        self._fsync_inflight = False  # a cadence fsync queued on the durability thread
         self.current_path: Path | None = None
         self.directory.mkdir(parents=True, exist_ok=True)
 
@@ -151,7 +159,7 @@ class RotatingAppendLog:
             return
         try:
             self._flush_pending()
-            os.fsync(self._fh.fileno())
+            atomicio.fsync_fd(self._fh.fileno())
         finally:
             self._fh.close()
             self._fh = None
@@ -181,7 +189,7 @@ class RotatingAppendLog:
         self._dirty = True
         if fsync_now:
             self._flush_pending()
-            os.fsync(fh.fileno())
+            atomicio.fsync_fd(fh.fileno())  # always its own fsync, queued at once
             self._last_flush = self._last_fsync = now
             self._dirty = False
         else:
@@ -197,9 +205,15 @@ class RotatingAppendLog:
             self._flush_pending()
             self._last_flush = now
             if now - self._last_fsync >= self.fsync_s:
-                os.fsync(fh.fileno())
+                if self._fsync_inflight:  # the previous one is still stalled: retry next time
+                    return
+                self._fsync_inflight = True
+                atomicio.fsync_fd(fh.fileno(), on_done=self._fsync_done)
                 self._last_fsync = now
                 self._dirty = False
+
+    def _fsync_done(self) -> None:
+        self._fsync_inflight = False
 
     def write_chunk(self, b: bytes) -> None:
         """Raw bytes as ``"<t_mono:.3f> <t_wall:.3f> <hex>\\n"``."""
