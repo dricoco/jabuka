@@ -60,6 +60,12 @@ COLORS_JS = """() => {
           html: getComputedStyle(document.documentElement).backgroundColor};
 }"""
 
+BODY_PROPS_JS = """() => {
+  const cs = getComputedStyle(document.body);
+  return {dim: cs.getPropertyValue('--dim').trim(), line: cs.getPropertyValue('--line').trim(),
+          mapK: cs.getPropertyValue('--map-k').trim()};
+}"""
+
 OVERLAY_COLORS_JS = """() => {
   const ids = ["helm-course", "helm-live", "seamarks"];
   const layers = window.jabuka.map.getStyle().layers
@@ -210,11 +216,23 @@ def test_night_toggle_is_red_only_and_persists(page, feeder) -> None:
     assert res["body"] == "rgb(0, 0, 0)"
     assert res["bad"] == [], res["bad"][:10]
 
-    # dimmer: still pure red, just less of it
+    # dimmer: still pure red, just less of it; text never below rgb(110, 0, 0) (G-4-R09), while
+    # the borders and the map still dim freely
     pg.locator("#night-brightness").fill("40")
     assert pg.evaluate("() => localStorage.getItem('jabuka.brightness')") == "0.4"
     assert pg.evaluate("() => getComputedStyle(document.getElementById('primary')).color") == (
-        "rgb(102, 0, 0)"
+        "rgb(110, 0, 0)"
+    )
+    assert pg.evaluate(BODY_PROPS_JS) == {
+        "dim": "rgb(110, 0, 0)",
+        "line": "rgb(26, 0, 0)",
+        "mapK": "0.4",
+    }
+    assert pg.evaluate(COLORS_JS)["bad"] == []
+    pg.locator("#night-brightness").fill("100")
+    assert pg.evaluate(BODY_PROPS_JS)["dim"] == "rgb(128, 0, 0)"
+    assert pg.evaluate("() => getComputedStyle(document.getElementById('primary')).color") == (
+        "rgb(255, 0, 0)"
     )
     assert pg.evaluate(COLORS_JS)["bad"] == []
 
