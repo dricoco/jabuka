@@ -324,6 +324,28 @@ def test_deviation_and_countdown_prefer_the_route() -> None:
     }
 
 
+def test_primary_box_takeover_when_the_tack_is_due() -> None:
+    """G-4-R03: a due tack (or the wrong tack) takes over the primary box: the cue word, the tack
+    to go to under it, MAINTENANT / MAUVAIS BORD as the label."""
+    due = dict(ROUTE_OK, countdown_s=-3, target_tack="stbd", tack_kind="tack")
+    n = {"route": due, "wind": {"source": "LIVE"}, "helm": {"primary": "twa_up", "target": 38}}
+    assert js(f"primaryView({json.dumps(n)})") == {
+        "label": "MAINTENANT",
+        "value": "VIREZ bâbord",
+        "main": "VIREZ",
+        "unit": "bâbord",
+        "cue": True,
+    }
+    wrong = dict(ROUTE_OK, wrong_tack=True, target_tack="port", target_twa=-42.0, countdown_s=300)
+    p = js(f"primaryView({json.dumps(dict(n, route=wrong))})")
+    assert (p["label"], p["main"], p["unit"], p["cue"]) == ("MAUVAIS BORD", "VIREZ", "bâbord", True)
+    later = dict(due, countdown_s=510)
+    p = js(f"primaryView({json.dumps(dict(n, route=later))})")
+    assert (p["label"], p["value"]) == ("TWA ROUTE ↑", "42° tribord")
+    assert "cue" not in p
+    assert js(f"helmView({json.dumps(n)})")["primary"]["cue"] is True
+
+
 def test_grib_badge_and_alert() -> None:
     """GPS + GRIB only (bus silent): the wind badge says GRIB (warn) and the core's alert shows."""
     assert js("sourceBadge({source: 'GRIB'})") == {"text": "GRIB", "cls": "warn"}

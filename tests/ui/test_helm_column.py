@@ -44,6 +44,8 @@ _unexpected = _route_ui._unexpected
 LANDSCAPE = ((1280, 800), (1024, 600))
 PORTRAIT = (800, 1280)
 SCREENS = os.environ.get("JABUKA_SCREENS")
+CUE_WORD = {"fr": "EMPANNEZ", "en": "GYBE", "sl": "KRIŽAJ"}
+NIGHT_VARIANTS = ("cue",)
 
 # The latest live nav message with long values forced in, rendered synchronously by every module
 # listening on the bus. The next live message (within 1 s) puts the real values back.
@@ -54,9 +56,14 @@ LONG_NAV_JS = """(variant) => {
   Object.assign(r, {countdown_s: 7000, tack_kind: "gybe", cost_text: "+120 min", age_s: 7000,
     off_route: true, level: "L2", stale: true, last_fail: "délai dépassé",
     stay: {...(r.stay || {}), active: true, tack: "stbd"},
-    bias: {enabled: true, valid: true, dir_deg: -12, ratio: 1.15, state: "gelé (Jabuka)"}});
+    bias: {enabled: true, valid: true, dir_deg: -12, ratio: 1.15, state: "gelé (Jabuka)"},
+    wrong_tack: false});
   if (variant === "hdg") {
     Object.assign(r, {primary: "hdg", target: 358.4, target_twa: -178, target_tack: "stbd"});
+  } else if (variant === "cue") {
+    // G-4-R03: a due gybe takes over the primary box (EMPANNEZ / GYBE / KRIŽAJ + the tack)
+    Object.assign(r, {primary: "twa", target: -178, target_twa: -178, target_tack: "stbd",
+      countdown_s: -10, tack_kind: "gybe", wrong_tack: false, updating: false});
   } else {
     Object.assign(r, {primary: "twa", target: -178, target_tack: "stbd", target_hdg_t: 358.4});
   }
@@ -97,7 +104,8 @@ LAYOUT_JS = """() => {
   const hit = document.elementFromPoint(stay.left + stay.width / 2, stay.top + stay.height / 2);
   const m = window.jabuka.map;
   const p = rect("primary"), u = rect("primary-unit");
-  return {W, H, bad, col: [col.left, col.top, col.right, col.bottom], barBottom: bar.bottom,
+  const cue = document.querySelector("#helm-steer .primary-box").classList.contains("cue");
+  return {W, H, bad, cue, col: [col.left, col.top, col.right, col.bottom], barBottom: bar.bottom,
     primaryH: p.height, primaryRight: Math.max(p.right, u.right),
     stayInRoute: stay.top >= route.top - 1 && stay.bottom <= route.bottom + 1
       && stay.left >= route.left - 1 && stay.right <= route.right + 1,
@@ -185,7 +193,9 @@ def _check_landscape(res: dict, w: int, h: int, where: str) -> None:
 
 def _check_common(res: dict, where: str) -> None:
     assert res["bad"] == [], (where, res["bad"])
-    assert res["primaryH"] >= 0.2 * res["H"], (where, res["primaryH"], res["H"])  # HELM-02
+    # HELM-02's 20 % is about the number; the VIREZ/EMPANNEZ cue word is sized to the column
+    if not res["cue"]:
+        assert res["primaryH"] >= 0.2 * res["H"], (where, res["primaryH"], res["H"])  # HELM-02
     assert res["stayInRoute"] and res["stayHit"], (where, res)
     assert res["stayH"] >= 64 and res["stayW"] >= res["routeW"] - 2 * 10 - 2, (where, res)
 
@@ -203,23 +213,30 @@ def test_column_layout_fits_in_every_language(page, feeder) -> None:
             _check_common(res, where)
             if lang in ("fr", "sl"):
                 _shot(pg, f"{lang}-day-{w}x{h}")
-            for variant in ("hdg", "twa"):
+            for variant in ("hdg", "twa", "cue"):
                 shown = pg.evaluate(LONG_NAV_JS, variant)
-                assert shown.startswith("358°" if variant == "hdg" else "178°"), shown
+                want = {"hdg": "358°", "twa": "178°", "cue": CUE_WORD[lang]}[variant]
+                assert shown.startswith(want), shown
                 res = pg.evaluate(LAYOUT_JS)
                 _check_landscape(res, w, h, f"{where} long {variant}")
                 _check_common(res, f"{where} long {variant}")
+                if variant == "cue":
+                    assert res["cue"] is True, (where, res)
         w, h = PORTRAIT
         _size(pg, w, h)
         pg.wait_for_timeout(1200)  # the live values back after the forced ones
         where = f"{lang} {w}x{h}"
         if lang in ("fr", "sl"):
             _shot(pg, f"{lang}-day-{w}x{h}")
-        for variant in (None, "hdg", "twa"):
+        for variant in (None, "hdg", "twa", "cue"):
             if variant:
-                pg.evaluate(LONG_NAV_JS, variant)
+                shown = pg.evaluate(LONG_NAV_JS, variant)
+                if variant == "cue":
+                    assert shown.startswith(CUE_WORD[lang]), shown
             res = pg.evaluate(LAYOUT_JS)
             _check_common(res, f"{where} {variant}")
+            if variant == "cue":
+                assert res["cue"] is True, (where, res)
             left, top, right, bottom = res["col"]
             # one top area across the width, the map below it, the padding on top
             assert left <= 1 and right >= w - 1 and abs(top - res["barBottom"]) <= 1, res
@@ -312,5 +329,11 @@ def test_on_reste_in_block_two_padding_per_tab_and_night(page, feeder) -> None:
             assert res["bad"] == [], (lang, w, h, res["bad"])
             assert res["colBg"] in ("rgb(0, 0, 0)", "rgba(0, 0, 0, 1)"), res["colBg"]
             _shot(pg, f"{lang}-night-{w}x{h}")
+            # the takeovers stay red on black (G-4-R03 cue box)
+            for variant in NIGHT_VARIANTS:
+                pg.evaluate(LONG_NAV_JS, variant)
+                res = pg.evaluate(NIGHT_JS)
+                assert res["bad"] == [], (lang, w, h, variant, res["bad"])
+                _shot(pg, f"{lang}-night-{variant}-{w}x{h}")
     assert page.external_requests == []
     assert _unexpected(page.bad_responses) == [], page.bad_responses

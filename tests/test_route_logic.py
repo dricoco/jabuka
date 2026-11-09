@@ -143,6 +143,30 @@ def test_countdown_falls_back_to_the_laylines() -> None:
     assert js("countdownView(null)") == {"text": "", "cls": "", "source": "layline"}
 
 
+def cue(r: dict | None) -> object:
+    return js(f"tackCue({json.dumps(r)})")
+
+
+def test_tack_cue() -> None:
+    """G-4-R03: the advised tack is due (or the boat is on the wrong tack): the cue word, the
+    tack to go to (due: the other tack; wrong tack: the route's tack) and the label."""
+    want = {"word": "VIREZ", "tack": "bâbord", "label": "MAINTENANT", "kind": "due"}
+    assert cue(route(countdown_s=0)) == want
+    for s in (-1, -119):
+        c = cue(route(countdown_s=s))
+        assert (c["word"], c["kind"]) == ("VIREZ", "due"), s
+    for s in (-120, 30):
+        assert cue(route(countdown_s=s)) is None, s
+    assert cue(route(countdown_s=-5, tack_kind="gybe"))["word"] == "EMPANNEZ"
+    wrong = route(wrong_tack=True, target_tack="port", target_twa=-42.0, countdown_s=300)
+    assert cue(wrong) == {"word": "VIREZ", "tack": "bâbord", "label": "MAUVAIS BORD", "kind": "wrong"}
+    assert cue(dict(wrong, target_twa=150.0))["word"] == "EMPANNEZ"
+    assert cue(route(countdown_s=0, updating=True)) is None
+    assert cue(route(state="outdated", countdown_s=0)) is None
+    assert cue(route(countdown_s=0, target_tack=None))["tack"] == ""
+    assert js("tackCue(null)") is None
+
+
 def test_route_band_lines() -> None:
     b = js(f"routeBand({json.dumps(nav(route()))})")
     assert b["visible"] is True
