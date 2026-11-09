@@ -27,6 +27,7 @@ VENV=$OPT/venv
 DATA=/var/lib/jabuka
 APT_PACKAGES=(gpsd gpsd-clients chrony python3-venv jq dnsmasq-base)
 F2I_VENV=/opt/fastnet2ip/venv
+PREP_VENV=/opt/jabuka-prep/venv
 
 usage() {
     sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -271,6 +272,29 @@ fi
 install_file "$SCRIPT_DIR/systemd/jabuka-fastnet-relay.service" \
     /etc/systemd/system/jabuka-fastnet-relay.service
 install_file "$SCRIPT_DIR/systemd/fastnet2ip.service" /etc/systemd/system/fastnet2ip.service
+
+# --- g2. emergency weather prep on the Pi (never the app venv) ---------------------------------
+# Hash-locked from the wheelhouse into its own venv, like Plan B. Used only by `prerace` /
+# `jabuka-prep-pi` when the laptop is unavailable (PI-SETUP.md section 8).
+step "g2. emergency weather prep venv /opt/jabuka-prep/venv (separate from the app venv)"
+PREP_LOCK="$SCRIPT_DIR/prep.lock"
+if [ ! -f "$PREP_LOCK" ]; then
+    [ "$DRY_RUN" -eq 1 ] || die 3 "missing $PREP_LOCK (run 'bash scripts/build-wheelhouse.sh')"
+    warn "missing $PREP_LOCK; dry run continues"
+fi
+if [ "$DRY_RUN" -eq 1 ] || [ -d "$OPT/wheelhouse/prep" ]; then
+    run install -m 0644 "$PREP_LOCK" "$OPT/prep.lock"
+    run python3 -m venv "$PREP_VENV"
+    run "$PREP_VENV/bin/pip" install --no-index --find-links "$OPT/wheelhouse" --require-hashes \
+        -r "$OPT/requirements.lock"
+    run "$PREP_VENV/bin/pip" install --no-index --find-links "$OPT/wheelhouse/prep" \
+        --require-hashes -r "$OPT/prep.lock"
+    run "$PREP_VENV/bin/pip" install --no-index --no-deps --force-reinstall \
+        "$OPT/wheelhouse/$JABUKA_WHEEL_NAME"
+    run ln -sfn "$PREP_VENV/bin/jabuka-prep" /usr/local/bin/jabuka-prep-pi
+else
+    warn "no prep/ in the wheelhouse: emergency weather prep NOT installed (re-run scripts/build-wheelhouse.sh)"
+fi
 
 # --- h. services, journald, hardware watchdog ---------------------------------------------------
 step "h. systemd units and drop-ins"

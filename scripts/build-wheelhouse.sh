@@ -4,11 +4,13 @@
 #   bash scripts/build-wheelhouse.sh [--relock]
 #
 # --relock   re-resolve deploy/requirements.in into the hash-locked deploy/requirements.lock (and
-#            deploy/fastnet2ip.in into deploy/fastnet2ip.lock) first.
+#            deploy/fastnet2ip.in into deploy/fastnet2ip.lock, deploy/prep.in into deploy/prep.lock
+#            constrained by requirements.lock) first. Without it, only a MISSING lock is created.
 #
 # Needs internet (pypi.org). The Pi then installs with --no-index --require-hashes only
-# (deploy/provision.sh steps f and g). deploy/wheelhouse/ is gitignored; copy it to the Pi with the
-# repo. Plan B (fastnet2ip and its dependencies) goes to deploy/wheelhouse/fastnet2ip/.
+# (deploy/provision.sh steps f, g and g2). deploy/wheelhouse/ is gitignored; copy it to the Pi with
+# the repo. Plan B (fastnet2ip and its dependencies) goes to deploy/wheelhouse/fastnet2ip/, the Pi
+# emergency weather prep (pygrib, shapely, netCDF4) to deploy/wheelhouse/prep/.
 # `uv pip download` does not exist in uv 0.6.6 and uv venvs have no pip, so the download uses the
 # system python3's pip (override with PYTHON=...).
 set -euo pipefail
@@ -20,6 +22,9 @@ WH=deploy/wheelhouse
 F2I_IN=deploy/fastnet2ip.in
 F2I_LOCK=deploy/fastnet2ip.lock
 F2I_WH=deploy/wheelhouse/fastnet2ip
+PREP_IN=deploy/prep.in
+PREP_LOCK=deploy/prep.lock
+PREP_WH=deploy/wheelhouse/prep
 PY="${PYTHON:-python3}"
 PI_PLATFORMS=(--implementation cp --python-version 3.13 --platform manylinux2014_aarch64
     --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64)
@@ -29,7 +34,7 @@ for arg in "$@"; do
     case "$arg" in
         --relock) RELOCK=1 ;;
         -h | --help)
-            sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -39,13 +44,15 @@ for arg in "$@"; do
     esac
 done
 
-lock() { # IN LOCK
+lock() { # IN LOCK [EXTRA uv pip compile ARGS...]
     echo "build-wheelhouse: locking $1 -> $2 (aarch64, cp313, hashes)"
-    uv pip compile "$1" --python-platform aarch64-unknown-linux-gnu --python-version 3.13 \
+    uv pip compile "$1" "${@:3}" --python-platform aarch64-unknown-linux-gnu --python-version 3.13 \
         --generate-hashes -o "$2"
 }
 if [ "$RELOCK" -eq 1 ] || [ ! -f "$LOCK" ]; then lock "$IN" "$LOCK"; fi
 if [ "$RELOCK" -eq 1 ] || [ ! -f "$F2I_LOCK" ]; then lock "$F2I_IN" "$F2I_LOCK"; fi
+# after the app lock: the prep venv shares numpy & co. with the app, at the app's pinned versions
+if [ "$RELOCK" -eq 1 ] || [ ! -f "$PREP_LOCK" ]; then lock "$PREP_IN" "$PREP_LOCK" -c "$LOCK"; fi
 
 download() { # LOCK DIR
     mkdir -p "$2"
@@ -55,6 +62,7 @@ download() { # LOCK DIR
 }
 download "$LOCK" "$WH"
 download "$F2I_LOCK" "$F2I_WH"
+download "$PREP_LOCK" "$PREP_WH"
 
 echo "build-wheelhouse: building the jabuka wheel"
 rm -f "$WH"/jabuka-*.whl
@@ -100,8 +108,9 @@ PY
 }
 check_wheels "$LOCK" "$WH" 1
 check_wheels "$F2I_LOCK" "$F2I_WH" 0
+check_wheels "$PREP_LOCK" "$PREP_WH" 0
 
-# Simulate the Pi's installs (provision.sh steps f and g) offline, as aarch64/cp313: resolve only.
+# Simulate the Pi's installs (provision.sh steps f, g and g2) offline, as aarch64/cp313: resolve only.
 TARGET="$(mktemp -d)"
 trap 'rm -rf "$TARGET"' EXIT
 simulate() { # LOCK DIR
@@ -111,4 +120,11 @@ simulate() { # LOCK DIR
 }
 simulate "$LOCK" "$WH"
 simulate "$F2I_LOCK" "$F2I_WH"
+simulate "$PREP_LOCK" "$PREP_WH"
+# Step g2 installs the app lock then the prep lock into the same venv: prove the union resolves to
+# one consistent set (shared packages are identical duplicates, which pip accepts).
+echo "build-wheelhouse: simulating the prep venv (app lock + prep lock) offline --require-hashes install"
+"$PY" -m pip install --dry-run --quiet --ignore-installed --no-index --find-links "$WH" \
+    --find-links "$PREP_WH" --require-hashes -r "$LOCK" -r "$PREP_LOCK" --only-binary=:all: \
+    "${PI_PLATFORMS[@]}" --target "$TARGET"
 echo "build-wheelhouse: ok"

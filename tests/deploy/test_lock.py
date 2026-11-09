@@ -156,3 +156,66 @@ def test_fastnet2ip_wheelhouse(deploy_dir: Path, f2i_lock) -> None:
         hits = [n for n in names if _norm(n.split("-")[0]) == name]
         assert len(hits) == 1, (name, hits)
         assert hits[0].startswith(f"{stem}-{version}-"), (name, version, hits[0])
+
+
+# -- Pi emergency weather prep: jabuka-prep on the Pi if the laptop dies (own venv) ---------------
+EXPECTED_PREP_LOCKED = {
+    "certifi",
+    "cftime",
+    "netcdf4",
+    "numpy",  # shared with the app lock, constrained to the same version and hashes
+    "packaging",
+    "pygrib",
+    "pyproj",
+    "shapely",
+}
+
+
+@pytest.fixture
+def prep_lock(deploy_dir: Path) -> dict[str, tuple[str, list[str]]]:
+    return _lock_entries((deploy_dir / "prep.lock").read_text())
+
+
+def test_prep_in_is_the_pyproject_prep_extra_without_osmium(
+    repo_root: Path, deploy_dir: Path
+) -> None:
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text())
+    extra = pyproject["project"]["optional-dependencies"]["prep"]
+    expected = [r for r in extra if not r.lower().startswith("osmium")]
+    assert _requirements((deploy_dir / "prep.in").read_text()) == expected
+
+
+def test_prep_lock_is_hashed_pinned_constrained_and_for_the_pi(deploy_dir: Path, prep_lock) -> None:
+    assert prep_lock, "empty prep lock"
+    for name, (version, hashes) in prep_lock.items():
+        assert hashes, f"{name}=={version} has no --hash=sha256"
+    for req in _requirements((deploy_dir / "prep.in").read_text()):
+        name, _, version = req.partition("==")
+        assert prep_lock[_norm(name)][0] == version, req
+    header = (deploy_dir / "prep.lock").read_text()
+    assert "--python-platform aarch64-unknown-linux-gnu" in header
+    assert "--python-version 3.13" in header
+    assert "--generate-hashes" in header
+    assert "-c deploy/requirements.lock" in header
+    assert set(prep_lock) == EXPECTED_PREP_LOCKED, "review new/removed packages before shipping"
+    assert not [n for n in prep_lock if n.startswith("osmium")]
+
+
+def test_prep_lock_shares_packages_identically_with_the_app_lock(lock, prep_lock) -> None:
+    shared = set(lock) & set(prep_lock)
+    assert "numpy" in shared
+    for name in sorted(shared):
+        assert prep_lock[name][0] == lock[name][0], (name, prep_lock[name][0], lock[name][0])
+        assert sorted(prep_lock[name][1]) == sorted(lock[name][1]), f"{name}: hashes differ"
+
+
+def test_prep_wheelhouse(deploy_dir: Path, prep_lock) -> None:
+    wh = deploy_dir / "wheelhouse" / "prep"
+    if not wh.is_dir():
+        pytest.skip("deploy/wheelhouse/prep absent: run `bash scripts/build-wheelhouse.sh`")
+    names = sorted(p.name for p in wh.glob("*.whl"))
+    for name, (version, _) in prep_lock.items():
+        stem = re.sub(r"[-.]+", "_", name)
+        hits = [n for n in names if _norm(n.split("-")[0]) == name]
+        assert len(hits) == 1, (name, hits)
+        assert hits[0].startswith(f"{stem}-{version}-"), (name, version, hits[0])
