@@ -23,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from jabuka.common import messages, sdnotify
+from jabuka.common import atomicio, messages, sdnotify
 from jabuka.ingest.bus_health import HINT_BUSY, HINT_MISSING, WindowStats, classify
 from jabuka.ingest.fastnet_decode import ROUTED_CHANNELS, decode_to_values
 from jabuka.ingest.fastnet_framing import CountingFramer
@@ -388,6 +388,9 @@ class DeviceReader:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    # No fsync on the ingest's event loop (G-4-R05): a multi-second SD stall must not freeze the
+    # serial intake and the UDP sends, nor trip WatchdogSec.
+    atomicio.enable_background()
     loop = asyncio.get_running_loop()
     raw_dir = Path(args.data_dir) / "logs" / "raw"
     rawlog = RotatingAppendLog(raw_dir, "fastnet")
@@ -442,7 +445,9 @@ async def _run(args: argparse.Namespace) -> int:
         for signum in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(signum)
         reader.close()
-        rawlog.close()  # final flush + fsync
+        rawlog.close()  # final flush + fsync (queued on the durability thread)
+        if not atomicio.disable_background(20.0):
+            log.warning("durability thread not drained in 20 s: the SD may be stalled")
         sock.close()
     return rc
 

@@ -234,6 +234,7 @@ class CoreContext:
     # -- diag --------------------------------------------------------------------------------
     def diag_message(self) -> dict:
         snap = self.state.snapshot()
+        bg = atomicio.background_status()
         return {
             "type": "diag",
             "v": 1,
@@ -253,6 +254,9 @@ class CoreContext:
                 "ws_clients": len(self.hub.clients),
                 "uptime_s": round(max(0.0, self.clock.monotonic() - self.started_mono), 3),
                 "disk": self.retention.status() if self.retention is not None else None,
+                # a stalled or failing SD shows on Diag (G-4-R05)
+                "bg_write_pending": bg["pending"],
+                "bg_write_errors": bg["errors"],
             },
             "log": {
                 "derived": self.derived.current_name if self.derived is not None else None,

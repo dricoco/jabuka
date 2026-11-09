@@ -14,10 +14,21 @@ never the event loop (tick, WebSocket, UDP intake, sd_notify watchdog). fsync_fd
 caller, so the caller may close its file at once. A job failure is logged and counted
 (background_status), never raised and never silent. Without the switch (tests, tools, prep CLIs)
 nothing changes: every call is synchronous, exactly as before.
+
+atomic_write_bytes in background mode keeps the crash-safe order: the temp file
+``.NAME.<n>.tmp`` is written in full on the caller (so ENOSPC/EACCES/EROFS still raise there, the
+old file intact and no temp left), then the tail runs FIFO on the durability thread: fsync(tmp),
+the .bak hard link + rename, rename(tmp, NAME), fsync(dir). Successive writes of one file land in
+order. Trade-off: the call returns before the fsync, so a power cut within an SD stall loses only
+the last change (as a crash just before the request would); drain() covers clean exits. The first
+background write of each file in a process removes the numbered temps a killed run left behind
+(_sweep_orphans); readers and synchronous writers never sweep.
 """
 
 from __future__ import annotations
 
+import contextlib
+import itertools
 import json
 import logging
 import os
@@ -146,8 +157,91 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
+_tmp_seq = itertools.count()  # background temp names: .NAME.<n>.tmp, unique in this process
+_sweep_lock = threading.Lock()  # separate from _cond: never held while a job runs
+_swept: set[str] = set()  # files already swept in this process (never cleared)
+
+
+def _sweep_orphans(path: Path) -> None:
+    """Remove the ``.NAME.<digits>.tmp`` siblings of path, once per file per process.
+
+    Called by the background branch before it creates its own temp for that file, so it can
+    only ever remove the temps of a previous run (killed or power-cut during an SD stall): this
+    process's own in-flight temps for that file are created after the sweep and never seen by
+    it. The lock makes "first write" exact when two threads write one file. _swept is never
+    cleared: clearing it after a timed-out drain could let a re-enabled writer remove a temp
+    that is still queued. Sync .NAME.tmp and .NAME.bak.tmp are left alone."""
+    key = str(path)
+    with _sweep_lock:
+        if key in _swept:
+            return
+        _swept.add(key)
+        prefix = f".{path.name}."
+        try:
+            with os.scandir(path.parent) as it:
+                names = [e.name for e in it]
+        except OSError:
+            log.exception("orphan temp sweep failed for %s", path)
+            return
+        for name in names:
+            if not (name.startswith(prefix) and name.endswith(".tmp")):
+                continue
+            if not name[len(prefix) : -len(".tmp")].isdigit():
+                continue
+            try:
+                (path.parent / name).unlink(missing_ok=True)
+            except OSError:
+                log.exception("orphan temp %s not removed", name)
+
+
+def _finish_atomic(tmp: Path, path: Path) -> None:
+    """Background tail of atomic_write_bytes (durability thread): fsync(tmp), keep NAME.bak,
+    rename tmp onto NAME, fsync the directory. On failure the temp is removed and the error
+    propagates to the worker loop (logged and counted); NAME is left as it was."""
+    bak_tmp = path.with_name(f".{path.name}.bak.tmp")
+    try:
+        fd = os.open(tmp, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if path.exists():
+            bak_tmp.unlink(missing_ok=True)
+            os.link(path, bak_tmp)
+            os.replace(bak_tmp, path.with_name(path.name + ".bak"))
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    except BaseException:
+        for p in (tmp, bak_tmp):
+            with contextlib.suppress(OSError):
+                p.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_background(path: Path, data: bytes) -> None:
+    _sweep_orphans(path)
+    while True:
+        tmp = path.with_name(f".{path.name}.{next(_tmp_seq)}.tmp")
+        try:
+            f = open(tmp, "xb")  # noqa: SIM115 - closed below; never truncates a foreign file
+        except FileExistsError:
+            continue
+        break
+    try:
+        with f:
+            f.write(data)  # in full on the caller: a full/read-only disk raises here
+        _submit(lambda: _finish_atomic(tmp, path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+
+
 def atomic_write_bytes(path: str | Path, data: bytes) -> None:
     path = Path(path)
+    if background_enabled():
+        _atomic_write_background(path, data)
+        return
     tmp = path.with_name(f".{path.name}.tmp")
     with open(tmp, "wb") as f:
         f.write(data)
