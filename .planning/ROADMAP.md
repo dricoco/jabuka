@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 14/15 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12; gap closure 6 (re-verification CR-01 + WR-01, review WR-02/03/06/07), wave 1: 13; gap closure 7 (re-verification CR-01 of review 93cb8b3 + WR-01/02/03, IN-01/02), wave 1: 14; gap closure 8 (review ccbbdc2 CR-01 + WR-01, IN-01), wave 1: 15)
+**Plans:** 15/15 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12; gap closure 6 (re-verification CR-01 + WR-01, review WR-02/03/06/07), wave 1: 13; gap closure 7 (re-verification CR-01 of review 93cb8b3 + WR-01/02/03, IN-01/02), wave 1: 14; gap closure 8 (review ccbbdc2 CR-01 + WR-01, IN-01), wave 1: 15)
 
 Plans:
 **Wave 1**
@@ -163,7 +163,7 @@ Plans:
 
 **Gap closure 8** *(review ccbbdc2 of 04-14; last code change before the freeze)*
 
-- [ ] 04-15-PLAN.md — CR-01 (review ccbbdc2): after Annuler, a crew edit that keeps the active leg (« Finir ici » at a later mark, « Ajouter », deleting or reordering a later leg, « Rendre active » on the active leg, an A↔B switch that keeps the mark) keeps the Annuler suppression and its "left the zone" stand-in, so the real rounding still advances instead of leaving the course on the mark just rounded. Edits that change the active leg or make it the finish still clear it. WR-01 becomes accepted residual R10, pinned with the crew fallback. IN-01 corrects the docstrings (comment-only). Then a fresh full gate and the new freeze fingerprint
+- [x] 04-15-PLAN.md — CR-01 (review ccbbdc2): after Annuler, a crew edit that keeps the active leg (« Finir ici » at a later mark, « Ajouter », deleting or reordering a later leg, « Rendre active » on the active leg, an A↔B switch that keeps the mark) keeps the Annuler suppression and its "left the zone" stand-in, so the real rounding still advances instead of leaving the course on the mark just rounded. Edits that change the active leg or make it the finish still clear it. WR-01 becomes accepted residual R10, pinned with the crew fallback. IN-01 corrects the docstrings (comment-only). Then a fresh full gate and the new freeze fingerprint
 
 **Notes**: The read-only overlay FS is optional: test it once by 2026-11-09, otherwise skip it and rely on atomic writes + the spare SD card. Re-verifies REL-01 (Phase 1) and CRSE-05 (Phase 2) under power-pull faults.
 
@@ -177,7 +177,7 @@ Critical path 1 → 2 → 4. Phase 3 runs in parallel with Phase 2 from 2026-11-
 | 1. Foundation, Data Backbone & Bus-Test Kit | 4/4 | In Progress|  |
 | 2. Helm MVP — Laylines, Marks & Map | 5/5 | In Progress|  |
 | 3. Weather Routing & Tack Advice | 6/6 | In Progress|  |
-| 4. Race Readiness — Hardening & Commissioning | 14/14 | In Progress|  |
+| 4. Race Readiness — Hardening & Commissioning | 15/15 | In Progress|  |
 
 ---
 *Roadmap created: 2026-11-06*

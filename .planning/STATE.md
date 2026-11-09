@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 4
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
-stopped_at: Completed 04-14-PLAN.md
-last_updated: "2026-11-09T15:56:57.581Z"
+stopped_at: Completed 04-15-PLAN.md
+last_updated: "2026-11-09T16:51:12.971Z"
 last_activity: 2026-11-09
-last_activity_desc: 04-14 executed (CR-01 key split, WR-01 Annuler, WR-02 = R9, WR-03 Plan B test, IN-02)
-state_head: cb64caa208e3dc8e0e07e832bcebebdef0d709f8
+last_activity_desc: 04-15 executed (CR-01 _carry_suppress, WR-01 = R10, IN-01 docstrings)
+state_head: 0d73d554c99b3af77f2270c67897a6a9c06e1fff
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 29
-  completed_plans: 29
+  total_plans: 30
+  completed_plans: 30
   percent: 0
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 4 (race-readiness-hardening-commissioning) — EXECUTING
-Plan: 14 of 14
-Status: Gap closure 7 complete — 04-14 done (CR-01 key split: outgoing edits restart only the debounce; WR-01 Annuler stand-in at normal marks; WR-02 accepted as R9; WR-03 Plan B test fidelity; IN-02); full gate green; phase re-verification, wheelhouse rebuild/Pi re-provision and human UAT pending
-Last activity: 2026-11-09 — 04-14 executed (CR-01: 140/140 outgoing-edit cases advance once; WR-01 approach-side retreat after Annuler never re-advances; residuals R1-R9 recorded; gate green 1885 passed on 3.14 and 3.13; src/jabuka fingerprint f4a6fa25…9cc8, 147 files)
+Plan: 15 of 15
+Status: Gap closure 8 complete — 04-15 done (CR-01 of review ccbbdc2: an edit that keeps the active leg keeps the Annuler suppression via _carry_suppress; WR-01 accepted as R10; IN-01 docstrings); full gate green; phase re-verification, freeze, wheelhouse rebuild/Pi re-provision and human UAT pending
+Last activity: 2026-11-09 — 04-15 executed (CR-01: 16 stuck Annuler-then-edit cases now advance once; residuals R1-R10 recorded; gate green 1915 passed on 3.14 and 3.13; src/jabuka fingerprint 8b0a3bc4…19c8, 147 files)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -69,6 +69,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P12 | 33min | 3 tasks | 18 files |
 | Phase 04 P13 | 31min | 3 tasks | 8 files |
 | Phase 04 P14 | 31min | 3 tasks | 5 files |
+| Phase 04 P15 | 27min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,8 @@ Recent decisions affecting current work:
 - [Phase 4]: 04-14 CR-01: rounding evidence keyed by _fsm_geometry (idx, mark, radius, previous pos, active pos); side/next-mark edits (_fsm_outgoing) restart only the 10 s debounce
 - [Phase 4]: 04-14 WR-01: after Annuler in the zone of a normal mark, the zone exit stands in for _near (exit must be past the mark along either leg); _beyond only at hairpins / no outgoing leg
 - [Phase 4]: 04-14 WR-02 accepted as false-advance residual R9 (banner + Annuler); IN-02 fixed; IN-01 advisory; new src/jabuka fingerprint f4a6fa25...9cc8 (147 files) -> wheelhouse rebuild + Pi re-provision
+- [Phase 4]: 04-15 CR-01: _carry_suppress in _commit keeps the Annuler suppression through an edit that keeps the active leg (same index + mark, not the finish, no banner, not finished); Suiv./Préc., other leg, index shift (R6), select() to another mark, Finir ici on the active leg still clear it
+- [Phase 4]: 04-15 WR-01 accepted as false-advance residual R10 (Annuler in a normal mark's zone, then an inside-of-the-turn exit advances); 04-14 D3 holds only for outside-of-the-turn retreats; new src/jabuka fingerprint 8b0a3bc4...19c8 (147 files) -> wheelhouse rebuild + Pi re-provision
 
 ### Pending Todos
 
@@ -143,6 +146,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T15:56:57.524Z
-Stopped at: Completed 04-14-PLAN.md
+Last session: 2026-11-09T16:51:12.905Z
+Stopped at: Completed 04-15-PLAN.md
 Resume file: None
