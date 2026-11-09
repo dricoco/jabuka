@@ -9,6 +9,28 @@
   --panel: #111;
 }
 
+/* Night (G-4-R10): red channel only on true black, like the helm (Pitfall 4). The green, yellow
+   and white tokens become red shades; links and the input are styled explicitly. diag-theme.js
+   sets html.theme-night before the first paint. */
+html.theme-night {
+  --bg: #000000;
+  --fg: #ff0000;
+  --muted: #a00000;
+  --line: #400000;
+  --ok: #ff0000;
+  --warn: #c00000;
+  --bad: #ff0000;
+  --panel: #000000;
+  background: #000000;
+  scrollbar-color: var(--muted) #000000;
+}
+html.theme-night a { color: var(--fg); }
+/* the UA's grey table border colour (zero-width borders, but never a grey token at night) */
+html.theme-night :is(table, thead, tbody, tfoot, tr) { border-color: var(--line); }
+html.theme-night .event-panel input { background: #000000; color: var(--fg); border: 1px solid var(--line); }
+html.theme-night ::placeholder { color: var(--muted); }
+html.theme-night ::selection { background: var(--muted); color: #000000; }
+
 * { box-sizing: border-box; }
 
 body {

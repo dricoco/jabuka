@@ -90,6 +90,9 @@ export function badge(key, text, cls = "warn") {
 // -- night theme (HELM-03) ----------------------------------------------------------------------
 const THEME_KEY = "jabuka.theme";
 const BRIGHT_KEY = "jabuka.brightness";
+// G-4-R09: at 40 % the dim tier was rgb(51, 0, 0) on black, so the labels, the route age and
+// "Autre bord" vanished. Night text never goes below this red; borders and the map still dim.
+const TEXT_FLOOR = 110;
 
 function store(key, value) {
   try {
@@ -124,12 +127,13 @@ function applyBrightness() {
   }
   const k = storedBrightness();
   const red = (v) => `rgb(${Math.round(v * k)}, 0, 0)`;
-  s.setProperty("--fg", red(255));
-  s.setProperty("--good", red(255));
-  s.setProperty("--bad", red(255));
-  s.setProperty("--accent", red(255));
-  s.setProperty("--warn", red(192));
-  s.setProperty("--dim", red(128));
+  const text = (v) => `rgb(${Math.round(Math.max(v * k, TEXT_FLOOR))}, 0, 0)`;
+  s.setProperty("--fg", text(255));
+  s.setProperty("--good", text(255));
+  s.setProperty("--bad", text(255));
+  s.setProperty("--accent", text(255));
+  s.setProperty("--warn", text(192));
+  s.setProperty("--dim", text(128));
   s.setProperty("--line", red(64));
   s.setProperty("--map-k", String(k));
 }
@@ -147,6 +151,13 @@ function applyThemeClass(theme) {
   }
   const slider = $("night-brightness");
   if (slider) slider.hidden = !night;
+  // G-4-R10: the Diag frame stays loaded across tab switches, so it follows a switch made while
+  // it is open (same origin; diag-theme.js covers its first paint)
+  try {
+    $("diag-frame")?.contentDocument?.documentElement?.classList.toggle("theme-night", night);
+  } catch {
+    /* frame not loaded or not reachable: diag-theme.js applies the theme on its next load */
+  }
   applyBrightness();
 }
 

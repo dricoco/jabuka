@@ -41,6 +41,8 @@ html, body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  /* G-4-R11: no pull-to-refresh (a ~5 s blank helm) from a wet swipe down */
+  overscroll-behavior-y: none;
 }
 
 #map { position: fixed; inset: 0; z-index: 0; background: var(--bg); }
@@ -119,6 +121,8 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
   /* the VIREZ / EMPANNEZ cue word (G-4-R03): EMPANNEZ, the longest (8 capitals), fits the
      column; HELM-02's 20 % rule is about the number, not this word */
   --f-cue: min(var(--f-primary), 13vw);
+  /* G-4-R09: the primary label (what the big number is) is glanceable, as big as the tack word */
+  --f-label: var(--f-word);
 }
 #helm-col {
   position: absolute; top: 0; left: 0; right: 0; max-height: 100%; overflow: hidden;
@@ -160,6 +164,9 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
 
 .primary-box { text-align: center; }
 .label { color: var(--dim); font-size: 16px; font-weight: 600; text-transform: uppercase; }
+/* G-4-R09: TWA CIBLE / CAP À SUIVRE / TWA ROUTE and the takeover labels, readable at a glance;
+   single id only, so #primary-label.alert and .primary-box.cue #primary-label keep their colours */
+#primary-label { font-size: var(--f-label); color: var(--fg); font-weight: 800; line-height: 1.1; }
 .primary-line { line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* the inline box is 1.15-1.4 em tall depending on the font: >= 20% vh (tests/ui) */
 #primary { font-size: var(--f-primary); font-weight: 800; white-space: nowrap; }
@@ -261,7 +268,14 @@ button.stay-btn.active { color: var(--bg); background: var(--fg); }
 #tab-barre.wind-stale .countdown, #tab-barre.wind-stale #helm-layline-dist,
 #tab-barre.wind-stale .route-band *:not(.stay-btn) { color: var(--dim) !important; }
 
-#diag-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+/* G-4-R10: never a white frame at night while diag.html loads */
+#diag-frame { width: 100%; height: 100%; border: 0; background: var(--bg); }
+
+/* G-4-R11: a wet finger resting on the helm selects no text and opens no long-press sheet (white
+   at night); the inputs of Réglages / Carte are outside these surfaces and keep selection */
+#helm-col, #topbar, .map-ctrls {
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
 
 /* -- lock mode (HELM-04): transparent full-screen layer above everything ----------------------- */
 #lock-overlay {

@@ -8,6 +8,12 @@ import { applyI18n, t } from "./i18n.js";
 // the page's static labels in the tablet's language (same localStorage as the helm app)
 applyI18n(document);
 document.title = t("diag.title");
+// G-4-R10: a Diag page opened in its own tab follows a theme switch made on the helm
+window.addEventListener("storage", (ev) => {
+  if (ev.key === "jabuka.theme") {
+    document.documentElement.classList.toggle("theme-night", ev.newValue === "night");
+  }
+});
 
 const $ = (id) => document.getElementById(id);
 
