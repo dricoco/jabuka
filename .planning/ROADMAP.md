@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 12/12 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12)
+**Plans:** 12/13 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12; gap closure 6 (re-verification CR-01 + WR-01, review WR-02/03/06/07), wave 1: 13)
 
 Plans:
 **Wave 1**
@@ -152,6 +152,10 @@ Plans:
 
 - [x] 04-12-PLAN.md — Gap closure 5d (tablet hardening, G-4-R07/R09/R10/R11): the padlock unlocks only on release after a 2–4 s press; night text is floored at rgb(110,0,0) and the primary label is glanceable; Diag is red-on-black at night from the first paint; no selection, callout or pull-to-refresh on the helm surfaces. Runs the first full gate over all four gap plans and records the freeze fingerprint
 - [x] 04-03-PLAN.md — Pi `--systemd` mode (system scope via /run drop-ins, proven end to end on laptop user-scope systemd), Pi temperature/throttling metrics, the full 36 h-equivalent laptop run with its fixes, Pi soak procedure and results in docs/SOAK.md
+
+**Gap closure 6** *(re-verification 2026-11-09; last code change before the freeze)*
+
+- [ ] 04-13-PLAN.md — CR-01 + WR-01: at a normal mark a zone exit counts after the incoming-leg latch, past the mark now, or past along the outgoing leg after coming within the radius + 0.1 nm. So a committee mark entered off the real buoy, or a tight rounding, always advances, while approach-side and inside-of-the-turn retreats never do. Any geometry edit of the active leg restarts the state machine. Also: the rawlog cadence flag resets on a failed submit (WR-03); the ingest drain survives a close error (WR-07); the ingest exports bg_write_errors (WR-02, ingest part); Plan B relay gets RestartMode=direct (WR-06). Then the full gate and the new freeze fingerprint
 
 **Notes**: The read-only overlay FS is optional: test it once by 2026-11-09, otherwise skip it and rely on atomic writes + the spare SD card. Re-verifies REL-01 (Phase 1) and CRSE-05 (Phase 2) under power-pull faults.
 
