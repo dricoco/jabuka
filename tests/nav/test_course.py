@@ -1328,3 +1328,26 @@ def test_an_edit_that_changes_the_active_leg_or_makes_it_the_finish_clears_the_s
         cs.select("A")
         assert cs.course.active_idx == 1 and active_id(cs) == "plic-sestre"
     assert cs.course.suppress_idx is None
+
+
+@pytest.mark.parametrize("turn", [45, 60, 90])
+def test_annuler_in_the_zone_then_an_inside_of_the_turn_retreat_advances(
+    tmp_path: Path, turn: float
+) -> None:
+    """Accepted residual R10 (review ccbbdc2 WR-01): after Annuler in the zone of a normal mark,
+    the "left the suppressed zone" stand-in assumes "came near". So a zone exit on the inside of
+    the turn (dot_in < 0, dot_out > 0) advances, although the boat never came within radius +
+    MARK_TOL_NM. Collecting real near evidence on the suppressed ticks would leave an Annuler
+    tapped on the beat-out stuck. Crew fallback: Annuler again (now outside the zone, so no
+    loop) or « Préc. ». A later fix changes this test together with the residual table."""
+    cs, log = store(tmp_path)
+    m, b_in, t = _committee_advance_then_annuler(cs, turn)
+    t = run(cs, at(b_in + 120, 0.2, m), t, 5)  # in the zone, suppressed, never within 0.15 nm
+    t = run(cs, at(b_in + 120, 0.6, m), t, 30)
+    assert cs.course.active_idx == 2
+    assert len(_advances(log)) == 2
+    cs.undo(cs.status()["banner"]["token"], t)  # crew fallback, now outside the zone
+    t = run(cs, at(b_in + 120, 0.6, m), t + 1, 30)
+    assert cs.course.active_idx == 1
+    assert cs.course.suppress_idx is None
+    assert len(_advances(log)) == 2
