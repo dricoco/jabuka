@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -135,6 +138,9 @@ def test_relay_unit(parse_unit) -> None:
     assert "Install" not in relay  # only ever pulled in by fastnet2ip
     assert _one(relay, "Unit", "StartLimitIntervalSec") == "0"  # G-4-R12: never stays dead
     assert _one(relay, "Unit", "StopWhenUnneeded") == "yes"
+    # WR-06: an auto-restart never passes through inactive/failed, so fastnet2ip's BindsTo= never
+    # stops Plan B on a single relay crash
+    assert _one(relay, "Service", "RestartMode") == "direct"
     assert "jabuka-ingest-fastnet.service" in _words(relay, "Unit", "Conflicts")
     assert _one(relay, "Service", "Type") == "notify"
     assert _one(relay, "Service", "User") == "jabuka"
@@ -151,6 +157,99 @@ def test_relay_unit(parse_unit) -> None:
     # the link lives in the relay's RuntimeDirectory, which fastnet2ip reads
     planb_argv = shlex.split(_one(parse_unit(PLANB), "Service", "ExecStart"))
     assert planb_argv[planb_argv.index("--serial") + 1] == str(args.link)
+
+
+def _user_systemd() -> tuple[str, Path] | None:
+    """(systemctl, the user manager's runtime unit dir) when a user manager is running."""
+    exe = shutil.which("systemctl")
+    rt = os.environ.get("XDG_RUNTIME_DIR")
+    if exe is None or not rt or sys.platform != "linux":
+        return None
+    try:
+        r = subprocess.run(
+            [exe, "--user", "is-system-running"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.stdout.strip() not in ("running", "degraded"):
+        return None
+    return exe, Path(rt) / "systemd" / "user"
+
+
+def _copied(unit: dict, section: str, keys: tuple[str, ...]) -> str:
+    return "".join(f"{k}={v}\n" for k in keys for v in unit.get(section, {}).get(k, []))
+
+
+def test_one_relay_crash_keeps_plan_b_up(parse_unit) -> None:
+    """WR-06 on a real (user-scope) systemd: throwaway units carrying the shipped relay and
+    fastnet2ip dependency/restart directives. One kill -9 of the relay must leave Plan B active
+    with the same MainPID and the relay restarted."""
+    planb = parse_unit(PLANB)
+    relay = parse_unit(RELAY)
+    assert RELAY in _words(planb, "Unit", "BindsTo")
+    assert RELAY in _words(planb, "Unit", "After")
+    found = _user_systemd()
+    if found is None:
+        pytest.skip("no user systemd manager (XDG_RUNTIME_DIR / systemctl --user)")
+    exe, unit_dir = found
+    sleep = shutil.which("sleep") or "/bin/sleep"
+    rname = f"jabuka-wr06-{os.getpid()}-relay.service"
+    pname = f"jabuka-wr06-{os.getpid()}-planb.service"
+    relay_text = (
+        "[Unit]\nDescription=WR-06 throwaway relay\n"
+        + _copied(relay, "Unit", ("StopWhenUnneeded", "StartLimitIntervalSec"))
+        + f"\n[Service]\nType=simple\nExecStart={sleep} infinity\n"
+        + _copied(relay, "Service", ("Restart", "RestartSec", "RestartMode"))
+    )
+    planb_text = (
+        f"[Unit]\nDescription=WR-06 throwaway Plan B\nBindsTo={rname}\nAfter={rname}\n"
+        + _copied(planb, "Unit", ("StartLimitIntervalSec",))
+        + f"\n[Service]\nType=simple\nExecStart={sleep} infinity\n"
+        + _copied(planb, "Service", ("Restart", "RestartSec"))
+    )
+
+    def ctl(*args: str, check: bool = True) -> str:
+        r = subprocess.run(
+            [exe, "--user", *args], capture_output=True, text=True, timeout=30, check=False
+        )
+        if check:
+            assert r.returncode == 0, (args, r.stdout, r.stderr)
+        return r.stdout.strip()
+
+    def show(unit: str, prop: str) -> str:
+        return ctl("show", "-p", prop, "--value", unit)
+
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    files = [unit_dir / rname, unit_dir / pname]
+    files[0].write_text(relay_text)
+    files[1].write_text(planb_text)
+    try:
+        ctl("daemon-reload")
+        ctl("start", pname)
+        assert show(pname, "ActiveState") == "active"
+        assert show(rname, "ActiveState") == "active"
+        planb_pid = show(pname, "MainPID")
+        relay_pid = int(show(rname, "MainPID"))
+        assert relay_pid > 0 and planb_pid not in ("", "0")
+        os.kill(relay_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            restarted = int(show(rname, "NRestarts") or 0) >= 1
+            if (restarted and show(rname, "ActiveState") == "active") or show(
+                pname, "ActiveState"
+            ) != "active":
+                break
+            time.sleep(0.2)
+        time.sleep(1.0)
+        assert show(rname, "ActiveState") == "active"
+        assert show(pname, "ActiveState") == "active"
+        assert show(pname, "MainPID") == planb_pid
+    finally:
+        ctl("stop", pname, rname, check=False)
+        for f in files:
+            f.unlink(missing_ok=True)
+        ctl("daemon-reload", check=False)
+        ctl("reset-failed", pname, rname, check=False)
 
 
 def test_plan_b_header_documents_manual_use(deploy_dir: Path) -> None:
