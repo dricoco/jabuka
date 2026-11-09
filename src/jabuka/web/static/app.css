@@ -116,6 +116,9 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
   --f-item: min(3vh, 2.8vw);
   --f-num: min(4vh, 3.6vw);
   --f-stay: 28px;
+  /* the VIREZ / EMPANNEZ cue word (G-4-R03): EMPANNEZ, the longest (8 capitals), fits the
+     column; HELM-02's 20 % rule is about the number, not this word */
+  --f-cue: min(var(--f-primary), 13vw);
 }
 #helm-col {
   position: absolute; top: 0; left: 0; right: 0; max-height: 100%; overflow: hidden;
@@ -142,6 +145,7 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
     --f-item: max(15px, min(2.8vh, calc(var(--inner) / 17)));
     --f-num: max(16px, min(3.4vh, calc(var(--inner) / 13)));
     --f-stay: max(24px, min(28px, calc(var(--inner) / 13.5)));
+    --f-cue: min(var(--f-primary), calc(var(--inner) / 6.2));
   }
   #helm-col {
     /* blocks 1 and 2 fit at 1024x600; should a wrapped top bar ever push them past the bottom,
@@ -164,6 +168,11 @@ main { position: fixed; inset: var(--topbar-h, 56px) 0 0 0; z-index: 10; pointer
 #primary-unit.unit-word {
   display: block; margin: 0.1em 0 0; font-size: var(--f-word); line-height: 1.1; white-space: normal;
 }
+/* G-4-R03: the tack is due (or the boat is on the wrong tack): the box is inverted and reads
+   VIREZ / EMPANNEZ with the tack to go to; theme tokens only (night: red box, black text) */
+#primary.cue-word { font-size: var(--f-cue); }
+.primary-box.cue { background: var(--bad); color: var(--bg); border-radius: 8px; padding: 2px 4px; }
+.primary-box.cue #primary-label, .primary-box.cue #primary, .primary-box.cue #primary-unit { color: var(--bg); }
 .cell { display: flex; flex-direction: column; align-items: center; min-width: 0; }
 .num { font-size: var(--f-num); font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .num.good { color: var(--good); }
@@ -240,6 +249,8 @@ button.stay-btn.active { color: var(--bg); background: var(--fg); }
 /* link lost: frozen numbers must never look live (Pitfall 5). Dim colour only, no grayscale
    filter (grey would leak green/blue light at night). */
 #tab-barre.stale .helm-block *:not(.stale-msg) { color: var(--dim) !important; }
+/* a frozen VIREZ / EMPANNEZ cue loses its inverted box too (G-4-R03) */
+#tab-barre.stale .primary-box.cue { background: transparent; }
 
 #diag-frame { width: 100%; height: 100%; border: 0; background: #fff; }
 

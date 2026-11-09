@@ -110,6 +110,7 @@ Terms chosen (to confirm first):
 | `route.tackNow` | VIREZ | TACK | OBRNI |
 | `route.gybeNow` | EMPANNEZ | GYBE | KRIŽAJ |
 | `route.wrongTack` | MAUVAIS BORD | WRONG TACK | NAPAČEN BOK |
+| `route.cueNow` | MAINTENANT | NOW | ZDAJ |
 | `route.updating` | Route mise à jour… | Route updating… | Posodabljanje poti… |
 | `route.landTackIn` | Virement imposé (terre) dans {t} | Forced tack (land) in {t} | Prisilni obrat (kopno) čez {t} |
 | `route.noTack` | Pas de virement prévu | No tack planned | Obrat ni predviden |

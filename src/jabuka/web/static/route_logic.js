@@ -52,6 +52,30 @@ export function countdownView(nav) {
   return route(t(gybe ? "helm.gybeIn" : "helm.tackIn", { t: fmtClock(cd) }));
 }
 
+const OTHER_TACK = { stbd: "port", port: "stbd" };
+
+// The manoeuvre cue of the primary box (G-4-R03): {word, tack, label, kind} or null. The cue the
+// countdown line already shows ("VIREZ", 26 px) also takes over the primary box (review C/R03),
+// because a missed cue costs a forced recompute 2 min later. kind "due": the advised tack is due
+// now (countdown <= 0, above the missed-tack limit), go to the other tack than the route's;
+// kind "wrong": the boat is on the other tack than the route's, go to the route's tack.
+export function tackCue(route) {
+  if (!routeOk(route) || route.updating) return null;
+  const cd = route.countdown_s;
+  const due = isNum(cd) && cd <= 0 && cd > MISSED_S;
+  const wrong = route.wrong_tack === true;
+  if (!due && !wrong) return null;
+  const kind = wrong ? "wrong" : "due";
+  const to = wrong ? route.target_tack : (OTHER_TACK[route.target_tack] ?? null);
+  const gybe = wrong ? isNum(route.target_twa) && Math.abs(route.target_twa) >= 90 : route.tack_kind === "gybe";
+  return {
+    word: gybe ? STR.gybeNow : STR.tackNow,
+    tack: tackWord(to),
+    label: wrong ? STR.wrongTack : STR.cueNow,
+    kind,
+  };
+}
+
 // "Ne pas virer : +4 min" / "Ne pas virer : < 1 min"; null when the core has no cost.
 export function costText(route) {
   if (!routeOk(route) || !route.cost_text) return null;

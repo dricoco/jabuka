@@ -143,6 +143,10 @@ export function render(nav, badge) {
   // a tack word (tribord / starboard / desno) goes on its own line under the number; a °M/°T
   // suffix stays inline, so "888°M" always fits the column
   $("primary-unit")?.classList.toggle("unit-word", (v.primary.unit ?? "").length > 1);
+  // G-4-R03: VIREZ / EMPANNEZ takes over the box, inverted, the word sized to the column
+  const cue = Boolean(v.primary.cue);
+  $("helm-steer")?.querySelector(".primary-box")?.classList.toggle("cue", cue);
+  $("primary")?.classList.toggle("cue-word", cue);
   setText("helm-deviation", v.dev.text, v.dev.cls);
   setText("helm-hint", v.dev.hint, v.dev.cls);
   setText("helm-speed", v.speed);

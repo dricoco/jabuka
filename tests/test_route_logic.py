@@ -159,7 +159,12 @@ def test_tack_cue() -> None:
         assert cue(route(countdown_s=s)) is None, s
     assert cue(route(countdown_s=-5, tack_kind="gybe"))["word"] == "EMPANNEZ"
     wrong = route(wrong_tack=True, target_tack="port", target_twa=-42.0, countdown_s=300)
-    assert cue(wrong) == {"word": "VIREZ", "tack": "bâbord", "label": "MAUVAIS BORD", "kind": "wrong"}
+    assert cue(wrong) == {
+        "word": "VIREZ",
+        "tack": "bâbord",
+        "label": "MAUVAIS BORD",
+        "kind": "wrong",
+    }
     assert cue(dict(wrong, target_twa=150.0))["word"] == "EMPANNEZ"
     assert cue(route(countdown_s=0, updating=True)) is None
     assert cue(route(state="outdated", countdown_s=0)) is None

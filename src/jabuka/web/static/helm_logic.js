@@ -7,7 +7,7 @@
 // deviation and the countdown come from the route block (route_logic.js formats it); without one
 // the Phase 2 layline values come back by themselves.
 import { SERVER, fmtDec, t, trServer } from "./i18n.js";
-import { countdownView, routeOk, tackWord } from "./route_logic.js";
+import { countdownView, routeOk, tackCue, tackWord } from "./route_logic.js";
 
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -163,14 +163,26 @@ export function helmFlags(nav) {
   return out;
 }
 
+const plain = (label, value) => ({ label, value, main: value, unit: "" });
+
 // Primary number by point of sail (D-6): {label, value, main, unit}; value is the full text
 // ("38°", "115°M"), main + unit the same split so the °M/°T suffix can be drawn smaller.
+// Takeovers, in priority order: nav failure (ERREUR CALCUL), then the tack cue (G-4-R03:
+// VIREZ / EMPANNEZ + the tack to go to, cue: true), then the route primary, then the Phase 2
+// helm primary.
 export function primaryView(nav) {
-  const helm = nav?.helm;
-  const plain = (label, value) => ({ label, value, main: value, unit: "" });
   if (navFailed(nav)) return plain(t("badge.calcError"), "—");
-  const route = routePrimary(nav);
-  if (route) return route;
+  const cue = tackCue(nav?.route);
+  if (cue) {
+    const value = cue.tack ? `${cue.word} ${cue.tack}` : cue.word;
+    return { label: cue.label, value, main: cue.word, unit: cue.tack, cue: true };
+  }
+  return routePrimary(nav) ?? helmPrimary(nav);
+}
+
+// The Phase 2 primary (no valid route): the TWA target or the course to steer.
+function helmPrimary(nav) {
+  const helm = nav?.helm;
   if (!nav || !helm || !helm.primary) {
     const noWind = !nav?.wind || nav.wind.source === "NONE";
     return plain(noWind ? t("badge.noWind") : "—", "—");
