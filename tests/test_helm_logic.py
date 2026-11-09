@@ -346,6 +346,77 @@ def test_primary_box_takeover_when_the_tack_is_due() -> None:
     assert js(f"helmView({json.dumps(n)})")["primary"]["cue"] is True
 
 
+STALE_WIND = {"source": "MANUEL", "stale": True, "manual_age_s": 3600}
+
+
+def test_stale_wind_takes_over_the_label_and_neutralises_the_hints() -> None:
+    """G-4-R01: hours-old manual wind still drives the numbers (Phase 2 contract) but is never
+    shown as a live target: VENT PÉRIMÉ, no LOFER/ABATTRE, no alert style, no tack cue."""
+    n = {"wind": STALE_WIND, "helm": {"primary": "twa_up", "target": 41.6, "deviation": 6}}
+    assert js(f"primaryView({json.dumps(n)})") == {
+        "label": "VENT PÉRIMÉ",
+        "value": "42°",
+        "main": "42°",
+        "unit": "",
+        "alert": True,
+        "stale": True,
+    }
+    v = js(f"helmView({json.dumps(n)})")
+    assert v["windStale"] is True
+    assert (v["dev"]["hint"], v["dev"]["cls"], v["deviationClass"]) == ("", "", "")
+    assert v["deviation"] == "+6°"
+    # a due tack on stale wind: still VENT PÉRIMÉ, no cue, the route number
+    due = dict(ROUTE_OK, countdown_s=-3)
+    p = js(f"primaryView({json.dumps(dict(n, route=due))})")
+    assert (p["label"], p["main"]) == ("VENT PÉRIMÉ", "42°") and "cue" not in p
+    v = js(f"helmView({json.dumps(dict(n, route=due))})")
+    assert v["countdownCls"] == ""
+    # the countdown line never says the tack the box refuses to cue
+    assert v["countdown"] == "VENT PÉRIMÉ"
+    gybe = dict(due, tack_kind="gybe")
+    assert js(f"helmView({json.dumps(dict(n, route=gybe))})")["countdown"] == "VENT PÉRIMÉ"
+    later = js(f"helmView({json.dumps(dict(n, route=ROUTE_OK))})")
+    assert later["countdown"] == "Virement dans 08:30"
+    live = dict(n, wind={"source": "LIVE"}, route=due)
+    assert js(f"helmView({json.dumps(live)})")["countdown"] == "VIREZ"
+
+
+def test_no_position_badge_and_label() -> None:
+    """G-4-R08: a boat block without a position: a red PAS DE GPS badge and label."""
+    n = {"boat": {"lat": None, "lon": None}, "wind": {"source": "LIVE"}}
+    flag = {"key": "gps", "text": "PAS DE GPS", "cls": "bad"}
+    assert js(f"helmFlags({json.dumps(n)})")[0] == flag
+    p = js(f"primaryView({json.dumps(dict(n, helm={'primary': None}))})")
+    assert p == {"label": "PAS DE GPS", "value": "—", "main": "—", "unit": "", "alert": True}
+    keys = lambda x: [f["key"] for f in js(f"helmFlags({json.dumps(x)})")]  # noqa: E731
+    assert "gps" not in keys(dict(n, boat={"lat": 43.7, "lon": 15.8}))
+    assert "gps" not in keys({"wind": {"source": "LIVE"}})
+    failed = dict(n, alerts=[js("NAV_FAILED")])
+    assert "gps" not in keys(failed)
+    assert js(f"primaryView({json.dumps(failed)})")["label"] == "ERREUR CALCUL"
+
+
+def test_takeover_priority() -> None:
+    """navFailed > no position > stale wind > tack cue > route primary."""
+    due = dict(ROUTE_OK, countdown_s=-3)
+    nogps = {"boat": {"lat": None, "lon": None}}
+    base = {"helm": {"primary": "twa_up", "target": 38}, "wind": {"source": "LIVE"}}
+    failed = dict(base, **nogps, alerts=[js("NAV_FAILED")])
+    assert js(f"primaryView({json.dumps(failed)})")["label"] == "ERREUR CALCUL"
+    both = dict(base, **nogps, wind=STALE_WIND, route=due)
+    assert js(f"primaryView({json.dumps(both)})")["label"] == "PAS DE GPS"
+    stale = dict(base, wind=STALE_WIND, route=due)
+    p = js(f"primaryView({json.dumps(stale)})")
+    assert p["label"] == "VENT PÉRIMÉ" and "cue" not in p
+    p = js(f"primaryView({json.dumps(dict(base, route=due))})")
+    assert p["label"] == "MAINTENANT" and p["cue"] is True
+    assert js(f"noPosition({json.dumps(both)})") is True
+    assert js(f"noPosition({json.dumps(base)})") is False
+    assert js(f"windStale({json.dumps(stale)})") is True
+    assert js(f"windStale({json.dumps(base)})") is False
+    assert js("windStale(null)") is False and js("noPosition(null)") is False
+
+
 def test_grib_badge_and_alert() -> None:
     """GPS + GRIB only (bus silent): the wind badge says GRIB (warn) and the core's alert shows."""
     assert js("sourceBadge({source: 'GRIB'})") == {"text": "GRIB", "cls": "warn"}

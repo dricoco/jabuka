@@ -45,7 +45,7 @@ LANDSCAPE = ((1280, 800), (1024, 600))
 PORTRAIT = (800, 1280)
 SCREENS = os.environ.get("JABUKA_SCREENS")
 CUE_WORD = {"fr": "EMPANNEZ", "en": "GYBE", "sl": "KRIŽAJ"}
-NIGHT_VARIANTS = ("cue",)
+NIGHT_VARIANTS = ("cue", "stale")
 
 # The latest live nav message with long values forced in, rendered synchronously by every module
 # listening on the bus. The next live message (within 1 s) puts the real values back.
@@ -60,10 +60,14 @@ LONG_NAV_JS = """(variant) => {
     wrong_tack: false});
   if (variant === "hdg") {
     Object.assign(r, {primary: "hdg", target: 358.4, target_twa: -178, target_tack: "stbd"});
-  } else if (variant === "cue") {
+  } else if (variant === "cue" || variant === "stale") {
     // G-4-R03: a due gybe takes over the primary box (EMPANNEZ / GYBE / KRIŽAJ + the tack)
     Object.assign(r, {primary: "twa", target: -178, target_twa: -178, target_tack: "stbd",
       countdown_s: -10, tack_kind: "gybe", wrong_tack: false, updating: false});
+    // G-4-R01: the same due gybe on stale manual wind reads VENT PÉRIMÉ, dimmed, no cue
+    if (variant === "stale") {
+      nav.wind = {...(nav.wind || {}), source: "MANUEL", stale: true, manual_age_s: 3600};
+    }
   } else {
     Object.assign(r, {primary: "twa", target: -178, target_tack: "stbd", target_hdg_t: 358.4});
   }
@@ -329,7 +333,7 @@ def test_on_reste_in_block_two_padding_per_tab_and_night(page, feeder) -> None:
             assert res["bad"] == [], (lang, w, h, res["bad"])
             assert res["colBg"] in ("rgb(0, 0, 0)", "rgba(0, 0, 0, 1)"), res["colBg"]
             _shot(pg, f"{lang}-night-{w}x{h}")
-            # the takeovers stay red on black (G-4-R03 cue box)
+            # the takeovers stay red on black (G-4-R03 cue box, G-4-R01 stale wind)
             for variant in NIGHT_VARIANTS:
                 pg.evaluate(LONG_NAV_JS, variant)
                 res = pg.evaluate(NIGHT_JS)

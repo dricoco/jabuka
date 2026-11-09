@@ -246,6 +246,23 @@ def test_manual_without_compass_uses_cog_for_twa() -> None:
     assert sol.heading_src == "cog"
 
 
+def test_stale_manual_wind_is_flagged_not_dropped() -> None:
+    """G-4-R01: the contract the helm keys on (nav.wind.stale). A manual wind older than
+    manual_wind_max_age_min (30) stays in use (Phase 2) but is flagged stale with its alert."""
+    manual = ManualWind(
+        twd_t_deg=250.0, tws_kn=8.0, ref_entered="T", twd_entered=250.0, t_set_wall=0.0
+    )
+    sol = WindPipeline(Settings()).update(
+        {W.POSITION: pos_row(*FAR)}, 0.0, manual=manual, t_wall=31 * 60.0
+    )
+    assert sol.source == "MANUEL" and sol.stale is True and sol.ok is True
+    assert "Vent manuel ancien (> 30 min)" in sol.alerts
+    sol = WindPipeline(Settings()).update(
+        {W.POSITION: pos_row(*FAR)}, 0.0, manual=manual, t_wall=29 * 60.0
+    )
+    assert sol.source == "MANUEL" and sol.stale is False
+
+
 # -- cross-check ----------------------------------------------------------------------------------
 def _run_check(seconds: int) -> tuple[W.WindSolution, list[str]]:
     p = WindPipeline(Settings())

@@ -191,3 +191,95 @@ def test_nav_alerts_are_visible_on_every_tab(page, feeder) -> None:
     assert res["shown"] == ["Écart TWA calculé/B&G > 10°", "Erreur de calcul nav"], res
     assert res["label"] == "ERREUR CALCUL"
     assert res["after"] == 0
+
+
+# The latest live message with one takeover forced in (G-4-R01/R03/R08), rendered synchronously by
+# every module on the bus, read back in the same evaluate. The next live message (within 1 s) puts
+# the live values back.
+TAKEOVER_JS = """(variant) => {
+  const nav = JSON.parse(JSON.stringify(window.jabuka.lastNav));
+  // same version as the live route: no GET /api/route for a synthetic block
+  const version = (nav.route && nav.route.version) || 0;
+  const due = {state: "ok", reason: null, version, primary: "twa", target: 42, deviation: 1,
+    target_twa: 42, target_tack: "stbd", target_hdg_t: 119, countdown_s: -5, tack_kind: "tack",
+    wrong_tack: false, updating: false, missed: false, cost_text: null, age_s: 60, bias: null,
+    stay: {active: false, tack: null, released_land: false, release_in_s: null}};
+  if (variant === "cue") nav.route = due;
+  if (variant === "wrong") {
+    nav.route = {...due, wrong_tack: true, target_tack: "port", countdown_s: 300};
+  }
+  if (variant === "stale") {
+    nav.wind = {...(nav.wind || {}), source: "MANUEL", stale: true, manual_age_s: 3600};
+    nav.route = due;
+  }
+  if (variant === "nogps") {
+    nav.boat = {...(nav.boat || {}), lat: null, lon: null};
+    nav.helm = {primary: null, target: null, deviation: null, cts_t: null};
+    nav.route = null;
+  }
+  window.jabuka.bus.dispatchEvent(new CustomEvent("nav", {detail: nav}));
+  const $ = (id) => document.getElementById(id);
+  const box = $("helm-steer").querySelector(".primary-box");
+  return {
+    label: $("primary-label").textContent,
+    primary: $("primary").textContent,
+    unit: $("primary-unit").textContent,
+    cue: box.classList.contains("cue"),
+    cueWord: $("primary").classList.contains("cue-word"),
+    labelAlert: $("primary-label").classList.contains("alert"),
+    windStale: $("tab-barre").classList.contains("wind-stale"),
+    primaryColor: getComputedStyle($("primary")).color,
+    labelColor: getComputedStyle($("primary-label")).color,
+    countdown: $("helm-countdown").textContent,
+    countdownAlert: $("helm-countdown").classList.contains("alert"),
+    col: $("helm-col").textContent,
+    badges: [...document.querySelectorAll("#badges .badge")].map((e) => e.textContent),
+  };
+}"""
+
+BACK_LIVE_JS = """() => {
+  const box = document.getElementById("helm-steer").querySelector(".primary-box");
+  const badges = [...document.querySelectorAll("#badges .badge")].map((e) => e.textContent);
+  return !document.getElementById("tab-barre").classList.contains("wind-stale")
+    && !box.classList.contains("cue") && !badges.includes("PAS DE GPS")
+    && document.getElementById("primary-label").textContent !== "PAS DE GPS";
+}"""
+
+
+def test_helm_takeovers_on_the_live_page(page, feeder) -> None:
+    """G-4-R03: a due tack / the wrong tack turns the primary box into VIREZ + the tack, inverted.
+    G-4-R01: stale manual wind reads VENT PÉRIMÉ, dimmed, with no tack cue anywhere.
+    G-4-R08: no position reads PAS DE GPS (red badge and label). All go with the next live
+    message."""
+    _near_plic_sestre(feeder)
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    _live(pg)
+
+    cue = pg.evaluate(TAKEOVER_JS, "cue")
+    assert (cue["label"], cue["primary"], cue["unit"]) == ("MAINTENANT", "VIREZ", "bâbord"), cue
+    assert cue["cue"] and cue["cueWord"], cue
+    assert cue["primaryColor"] == "rgb(255, 255, 255)", cue  # day --bg on the inverted box
+    pg.wait_for_function(BACK_LIVE_JS, timeout=3000)
+
+    wrong = pg.evaluate(TAKEOVER_JS, "wrong")
+    assert (wrong["label"], wrong["primary"], wrong["unit"]) == ("MAUVAIS BORD", "VIREZ", "bâbord")
+    assert wrong["cue"] and wrong["cueWord"], wrong
+    pg.wait_for_function(BACK_LIVE_JS, timeout=3000)
+
+    stale = pg.evaluate(TAKEOVER_JS, "stale")
+    assert stale["label"] == "VENT PÉRIMÉ" and stale["windStale"] and stale["labelAlert"], stale
+    assert not stale["cue"] and not stale["cueWord"], stale
+    assert stale["countdown"] == "VENT PÉRIMÉ" and not stale["countdownAlert"], stale
+    assert "VIREZ" not in stale["col"] and "EMPANNEZ" not in stale["col"], stale["col"]
+    assert stale["primaryColor"] == "rgb(85, 85, 85)", stale  # day --dim
+    assert stale["labelColor"] == "rgb(192, 0, 0)", stale  # day --bad
+    pg.wait_for_function(BACK_LIVE_JS, timeout=3000)
+
+    nogps = pg.evaluate(TAKEOVER_JS, "nogps")
+    assert (nogps["label"], nogps["primary"]) == ("PAS DE GPS", "—"), nogps
+    assert "PAS DE GPS" in nogps["badges"] and nogps["labelAlert"], nogps
+    pg.wait_for_function(BACK_LIVE_JS, timeout=3000)
+
+    assert page.external_requests == []
+    assert page.bad_responses == [], page.bad_responses
