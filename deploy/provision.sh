@@ -237,6 +237,10 @@ run install -m 0644 "$LOCK" "$OPT/requirements.lock"
 if [ -f "$SCRIPT_DIR/PI-SETUP.md" ]; then
     run install -m 0644 "$SCRIPT_DIR/PI-SETUP.md" "$OPT/PI-SETUP.md"
 fi
+# Wi-Fi mode switch (boat AP <-> phone hotspot), see PI-SETUP.md section 6.
+if [ -f "$SCRIPT_DIR/jabuka-wifi" ]; then
+    run install -m 0755 "$SCRIPT_DIR/jabuka-wifi" /usr/local/sbin/jabuka-wifi
+fi
 run python3 -m venv "$VENV"
 run "$VENV/bin/pip" install --no-index --find-links "$OPT/wheelhouse" --require-hashes \
     -r "$OPT/requirements.lock"
@@ -328,16 +332,21 @@ else
         echo "raspi-config not found: Wi-Fi country not set here (Imager sets it; see PI-SETUP.md)"
     fi
 
-    # The AP must be the only autoconnect profile on wlan0: delete every other Wi-Fi profile.
+    # The AP must be the only autoconnect profile on wlan0: delete every other Wi-Fi profile,
+    # except jabuka-phone (phone hotspot of jabuka-wifi, written with autoconnect=false).
     if [ "$DRY_RUN" -eq 1 ]; then
-        show nmcli connection delete "<every 802-11-wireless profile except jabuka-ap>"
+        show nmcli connection delete "<every 802-11-wireless profile except jabuka-ap and jabuka-phone>"
     else
         ap_uuid="$(nmcli -g connection.uuid connection show jabuka-ap 2>/dev/null || true)"
-        while IFS=: read -r uuid type; do
+        while IFS=: read -r uuid type name; do
             [ "$type" = "802-11-wireless" ] || continue
             [ "$uuid" = "$ap_uuid" ] && continue
+            if [ "$name" = "jabuka-phone" ]; then
+                run nmcli connection modify uuid "$uuid" connection.autoconnect no
+                continue
+            fi
             run nmcli connection delete uuid "$uuid"
-        done < <(nmcli -t -f UUID,TYPE connection show)
+        done < <(nmcli -t -f UUID,TYPE,NAME connection show)
     fi
 
     AP_PROPS=(

@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# jabuka-wifi: switch the Pi's wlan0 between the boat access point and a phone hotspot.
+# Installed by deploy/provision.sh as /usr/local/sbin/jabuka-wifi (run with sudo).
+#
+#   sudo jabuka-wifi                 status (active Wi-Fi profile, SSID, IP address)
+#   sudo jabuka-wifi phone [SSID]    join the phone hotspot (default SSID: Noway_nomap, WPA2);
+#                                    asks the password the first time (or with --new-password)
+#   sudo jabuka-wifi ap              back to the boat access point "jabuka" (10.42.0.1)
+#   sudo jabuka-wifi forget          delete the saved phone profile
+#
+# Safety: the phone profile never autoconnects. If joining the phone fails, the AP comes back
+# by itself; if the phone hotspot disappears later, NetworkManager falls back to the AP
+# (autoconnect priority 100). A reboot always starts on the AP. The switch runs detached, so an
+# SSH session over Wi-Fi drops but the switch still completes. Log: journalctl -t jabuka-wifi
+set -euo pipefail
+
+AP=jabuka-ap
+PHONE=jabuka-phone
+DEFAULT_SSID=Noway_nomap
+KEYFILE=/etc/NetworkManager/system-connections/$PHONE.nmconnection
+SELF="$(readlink -f "$0")"
+HOST="$(hostname)"
+
+die() { echo "jabuka-wifi: $*" >&2; exit 1; }
+log() { logger -t jabuka-wifi -- "$*" 2>/dev/null || true; echo "$*"; }
+
+[ "$(id -u)" -eq 0 ] || die "lancer avec sudo : sudo jabuka-wifi ${*:-status}"
+command -v nmcli >/dev/null || die "nmcli introuvable (NetworkManager)"
+
+status() {
+    local con mode ssid ip
+    con="$(nmcli -g GENERAL.CONNECTION device show wlan0 2>/dev/null || true)"
+    ip="$(nmcli -g IP4.ADDRESS device show wlan0 2>/dev/null | head -n 1 || true)"
+    case "$con" in
+        "$AP") mode="point d'accès bateau (SSID jabuka)" ;;
+        "$PHONE")
+            ssid="$(nmcli -g 802-11-wireless.ssid connection show "$PHONE" 2>/dev/null || true)"
+            mode="client du téléphone (SSID $ssid)"
+            ;;
+        "") mode="aucune connexion Wi-Fi active" ;;
+        *) mode="profil $con" ;;
+    esac
+    echo "Wi-Fi : $mode"
+    echo "Adresse wlan0 : ${ip:-aucune}"
+    if nmcli -g NAME connection show | grep -x "$PHONE" >/dev/null; then
+        echo "Profil téléphone enregistré : $(nmcli -g 802-11-wireless.ssid connection show "$PHONE")"
+    else
+        echo "Profil téléphone : aucun (sudo jabuka-wifi phone pour le créer)"
+    fi
+}
+
+# Escape a value for a NetworkManager keyfile (GKeyFile string).
+kf_escape() { local v="${1//\\/\\\\}"; printf '%s' "$v"; }
+
+write_profile() {
+    local ssid="$1" psk psk2 uuid
+    [ -r /dev/tty ] || die "pas de terminal pour saisir le mot de passe"
+    read -rsp "Mot de passe Wi-Fi du partage « $ssid » : " psk </dev/tty
+    echo
+    read -rsp "Encore une fois : " psk2 </dev/tty
+    echo
+    [ "$psk" = "$psk2" ] || die "les deux saisies diffèrent, rien n'est changé"
+    [ "${#psk}" -ge 8 ] && [ "${#psk}" -le 63 ] || die "un mot de passe WPA2 fait 8 à 63 caractères"
+    uuid="$(cat /proc/sys/kernel/random/uuid)"
+    # Written with shell builtins only: the password never appears on a command line.
+    (
+        umask 077
+        cat >"$KEYFILE.tmp" <<EOF
+[connection]
+id=$PHONE
+uuid=$uuid
+type=wifi
+interface-name=wlan0
+autoconnect=false
+
+[wifi]
+mode=infrastructure
+ssid=$(kf_escape "$ssid")
+powersave=2
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=$(kf_escape "$psk")
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+    )
+    unset psk psk2
+    if nmcli -g NAME connection show | grep -x "$PHONE" >/dev/null; then
+        nmcli connection delete "$PHONE" >/dev/null
+    fi
+    mv -f "$KEYFILE.tmp" "$KEYFILE"
+    chmod 600 "$KEYFILE"
+    nmcli connection load "$KEYFILE"
+    log "profil $PHONE enregistré (SSID $ssid, autoconnect non)"
+}
+
+detach() {
+    # Run "$SELF _switch <target>" outside this SSH session so the switch survives the drop.
+    if command -v systemd-run >/dev/null; then
+        systemd-run --quiet --collect --unit="jabuka-wifi-$1-$$" "$SELF" _switch "$1"
+    else
+        nohup "$SELF" _switch "$1" >/dev/null 2>&1 &
+    fi
+}
+
+do_switch() {
+    case "$1" in
+        phone)
+            sleep 2
+            if nmcli -w 45 connection up "$PHONE"; then
+                log "connecté au téléphone : $(nmcli -g IP4.ADDRESS device show wlan0 | head -n 1)"
+            else
+                log "ÉCHEC connexion au téléphone : retour au point d'accès $AP"
+                nmcli -w 30 connection up "$AP" || log "ÉCHEC retour AP : redémarrer le Pi"
+            fi
+            ;;
+        ap)
+            sleep 2
+            nmcli -w 30 connection up "$AP" && log "point d'accès $AP actif (10.42.0.1)" \
+                || log "ÉCHEC retour AP : redémarrer le Pi"
+            ;;
+    esac
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+    status) status ;;
+    phone)
+        shift
+        newpw=0
+        ssid=""
+        for a in "$@"; do
+            case "$a" in
+                --new-password) newpw=1 ;;
+                -*) die "option inconnue : $a" ;;
+                *) ssid="$a" ;;
+            esac
+        done
+        cur=""
+        if nmcli -g NAME connection show | grep -x "$PHONE" >/dev/null; then
+            cur="$(nmcli -g 802-11-wireless.ssid connection show "$PHONE")"
+        fi
+        ssid="${ssid:-${cur:-$DEFAULT_SSID}}"
+        if [ -z "$cur" ] || [ "$cur" != "$ssid" ] || [ "$newpw" -eq 1 ]; then
+            write_profile "$ssid"
+        fi
+        echo "Bascule vers le partage « $ssid » (active le partage de connexion du téléphone)."
+        echo "Une session SSH par le Wi-Fi du bateau va COUPER : c'est normal."
+        echo "Ensuite : ssh $(logname 2>/dev/null || echo drico)@$HOST.local, ou l'adresse affichée par le téléphone"
+        echo "  (liste des appareils connectés au partage) ; appli : http://$HOST.local/"
+        echo "Si la connexion échoue, le point d'accès jabuka revient tout seul (~1 min)."
+        echo "Retour : sudo jabuka-wifi ap, ou redémarrer le Pi. Journal : journalctl -t jabuka-wifi"
+        detach phone
+        ;;
+    ap)
+        echo "Retour au point d'accès jabuka (10.42.0.1). Une session SSH par le téléphone va couper."
+        detach ap
+        ;;
+    forget)
+        if nmcli -g NAME connection show | grep -x "$PHONE" >/dev/null; then
+            nmcli connection delete "$PHONE" >/dev/null
+            log "profil $PHONE supprimé"
+        else
+            echo "aucun profil $PHONE"
+        fi
+        ;;
+    _switch) do_switch "${2:-}" ;;
+    -h | --help | help) sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+    *) die "commande inconnue : $cmd (status | phone [SSID] [--new-password] | ap | forget)" ;;
+esac

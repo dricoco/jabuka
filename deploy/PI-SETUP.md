@@ -305,6 +305,23 @@ its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. 
   sudo nmcli connection up jabuka-ap
   ```
 
+- **Internet on the Pi through a phone hotspot** (fetch a GRIB, `apt`, Claude Code at the dock):
+  `jabuka-wifi` (installed by provision in `/usr/local/sbin`) switches wlan0 between the boat AP
+  and the phone. While on the phone, the tablet loses `jabuka`: switch back before racing.
+
+  ```bash
+  sudo jabuka-wifi                 # status: active profile, SSID, IP
+  sudo jabuka-wifi phone           # join Noway_nomap (WPA2); asks the password the first time
+  sudo jabuka-wifi phone AUTRE_SSID --new-password   # other hotspot / changed password
+  sudo jabuka-wifi ap              # back to the jabuka AP (10.42.0.1)
+  journalctl -t jabuka-wifi        # what happened
+  ```
+
+  The switch runs detached: an SSH session over Wi-Fi drops, then reconnect through the phone
+  (`ssh drico@<hostname>.local` or the address in the phone's hotspot client list). The phone
+  profile never autoconnects: if joining fails, or the hotspot disappears later, the AP comes back
+  on its own, and a reboot always starts on the AP. Re-running provision keeps the profile.
+
 - **Tablet cannot join, or joins and drops:** some clients do not get along with PMF disabled or
   enabled on the Pi's brcmfmac radio. Toggle it, then forget and rejoin on the tablet:
 
