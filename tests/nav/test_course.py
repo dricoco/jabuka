@@ -274,12 +274,14 @@ def test_nine_seconds_then_back_does_not_advance(tmp_path: Path) -> None:
     assert cs.course.active_idx == 1
 
 
-def test_enter_then_leave_without_abeam_advances(tmp_path: Path) -> None:
+def test_leaving_the_zone_past_the_mark_advances(tmp_path: Path) -> None:
+    """G-4-R02: the zone is left on the far side of the mark (past it along the incoming leg):
+    the 10 s debounce then advances."""
     cs, _ = store(tmp_path)
     t = run(cs, at(61, 0.5), 0.0, 3)
-    t = run(cs, at(51, 0.8), t, 10)  # out of the zone, still in front of the abeam line
+    t = run(cs, at(120, 0.8), t, 10)  # out of the zone, past the mark
     assert cs.course.active_idx == 1
-    cs.on_tick(*at(51, 0.8), t)
+    cs.on_tick(*at(120, 0.8), t)
     assert cs.course.active_idx == 2
 
 
@@ -336,31 +338,30 @@ def test_undo_outside_the_zone_needs_a_fresh_entry(tmp_path: Path) -> None:
     lifts at once and nothing re-fires until the boat enters the zone again (no banner loop)."""
     cs, _ = store(tmp_path)
     t = run(cs, at(61, 0.5), 0.0, 3)
-    t = run(cs, at(51, 0.8), t, 11)  # left the zone without abeam: advanced
+    t = run(cs, at(120, 0.8), t, 11)  # left the zone past the mark: advanced
     assert cs.course.active_idx == 2
     cs.undo(cs.status()["banner"]["token"], t)
-    t = run(cs, at(51, 0.8), t, 30)  # still outside: nothing
+    t = run(cs, at(120, 0.8), t, 30)  # still outside: nothing
     assert cs.course.active_idx == 1 and cs.course.suppress_idx is None
     t = run(cs, at(61, 0.4), t, 2)  # entered again
-    t = run(cs, at(51, 0.8), t, 11)  # and left: fires again
+    t = run(cs, at(120, 0.8), t, 11)  # and left past the mark: fires again
     assert cs.course.active_idx == 2
 
 
 def test_hairpin_annuler_then_real_rounding_advances(tmp_path: Path) -> None:
-    """CR-02 scenario: Jabuka (Course A) advances early (the boat swung wide out of the zone on
-    the approach side), comes back into the zone, the helmsman taps Annuler, rounds the island
-    inside the zone and heads north: the exit advances to Blitvenica."""
+    """CR-02 scenario: Jabuka (Course A) advances early (the far-side wedge fires _abeam while
+    the boat is still inside the zone), the helmsman taps Annuler, finishes the rounding inside
+    the zone and heads north: the exit advances to Blitvenica."""
     cs, _ = store(tmp_path)
     cs.activate(2)
     jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
     t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)  # approaching from the NNE, in the zone
-    t = run(cs, at(113, 0.9, mark=jab), t, 11)  # wide on the east side, out of the zone
+    t = run(cs, at(203, 0.6, mark=jab), t, 3)  # south of the island
+    t = run(cs, at(285, 0.6, mark=jab), t, 11)  # the far-side wedge: _abeam
     assert cs.course.active_idx == 3
-    t = run(cs, at(150, 0.6, mark=jab), t, 2)  # back in the zone
     cs.undo(cs.status()["banner"]["token"], t)
     assert cs.course.active_idx == 2
-    t = run(cs, at(203, 0.6, mark=jab), t, 20)  # rounding inside the zone: suppressed
-    t = run(cs, at(300, 0.7, mark=jab), t, 20)
+    t = run(cs, at(300, 0.7, mark=jab), t, 10)  # still in the zone: suppressed
     assert cs.course.active_idx == 2
     t = run(cs, at(9, 1.2, mark=jab), t, 11)  # heading north out of the zone
     assert cs.course.active_idx == 3 and active_id(cs) == "blitvenica"
@@ -382,15 +383,22 @@ def test_gps_gap_restarts_the_rounding_debounce(tmp_path: Path) -> None:
 
 
 def test_large_radius_zone_exit_still_advances(tmp_path: Path) -> None:
-    """IN-07: radius 2 nm -> zone 2.25 nm, past the 2 nm gate: leaving the zone (without abeam)
-    still counts, the gate follows the zone."""
-    cs, _ = store(tmp_path)
+    """IN-07: radius 2 nm -> zone 2.25 nm, past the 2 nm gate: leaving the zone past the mark
+    still counts, the gate follows the zone. G-4-R02: leaving it on the approach side does not."""
+    (tmp_path / "past").mkdir()
+    cs, _ = store(tmp_path / "past")
     cs.set_leg(1, radius_nm=2.0)
     t = run(cs, at(61, 2.1), 0.0, 3)  # inside the 2.25 nm zone, in front of the abeam line
-    t = run(cs, at(51, 2.4), t, 10)  # left the zone, not abeam
+    t = run(cs, at(120, 2.4), t, 10)  # left the zone past the mark
     assert cs.course.active_idx == 1
-    cs.on_tick(*at(51, 2.4), t)
+    cs.on_tick(*at(120, 2.4), t)
     assert cs.course.active_idx == 2
+    (tmp_path / "approach").mkdir()
+    cs, _ = store(tmp_path / "approach")
+    cs.set_leg(1, radius_nm=2.0)
+    t = run(cs, at(61, 2.1), 0.0, 3)
+    t = run(cs, at(51, 2.4), t, 30)  # left the zone on the approach side
+    assert cs.course.active_idx == 1
 
 
 def test_write_failure_alert_clears_after_a_successful_write(tmp_path: Path, monkeypatch) -> None:
@@ -532,3 +540,68 @@ def test_gentle_turn_still_advances_when_abeam(tmp_path: Path) -> None:
     t = run(cs, at(61, 0.4), 0.0, 2)
     t = run(cs, at(81, 0.4), t, 11)
     assert cs.course.active_idx == 2
+
+
+# -- a zone exit counts only past the mark (G-4-R02) ----------------------------------------------
+def test_leaving_the_zone_on_the_approach_side_never_advances(tmp_path: Path) -> None:
+    """Review repro (04-PROJECT-REVIEW R02): approach Plić Sestre from the NNW into its zone,
+    then retreat on the same side (a tack away) and stay outside for 30 s: still on Plić, no
+    course_advance event."""
+    for name, track in (
+        ("nnw", [(at(341, 1.0), 3), (at(341, 0.45), 5), (at(341, 0.8), 30)]),
+        ("ene", [(at(61, 0.5), 3), (at(51, 0.8), 30)]),
+    ):
+        (tmp_path / name).mkdir()
+        cs, log = store(tmp_path / name)
+        t = 0.0
+        for pos, n in track:
+            t = run(cs, pos, t, n)
+        assert cs.course.active_idx == 1, name
+        assert [e for e in log if e["type"] == "course_advance"] == [], name
+
+
+@pytest.mark.parametrize("template", ["A", "B"])
+def test_hairpin_approach_side_retreat_never_advances(tmp_path: Path, template: str) -> None:
+    """Jabuka entered from the NNE (approach side), then left to the north and wide to the east
+    without ever getting past the island: Jabuka stays active in both courses."""
+    cs, log = store(tmp_path)
+    if template == "B":
+        cs.select("B")
+    cs.activate(2)
+    jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
+    t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)  # in the zone, approach side
+    t = run(cs, at(23, 1.2, mark=jab), t, 30)  # back out to the NNE
+    t = run(cs, at(113, 0.9, mark=jab), t, 30)  # wide on the east side, out of the zone
+    assert cs.course.active_idx == 2
+    assert [e for e in log if e["type"] == "course_advance"] == []
+
+
+def test_hairpin_wide_swing_then_rounding_advances(tmp_path: Path) -> None:
+    """Course A: a wide swing east out of Jabuka's zone on the approach side no longer advances
+    early; the real rounding (south of the island, then out north) does."""
+    cs, _ = store(tmp_path)
+    cs.activate(2)
+    jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
+    t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)  # approaching from the NNE, in the zone
+    t = run(cs, at(113, 0.9, mark=jab), t, 11)  # wide on the east side, out of the zone
+    assert cs.course.active_idx == 2  # no early advance any more
+    t = run(cs, at(150, 0.6, mark=jab), t, 2)  # back in the zone
+    t = run(cs, at(203, 0.6, mark=jab), t, 20)  # rounding south of the island
+    t = run(cs, at(300, 0.7, mark=jab), t, 5)
+    assert cs.course.active_idx == 2
+    t = run(cs, at(9, 1.2, mark=jab), t, 11)  # heading north out of the zone
+    assert cs.course.active_idx == 3 and active_id(cs) == "blitvenica"
+
+
+def test_hairpin_course_b_rounding_advances(tmp_path: Path) -> None:
+    """Course B: Jabuka rounded to port (in 203 deg, out 038 deg), then out along the next leg:
+    advances to Mulo."""
+    cs, _ = store(tmp_path)
+    cs.select("B")
+    cs.activate(2)
+    jab = (cs.marks["jabuka"].lat, cs.marks["jabuka"].lon)
+    t = run(cs, at(23, 0.7, mark=jab), 0.0, 3)  # approaching, in the zone
+    t = run(cs, at(203, 0.6, mark=jab), t, 5)  # south of the island
+    t = run(cs, at(120, 0.7, mark=jab), t, 5)  # coming round the east side
+    t = run(cs, at(38, 1.2, mark=jab), t, 11)  # out along the next leg
+    assert cs.course.active_idx == 3 and active_id(cs) == "mulo"
