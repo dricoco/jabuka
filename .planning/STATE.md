@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 4
 current_phase_name: race-readiness-hardening-commissioning
 status: executing
-stopped_at: Completed 04-13-PLAN.md
-last_updated: "2026-11-09T14:26:32.518Z"
+stopped_at: Completed 04-14-PLAN.md
+last_updated: "2026-11-09T15:56:57.581Z"
 last_activity: 2026-11-09
-last_activity_desc: 04-13 executed (CR-01/WR-01 rounding, WR-03/07/02/06 durability and Plan B)
-state_head: f3ae3f6b5b8ee48404f3e8dd20e36eaff3cbf5a9
+last_activity_desc: 04-14 executed (CR-01 key split, WR-01 Annuler, WR-02 = R9, WR-03 Plan B test, IN-02)
+state_head: cb64caa208e3dc8e0e07e832bcebebdef0d709f8
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 28
-  completed_plans: 28
+  total_plans: 29
+  completed_plans: 29
   percent: 0
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-11-05)
 ## Current Position
 
 Phase: 4 (race-readiness-hardening-commissioning) — EXECUTING
-Plan: 13 of 13
-Status: Gap closure 6 complete — 04-13 done (CR-01 + WR-01 rounding, WR-03/07/02 ingest durability, WR-06 Plan B RestartMode=direct); full gate green; phase re-verification, wheelhouse rebuild/Pi re-provision and human UAT pending
-Last activity: 2026-11-09 — 04-13 executed (CR-01: committee marks up to ~0.1 nm off and tight roundings advance, retreats never do; WR-01 geometry-keyed state machine; WR-03/07/02 ingest durability tail; WR-06 relay RestartMode=direct; gate green 1722 passed on 3.14 and 3.13; src/jabuka fingerprint c6fb70b0…, 147 files)
+Plan: 14 of 14
+Status: Gap closure 7 complete — 04-14 done (CR-01 key split: outgoing edits restart only the debounce; WR-01 Annuler stand-in at normal marks; WR-02 accepted as R9; WR-03 Plan B test fidelity; IN-02); full gate green; phase re-verification, wheelhouse rebuild/Pi re-provision and human UAT pending
+Last activity: 2026-11-09 — 04-14 executed (CR-01: 140/140 outgoing-edit cases advance once; WR-01 approach-side retreat after Annuler never re-advances; residuals R1-R9 recorded; gate green 1885 passed on 3.14 and 3.13; src/jabuka fingerprint f4a6fa25…9cc8, 147 files)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -68,6 +68,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P11 | 46min | 3 tasks | 14 files |
 | Phase 04 P12 | 33min | 3 tasks | 18 files |
 | Phase 04 P13 | 31min | 3 tasks | 8 files |
+| Phase 04 P14 | 31min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,9 @@ Recent decisions affecting current work:
 - [Phase 4]: 04-12: Diag night variant before first paint via classic diag-theme.js; final src/jabuka fingerprint c1bab550…
 - [Phase 4]: [04-13] CR-01: normal-mark zone exit = _beyond latch, or dot_in > 0, or dot_out > 0 after coming within radius + MARK_TOL_NM (0.1 nm); hairpin rule unchanged; residuals R2-R7 fall back to Carte → « Suiv. »
 - [Phase 4]: [04-13] WR-01: rounding state machine keyed by _fsm_geometry (leg + previous/active/next positions); A<->B switch changing neighbours restarts it on purpose; relay RestartMode=direct (WR-06); new src/jabuka fingerprint c6fb70b0… (147 files), wheelhouse rebuild + Pi re-provision required
+- [Phase 4]: 04-14 CR-01: rounding evidence keyed by _fsm_geometry (idx, mark, radius, previous pos, active pos); side/next-mark edits (_fsm_outgoing) restart only the 10 s debounce
+- [Phase 4]: 04-14 WR-01: after Annuler in the zone of a normal mark, the zone exit stands in for _near (exit must be past the mark along either leg); _beyond only at hairpins / no outgoing leg
+- [Phase 4]: 04-14 WR-02 accepted as false-advance residual R9 (banner + Annuler); IN-02 fixed; IN-01 advisory; new src/jabuka fingerprint f4a6fa25...9cc8 (147 files) -> wheelhouse rebuild + Pi re-provision
 
 ### Pending Todos
 
@@ -139,6 +143,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T14:26:32.463Z
-Stopped at: Completed 04-13-PLAN.md
+Last session: 2026-11-09T15:56:57.524Z
+Stopped at: Completed 04-14-PLAN.md
 Resume file: None
