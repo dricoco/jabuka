@@ -3,6 +3,8 @@ durability thread (atomicio.WORKER_NAME), so an SD stall never freezes the event
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import inspect
 import json
 import os
@@ -350,3 +352,132 @@ def test_entry_points_enable_and_drain_the_durability_thread() -> None:
         src = inspect.getsource(fn)
         assert "atomicio.enable_background()" in src, fn
         assert "atomicio.disable_background(" in src, fn
+
+
+# -- the ingest durability tail (04-13: WR-03, WR-07, WR-02) --------------------------------------
+@pytest.mark.parametrize("how", ["dup", "submit"])
+def test_cadence_fsync_recovers_after_a_failed_submit(
+    background, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """WR-03: fsync_fd raising before the job is queued (os.dup EMFILE, the durability thread
+    failing to start) must not leave the in-flight flag set: the next cadence fsync runs."""
+    names: list[str] = []
+    real_fsync = os.fsync
+
+    def recorder(fd: int) -> None:
+        names.append(threading.current_thread().name)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recorder)
+    mono = FakeMono()
+    lg = _log(tmp_path, mono)
+    try:
+        lg.write_line("one")
+        mono.t += 11
+        with monkeypatch.context() as m:
+            if how == "dup":
+
+                def dup(fd: int) -> int:
+                    raise OSError(errno.EMFILE, "Too many open files")
+
+                m.setattr(os, "dup", dup)
+            else:
+
+                def submit(job) -> None:
+                    raise RuntimeError("can't start new thread")
+
+                m.setattr(atomicio, "_submit", submit)
+            with pytest.raises((OSError, RuntimeError)):
+                lg.maybe_flush()
+        lg.write_line("two")
+        mono.t += 11
+        lg.maybe_flush()
+        assert atomicio.drain(10.0) is True
+        assert sum(1 for n in names if n == atomicio.WORKER_NAME) == 1, names
+    finally:
+        lg.close()
+
+
+def test_ingest_drains_even_if_the_raw_log_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, free_udp_port: int
+) -> None:
+    """WR-07: an exception from the raw-log close at shutdown must not skip the drain of the
+    durability thread nor the UDP socket close; _run returns its exit code."""
+    from jabuka.ingest import fastnet_main
+
+    socks = []
+    real_make = fastnet_main._make_udp_sender
+
+    def make(addr):
+        sock, send = real_make(addr)
+        socks.append(sock)
+        return sock, send
+
+    drains: list[float] = []
+    real_disable = atomicio.disable_background
+
+    def disable(timeout_s: float = 20.0) -> bool:
+        drains.append(timeout_s)
+        return real_disable(timeout_s)
+
+    real_close = RotatingAppendLog.close
+
+    def close(self) -> None:
+        real_close(self)
+        raise OSError(errno.EIO, "EIO")
+
+    def heartbeat(self) -> None:
+        raise RuntimeError("heartbeat died")
+
+    monkeypatch.setattr(fastnet_main, "_make_udp_sender", make)
+    monkeypatch.setattr(fastnet_main.atomicio, "disable_background", disable)
+    monkeypatch.setattr(RotatingAppendLog, "close", close)
+    monkeypatch.setattr(fastnet_main.FastnetIngest, "send_heartbeat", heartbeat)
+    args = fastnet_main.build_arg_parser().parse_args(
+        [
+            "--device",
+            str(tmp_path / "nodev"),
+            "--udp",
+            f"127.0.0.1:{free_udp_port}",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    )
+    try:
+        rc = asyncio.run(fastnet_main._run(args))
+        assert rc == 1
+        assert drains == [20.0]
+        assert atomicio.background_enabled() is False
+        assert len(socks) == 1 and socks[0].fileno() == -1
+    finally:
+        real_disable(5.0)
+
+
+def test_ingest_health_exports_background_write_errors(
+    background, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-02 (ingest part): the heartbeat carries this process's background write error count."""
+    from jabuka.ingest.fastnet_main import FastnetIngest
+
+    ingest = FastnetIngest(
+        RotatingAppendLog(tmp_path, "fastnet"),
+        lambda b: None,
+        mono=lambda: 100.0,
+        wall=lambda: 1.7e9,
+    )
+    p = tmp_path / "state.json"
+    atomicio.atomic_write_json(p, {"v": 1})
+    assert atomicio.drain(10.0) is True
+    before = ingest.health()["bg_write_errors"]
+    assert before == atomicio.background_status()["errors"]
+    real = os.replace
+
+    def replace(src, dst):
+        if threading.current_thread().name == atomicio.WORKER_NAME:
+            raise OSError(5, "EIO")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    atomicio.atomic_write_json(p, {"v": 2})
+    assert atomicio.drain(10.0) is True
+    assert ingest.health()["bg_write_errors"] == before + 1

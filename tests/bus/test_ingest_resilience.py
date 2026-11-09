@@ -41,6 +41,7 @@ HEALTH_KEYS = {
     "last_error",
     "raw_errors",
     "send_errors",
+    "bg_write_errors",
     "raw_file",
 }
 
