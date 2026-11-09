@@ -24,8 +24,9 @@ leg at any time since entering the zone (the latch), or now, or now past it alon
 leg after having come within the leg radius + MARK_TOL_NM (0.1 nm) of it, so a committee mark
 entered off the real buoy still advances (CR-01). At a hairpin: the latch and now past it along
 the outgoing leg. A zone exit on the approach side never advances (G-4-R02). Gate d <= 2 nm.
-The state machine restarts when the active mark, its leg (side, radius) or the previous/next
-mark changes (WR-01): the evidence is only valid for the geometry it was measured against.
+The rounding evidence restarts when the active mark, its radius or the previous mark changes
+(WR-01). A change of the side or of the next mark (the outgoing leg) only restarts the 10 s
+debounce: the evidence never depended on them (CR-01 of review 93cb8b3).
 The candidate must hold DEBOUNCE_S consecutive seconds of t_mono; then the next
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
@@ -249,8 +250,11 @@ class CourseStore:
         self.on_event = on_event
         self.wall = wall
         # rounding state machine (memory only)
-        # the geometry the rounding evidence is measured against (WR-01, _fsm_geometry)
+        # the incoming leg, active mark and radius the rounding evidence is measured against
+        # (WR-01, _fsm_geometry)
         self._fsm_key: tuple | None = None
+        # the outgoing geometry (side, next mark) of the pending candidate (CR-01)
+        self._fsm_out: tuple | None = None
         self._entered = False
         self._cand_since: float | None = None
         self._suppressed_in_zone = False  # seen inside the zone of the mark Annuler restored
@@ -608,27 +612,36 @@ class CourseStore:
         self._suppressed_in_zone = False
         self._beyond = False
         self._near = False
+        self._fsm_out = None
+
+    def _seq_pos(self, i: int) -> tuple[str, float, float] | None:
+        """(mark id, lat, lon) of seq[i]; None out of range or when the mark is missing."""
+        c = self.course
+        if not 0 <= i < len(c.seq):
+            return None
+        m = c.marks.get(c.seq[i].mark_id)
+        return None if m is None else (m.id, m.lat, m.lon)
 
     def _fsm_geometry(self, idx: int) -> tuple:
-        """What the rounding evidence (entry, debounce, latch, near) is measured against: the
-        active leg (index, mark, side, radius) and the positions of the previous, active and
-        next marks. Any change restarts the state machine (review WR-01: a mark moved after the
-        latch must be rounded again). A course switch with select() (A<->B) that keeps the
-        active mark but gives it a different previous or next mark restarts it too, on purpose:
-        the latch and near evidence were measured against the old incoming and outgoing legs
-        (direction, turn, hairpin or not), so they are not valid for the new ones; if the boat
-        has already left the zone, the crew uses « Suiv. » (plan 04-13 residual R6). A rename
-        keeps it."""
-        c = self.course
-        leg = c.seq[idx]
+        """What the rounding evidence (entry, latch, near, suppressed-zone flag) is measured
+        against: the incoming leg (previous -> active mark), the active mark and the leg radius
+        only. Any change of these restarts the state machine (review WR-01 of the previous
+        round: a mark moved after the latch must be rounded again). A course switch with
+        select() (A<->B) that gives the active mark a different previous mark restarts it too,
+        on purpose; if the boat has already rounded, the crew uses « Suiv. » (plan 04-14
+        residual R6). The side and the next mark are the outgoing geometry: see _fsm_outgoing.
+        A rename keeps everything."""
+        leg = self.course.seq[idx]
+        return (idx, leg.mark_id, leg.radius_nm, self._seq_pos(idx - 1), self._seq_pos(idx))
 
-        def pos(i: int) -> tuple[str, float, float] | None:
-            if not 0 <= i < len(c.seq):
-                return None
-            m = c.marks.get(c.seq[i].mark_id)
-            return None if m is None else (m.id, m.lat, m.lon)
-
-        return (idx, leg.mark_id, leg.side, leg.radius_nm, pos(idx - 1), pos(idx), pos(idx + 1))
+    def _fsm_outgoing(self, idx: int) -> tuple:
+        """The outgoing geometry (rounding side, next mark) that a pending 10 s candidate was
+        judged against, through the turn, the hairpin side rule and dot_out. The stored
+        evidence never depended on it: _abeam and _past_mark read it fresh on every tick. So a
+        change (next mark moved, added at the default position, deleted or reordered, or the
+        side changed) restarts only the debounce. Review CR-01 of 93cb8b3: wiping the evidence
+        there left the course stuck on the mark just rounded."""
+        return (self.course.seq[idx].side, self._seq_pos(idx + 1))
 
     def _tick_banner(self, t: float) -> None:
         b = self.course.banner
@@ -765,9 +778,16 @@ class CourseStore:
         if mark is None:
             return
         key = self._fsm_geometry(idx)
+        out = self._fsm_outgoing(idx)
         if key != self._fsm_key:
             self._reset_fsm()
             self._fsm_key = key
+            self._fsm_out = out
+        elif out != self._fsm_out:
+            # the pending candidate was judged against the old outgoing leg; the evidence was
+            # not (CR-01): restart only the debounce
+            self._fsm_out = out
+            self._cand_since = None
         _, d = geo.bearing_distance(lat, lon, mark.lat, mark.lon)
         zone = leg.radius_nm + ZONE_MARGIN_NM
         if c.suppress_idx is not None:
@@ -778,6 +798,7 @@ class CourseStore:
             self._save_quiet(c.model_copy(update={"suppress_idx": None}))
             self._reset_fsm()
             self._fsm_key = key
+            self._fsm_out = out
             if d <= zone:
                 return
             # CR-02: leaving the zone the boat was suppressed in (seen inside it after Annuler)
