@@ -29,8 +29,8 @@ SUPPORT = [
     ("TEST_Poutre_bout", 1, (30, 22, 48), 25.3, "Coupon de test : bout de poutre avec rainure. <b>À imprimer en premier.</b> Inchangé depuis le 1er test : inutile de le refaire."),
     ("TEST_Coulisseau", 1, (44, 17, 40), 22.5, "Coupon de test : coulisseau. Jeu queue d'aronde 0,5 mm/flanc. Doit glisser à la main sans basculer."),
     ("Poutre", 1, (248, 61, 48), 375.6, "Rainure queue d'aronde + crans 1,5 mm, fentes de blocage, plateau central. <b>4 écrous M6 captifs</b> (fentes latérales du plateau)."),
-    ("Berceau_S", 1, (77, 43, 69), 70.2, "Berceau en V tribord. 2 tunnels de collier + rainures de guidage. <b>1 écrou M6 captif</b> (fente au pied du pivot). Caoutchouc dans le V."),
-    ("Berceau_P", 1, (77, 43, 69), 70.2, "Berceau en V bâbord, idem tribord (pièce miroir)."),
+    ("Berceau_S", 1, (77, 47, 69), 82.8, "Berceau en V tribord. 2 tunnels de collier + rainures de guidage. <b>1 écrou M6 captif</b> (fente juste derrière le fond du V, 6,5 mm de matière pleine sous le pivot). Caoutchouc dans le V. Le pivot doit tourner librement dans le coulisseau avant serrage."),
+    ("Berceau_P", 1, (77, 47, 69), 82.8, "Berceau en V bâbord, idem tribord (pièce miroir)."),
     ("Coulisseau_S", 1, (44, 17, 40), 22.5, "Tenon queue d'aronde + crans, tribord."),
     ("Coulisseau_P", 1, (44, 17, 40), 22.5, "Tenon queue d'aronde + crans, bâbord."),
     ("Column", 1, (90, 80, 81), 204.2, "Colonne : pied à fentes (réglage avant/arrière 0 à +30 mm), crantage de lacet, anneau de butée. <b>1 écrou M8 captif</b> (fenêtre latérale)."),
@@ -47,7 +47,7 @@ BOITE = [
 
 QUINC = [
     ("Support", "Collier de serrage inox W5 (316), 60–80 mm, bande 12 mm", 4, "2 par berceau, dans les tunnels, vis côté extérieur (jamais vers les rayons)"),
-    ("Support", "Vis M6 × 40 + rondelle", 2, "Pivots : poutre → coulisseau → berceau"),
+    ("Support", "Vis M6 × 45 + rondelle large (M6 × 18)", 2, "Pivots : poutre → coulisseau → berceau. <b>Pas plus longue que 45</b> (le bout arrive au fond du V)"),
     ("Support", "Vis M6 × 20 + rondelle", 4, "Pied de colonne → poutre"),
     ("Support", "Écrou M6 (DIN 934, 10 mm s/plats)", 6, "4 dans la poutre, 1 par berceau"),
     ("Support", "Bouton étoile M8 à tige filetée, tige 50 mm, tête Ø30–40", 1, "Lacet (vertical)"),
@@ -112,10 +112,10 @@ st.append(Paragraph("Tout en <b>inox</b> (A4/316 si dispo, sinon A2/304 ; jamais
                     "Les quantités incluent déjà quelques écrous de rechange.", N))
 st.append(Spacer(1, 2 * mm))
 SHOP = [
-    ("Visserie", "Vis tête hexagonale ou CHC M6 × 40", "2", "pivots des berceaux"),
+    ("Visserie", "Vis tête hexagonale ou CHC M6 × 45 (pas plus long)", "2", "pivots des berceaux"),
     ("Visserie", "Vis tête hexagonale ou CHC M6 × 20", "4", "pied de colonne"),
     ("Visserie", "Écrous M6 (hauteur normale)", "8", "6 utilisés + 2 rechange"),
-    ("Visserie", "Rondelles M6", "6", ""),
+    ("Visserie", "Rondelles M6 (dont 2 larges M6 × 18)", "6", "2 larges sous les têtes des pivots, côté poutre"),
     ("Visserie", "Écrous M8 + rondelles M8", "2 + 2", "lacet et inclinaison"),
     ("Visserie", "Vis M4 × 16 (tête cylindrique) + rondelles M4", "4 + 4", "fixation VESA"),
     ("Visserie", "Vis M4 × 12 tête fraisée", "4", "boîte → module"),
@@ -184,6 +184,6 @@ qt.setStyle(TableStyle([
 st.append(qt)
 st.append(Spacer(1, 3 * mm))
 st.append(Paragraph("<b>Récapitulatif écrous :</b> 6 × M6, 2 × M8, 8 × M4, 10 × M3. "
-                    "<b>Vis :</b> 2 × M6×40, 4 × M6×20, 4 × M4×16, 4 × M4×12 TF, 8 × M3×10 TF, 2 × M3×12 TF.", N))
+                    "<b>Vis :</b> 2 × M6×45, 4 × M6×20, 4 × M4×16, 4 × M4×12 TF, 8 × M3×10 TF, 2 × M3×12 TF.", N))
 doc.build(st, onFirstPage=footer, onLaterPages=footer)
 print("ok")

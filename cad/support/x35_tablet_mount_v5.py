@@ -36,6 +36,7 @@ GAP_S = 0.5          # slider body to beam face
 XBEAM, HB, BEAM_T = 124.0, 24.0, 22.0
 SLOT_X = (52.0, 108.0)   # lock slot -> leg spacing c-c 104..216
 NUT_AF, NUT_T, NUT_W = 10.0, 5.5, 10.4   # M6 nut (DIN 934): across flats, pocket height, pocket width
+CR_EXTRA = 4.0       # cradle body thickened aft (nut pull-out layer 2.5 -> 6.5 mm); everything aft shifts by it
 TBW = 45.0           # centre table half width (column foot)
 COL_ADJ = 30.0       # column aft adjustment range (option 4)
 RUB = 1.5            # TPU liner
@@ -77,7 +78,7 @@ def tablet_min_y(yaw, tilt):
 
 _ys, _ts = YAW_MAX + STOP_PLAY, TILT_MAX + STOP_PLAY
 MINY = min(tablet_min_y(a, t) for a in (-_ys, 0, _ys) for t in (-_ts, 0, _ts))
-YA = math.ceil((WHEEL_HALF + CLEAR - MINY) / 5.0) * 5.0
+YA = math.ceil((WHEEL_HALF + CLEAR - MINY) / 5.0) * 5.0 + CR_EXTRA   # whole column shifts aft with the thicker cradle
 
 
 def box(x0, x1, y0, y1, z0, z1):
@@ -194,7 +195,7 @@ def build():
     # rubber (inner tube) 1.5 mm on the V faces; a stainless hose clamp goes round the leg front,
     # along the cradle sides and through the two tunnels behind the V apex.
     y_ap = RB * math.sqrt(2)
-    yf, yb = y_ap - CR_DEPTH, y_ap + 9.0
+    yf, yb = y_ap - CR_DEPTH, y_ap + 9.0 + CR_EXTRA
     cr = box(-CR_W, CR_W, yf, yb, -CR_L, CR_L)
     vprof = Part.Face(Part.makePolygon([V(0, y_ap, -CR_L - 1), V(80, y_ap - 80, -CR_L - 1),
                                         V(-80, y_ap - 80, -CR_L - 1), V(0, y_ap, -CR_L - 1)]))
@@ -211,9 +212,10 @@ def build():
         for xs_ in (-1, 1):
             cr = cr.cut(box(xs_ * CR_W - 1.0, xs_ * CR_W + 1.0, yf - 1, y_ap + 4.5, zt - 6.5, zt + 6.5))
     cr = cr.fuse(cyl(7.0, 8.0, V(0, yb, 0), V(0, 1, 0)))                     # pivot pin
-    cr = cr.cut(cyl(3.3, yb + 8.01 - (y_ap + 1.0), V(0, y_ap + 1.0, 0), V(0, 1, 0)))  # M6 clearance bore (pin + body)
-    # captive M6 nut, side slot (+x), sunk 2.5 mm below the pin root so the pin keeps its full section on the body
-    cr = cr.cut(box(-NUT_AF / 2 - 1.0, CR_W + 1, yb - 2.5 - NUT_T, yb - 2.5, -NUT_W / 2, NUT_W / 2))
+    cr = cr.cut(cyl(3.3, yb + 8.01 - (y_ap - 1.0), V(0, y_ap - 1.0, 0), V(0, 1, 0)))  # M6 clearance bore, open at the V apex (M6x45 tip ends ~0.5 mm short of it)
+    # captive M6 nut, side slot (+x), right behind the V apex; yb - (y_ap + 1 + NUT_T) = 6.5 mm of solid PETG under the
+    # pin root takes the nut pull-out (M6 x 45 pivot bolt)
+    cr = cr.cut(box(-NUT_AF / 2 - 1.0, CR_W + 1, y_ap + 1.0, y_ap + 1.0 + NUT_T, -NUT_W / 2, NUT_W / 2))
     # ---- slider (global orientation, origin at (x_slider, LEG_Y, Z_CLAMP)) ----
     ys1 = yb + S_T
     yfb = ys1 + GAP_S                     # beam front face (local)
