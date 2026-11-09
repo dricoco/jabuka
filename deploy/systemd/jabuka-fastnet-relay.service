@@ -10,6 +10,10 @@
 # Conflicts=jabuka-ingest-fastnet.service: only one process may own the port (exclusive lock).
 # StartLimitIntervalSec=0: a crash loop must not leave Plan B permanently dead (systemd's default
 # is 5 starts in 10 s, then failed), the same as the main units.
+# RestartMode=direct: an auto-restart goes straight back to activating without passing through
+# inactive/failed, so fastnet2ip's BindsTo= never stops Plan B on a single relay crash and
+# StopWhenUnneeded= never stops the restarted relay (review WR-06). Needs systemd >= 254
+# (Trixie ships 257).
 
 [Unit]
 Description=Jabuka receive-only Fastnet relay for Plan B (fastnet2ip)
@@ -27,6 +31,7 @@ RuntimeDirectory=jabuka-relay
 RuntimeDirectoryMode=0750
 ExecStart=/opt/jabuka/venv/bin/jabuka-fastnet-relay --device /dev/fastnet --link /run/jabuka-relay/fastnet-ro --log-level INFO
 Restart=on-failure
+RestartMode=direct
 RestartSec=2
 WatchdogSec=30
 OOMScoreAdjust=-700
