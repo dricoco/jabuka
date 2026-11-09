@@ -132,7 +132,7 @@ Plans:
   3. Features are frozen on 2026-11-11 and a cloned spare SD card boots to the same working state. On 12 Nov the boat's real capture replays cleanly through the pipeline, and only configuration changes are made.
   4. On the boat by 2026-11-12, the tablet at the helm shows live wind (or manual or GRIB-only wind) and laylines to the first mark over the boat Wi-Fi, readable at night.
 
-**Plans:** 13/13 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12; gap closure 6 (re-verification CR-01 + WR-01, review WR-02/03/06/07), wave 1: 13)
+**Plans:** 13/14 plans executed (wave 1: 01 ‖ 02; wave 2: 03; gap closure, wave 1: 04 ‖ 05; gap closure 2, wave 1: 06; gap closure 3, wave 1: 07; gap closure 4, wave 1: 08; gap closure 5 (project review G-4-R01..R12), wave 1: 09 ‖ 10 ‖ 11, wave 2: 12; gap closure 6 (re-verification CR-01 + WR-01, review WR-02/03/06/07), wave 1: 13; gap closure 7 (re-verification CR-01 of review 93cb8b3 + WR-01/02/03, IN-01/02), wave 1: 14)
 
 Plans:
 **Wave 1**
@@ -156,6 +156,10 @@ Plans:
 **Gap closure 6** *(re-verification 2026-11-09; last code change before the freeze)*
 
 - [x] 04-13-PLAN.md — CR-01 + WR-01: at a normal mark a zone exit counts after the incoming-leg latch, past the mark now, or past along the outgoing leg after coming within the radius + 0.1 nm. So a committee mark entered off the real buoy, or a tight rounding, always advances, while approach-side and inside-of-the-turn retreats never do. Any geometry edit of the active leg restarts the state machine. Also: the rawlog cadence flag resets on a failed submit (WR-03); the ingest drain survives a close error (WR-07); the ingest exports bg_write_errors (WR-02, ingest part); Plan B relay gets RestartMode=direct (WR-06). Then the full gate and the new freeze fingerprint
+
+**Gap closure 7** *(re-verification 2026-11-09 at 6019d70; last code change before the freeze)*
+
+- [ ] 04-14-PLAN.md — CR-01 (review 93cb8b3): the rounding evidence is keyed only on the incoming leg, the active mark and the radius, so an edit of the next mark or of the side right after a rounding restarts only the 10 s debounce and the course no longer stays on the mark just rounded. WR-01: Annuler inside the zone of a normal mark no longer lets an approach-side retreat advance. WR-02 is recorded as accepted residual R9, with evidence. The Plan B single-crash test models fastnet2ip's real exit (WR-03), and a failed pre-queue fsync retries on the fsync cadence (IN-02). Then a fresh full gate and the new freeze fingerprint
 
 **Notes**: The read-only overlay FS is optional: test it once by 2026-11-09, otherwise skip it and rely on atomic writes + the spare SD card. Re-verifies REL-01 (Phase 1) and CRSE-05 (Phase 2) under power-pull faults.
 
