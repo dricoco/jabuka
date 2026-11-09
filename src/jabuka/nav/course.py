@@ -31,7 +31,8 @@ The candidate must hold DEBOUNCE_S consecutive seconds of t_mono; then the next
 mark becomes active, a banner "Marque suivante : <nom> — Annuler" is shown for 60 s and the
 advance is persisted together with the banner (a restart within the window still offers
 Annuler). undo() restores the previous mark and suppresses that mark until the boat has left its
-zone; leaving that zone then counts as the rounding (10 s debounce), so the real rounding after
+zone; leaving that zone past the mark (along either leg at a normal mark; as before at a
+hairpin) then counts as the rounding (WR-01, 10 s debounce), so the real rounding after
 an early advance + Annuler still advances. The finish leg finishes on entering its radius
 ("ARRIVÉE — <nom>"), no further advance.
 Hairpin marks (course change > 90 deg, Jabuka in both courses: in 203 deg, out 009/038 deg) need
@@ -802,17 +803,22 @@ class CourseStore:
             if d <= zone:
                 return
             # CR-02: leaving the zone the boat was suppressed in (seen inside it after Annuler)
-            # IS the rounding evidence: keep it, the usual 10 s "left the zone" debounce then
-            # advances. Discarding it would leave the course stuck on the mark just rounded,
-            # since the boat never re-enters that zone. Annuler tapped already outside the zone
-            # still needs a fresh entry.
+            # is rounding evidence: keep it, the usual 10 s "left the zone" debounce then
+            # advances when the exit is past the mark (_past_mark). Discarding it would leave
+            # the course stuck on the mark just rounded, since the boat never re-enters that
+            # zone. Annuler tapped already outside the zone still needs a fresh entry.
             if left_this_zone:
                 self._entered = True
-                # the stay inside the suppressed zone after Annuler is the rounding evidence: it
-                # stands in for the incoming-leg latch, which the suppressed ticks never update.
-                # The latch counts at every mark (CR-01), so this path advances at normal marks
-                # too, not only at hairpins
-                self._beyond = True
+                # At a normal mark, the stay inside the suppressed zone stands in for "came
+                # near" (_near), not for the incoming-leg latch: Annuler is tapped when the crew
+                # thinks the mark is not rounded yet, so the exit must still be past the mark
+                # along either leg (dot_in > 0, or dot_out > 0 with _near), and an approach-side
+                # retreat never advances (review WR-01, G-4-R02). At a hairpin, or without a
+                # usable outgoing leg, it still stands in for the latch, as before (CR-02).
+                self._near = True
+                exit_dots = self._leg_dots(lat, lon, idx, mark)
+                if exit_dots is None or exit_dots[2] is None or abs(exit_dots[2]) > HAIRPIN_DEG:
+                    self._beyond = True
         if idx >= self.last_idx:  # the finish
             if d <= max(leg.radius_nm, FINISH_MIN_NM):
                 self._finish(t, idx, mark)
