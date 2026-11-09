@@ -1,219 +1,132 @@
 ---
 phase: 04-race-readiness-hardening-commissioning
-reviewed: 2026-11-09T16:04:47Z
+reviewed: 2026-11-09T16:57:06Z
 depth: standard
-scope: incremental (93cb8b3..HEAD ccbbdc2, gap-closure plan 04-14; previous review CR-01, WR-01, WR-02 (accepted R9), WR-03, IN-02)
-files_reviewed: 5
+scope: incremental (984bcb9..HEAD df20c5b, gap-closure plan 04-15; previous review ccbbdc2 CR-01, WR-01 (accepted R10), IN-01)
+files_reviewed: 2
 files_reviewed_list:
   - src/jabuka/nav/course.py
-  - src/jabuka/ingest/rawlog.py
   - tests/nav/test_course.py
-  - tests/test_background_durability.py
-  - tests/deploy/test_units.py
 findings:
-  critical: 1
-  warning: 1
-  info: 1
-  total: 3
+  critical: 0
+  warning: 0
+  info: 2
+  total: 2
 status: issues_found
 ---
 
-# Phase 4: Code Review Report (incremental, 04-14)
+# Phase 4: Code Review Report (incremental, 04-15)
 
-**Reviewed:** 2026-11-09T16:04:47Z
-**Depth:** standard. The diff 93cb8b3..HEAD, plus the code it calls (`_set`, the edit commands, `undo`, `carte.js` course actions).
-**Files Reviewed:** 5
-**Status:** issues_found
+**Reviewed:** 2026-11-09T16:57:06Z
+**Depth:** standard. The diff 984bcb9..HEAD covers `_carry_suppress`, its call in `_commit`, the docstrings and the 30 new tests. I also read the code it interacts with: every `_commit` caller, `_set`, `_save_quiet`, `_fsm`, `undo`, `_advance`, `_finish`, and the `course_api.mutate` serialization.
+**Files Reviewed:** 2
+**Status:** issues_found (Info only)
 
 ## Narrative Findings (AI reviewer)
 
 ## Summary
 
-Plan 04-14 does what it set out to do on its own test grid.
+Plan 04-15 closes CR-01 of review ccbbdc2 correctly, and I found no new blocker or warning.
 
-**The key split is correct.** `_fsm_geometry` is now (idx, mark, radius, previous pos, active pos). `_fsm_outgoing` is (side, next pos). This matches what each piece of evidence is actually measured against:
-- `_beyond` comes from `dot_in`;
-- `_near`, `_entered` and `_suppressed_in_zone` come from the distance and the radius.
+**How `_carry_suppress` works.** It is a pure function of (old course, new course). It runs in the single commit path, after the version check and before the atomic write, so `course.json` persists the carried value. It carries `suppress_idx` only when all of these hold:
+- the old suppression is on the old active leg;
+- the command nulled the suppression;
+- there is no banner and the course is not finished;
+- the active index and the active mark id are unchanged;
+- the active leg is not the finish.
 
-The ordering is also right:
-- the gap check runs first, then the key check, then the outgoing check;
-- the suppress block re-stores both `_fsm_key` and `_fsm_out`, so the debounce does not restart one tick late;
-- `_set` still resets on an `(active_idx, mark_id)` change, so index shifts stay in R6.
+I traced each path below by reading the code. Where it says "probe", I also reproduced it with the real `CourseStore` (`.venv/bin/python -I`, scratch scripts only, no source changes).
 
-**The other fixes are correct:**
-- **IN-02:** the change to `rawlog._cadence` is correct. Data is still written at the flush cadence; only the fsync retry is delayed.
-- **WR-03:** the rewritten Plan B test now models the real fastnet2ip exit on EIO.
+**1. Tick commits never carry.** `_advance` changes the active index and carries a banner. `_finish` is finished and carries a banner. `undo` sets `suppress_idx` itself. So the `_commit_tick` OSError fallback, which applies the uncarried course, cannot diverge.
 
-I traced every finding below with the real `CourseStore` (`.venv/bin/python -I`, scratch scripts only, no source change). Two state-machine defects remain:
+**2. A carried suppression never lands on a stale index or a different leg.** All callers keep the invariant `suppress_idx == active_idx < last_idx`:
+- Every command that changes the active index or mark (`_step`, `activate(other)`, `delete_leg(active)`, an index shift, `select` to another mark) fails the guard.
+- `reorder` tracks the active leg through `order.index`. So "same index and same mark id" always means the same leg.
+- A consecutive duplicate mark id, which `delete_leg(active)` would need in order to put a different leg with the same id at the same index, cannot be produced. `add_mark` always mints a new id, the templates repeat only Vodice, and the start never moves.
 
-1. **Blocker (CR-01):** CR-01 of 93cb8b3 is closed only when no Annuler is pending. Several common course edits null `suppress_idx` even though the active leg is unchanged, and that throws away the CR-02 "left the suppressed zone" stand-in:
-   - "Finir ici" (the shortened-course drill);
-   - « Ajouter » at its default position;
-   - deleting or reordering a later leg;
-   - « Rendre active » on the active leg;
-   - `select()`.
+**3. A carried suppression never blocks a finish.** The guard refuses the finish leg, whether it became the finish through `set_finish(active)` or through a delete that leaves the active leg as the last one. That refusal is required, not just defensive. A suppressed finish leg returns early on every in-zone tick, and outside the zone `d > radius`, so it could never finish. Probe: Annuler at Jabuka, then « Finir ici » at Blitvenica, then a restart from disk. The suppression survives the restart, the exit advances once, and entering Blitvenica's radius gives `ARRIVÉE — Blitvenica`.
 
-   The suppressed ticks never collect real evidence. So when one of these edits comes after Annuler, with the boat still in the zone after a real rounding, the course stays on the rounded mark for good. This is reproduced at **Jabuka** on the repo's own `test_hairpin_annuler_then_real_rounding_advances` track. It is outside R1-R9.
-2. **WR-01:** the WR-01 fix of 93cb8b3 covers only the outer half of the approach side. After Annuler in the zone, `_near` is *assumed*. So a retreat on the approach side, **inside** the turn, advances again even though the boat never came within radius + `MARK_TOL_NM`. That widens R1 from radius + 0.1 nm to the whole zone, and nothing documents or pins it.
+**4. A carried suppression never blocks a legitimate advance that clearing would allow.** After a carry, the state machine follows exactly the path it would follow with no edit:
+- `_set` does not reset, because the active leg is the same.
+- For every carried edit except the one in IN-01, `_fsm_geometry` is unchanged, so `_suppressed_in_zone` survives. Only the debounce restarts.
+
+The previous review established that the no-edit Annuler path is a superset of the cleared path for zone exits:
+- **Normal mark:** the stand-in sets `_near`.
+- **Hairpin:** the stand-in sets `_beyond`.
+
+The only thing the carry gives up is an advance inside the zone. Suppressing that is the point of Annuler.
+
+**5. The 409 and concurrency paths are safe.** `_check_version` runs before the carry, so a 409 leaves both the course and the suppression untouched. Probe: `set_finish(3, base_version=v-1)` raises, and afterwards `suppress_idx` is still 2 and `finish_idx` is still None. The course API handlers are `async def` and call the synchronous store, so they are serialized with the tick on the event loop. Nothing yields between building the new course and `_commit`, so `old = self.course` is never stale.
+
+**6. The banner window cannot interact with the carry.** A banner and a suppression never coexist: `_advance` runs only once the suppression has been cleared or returned early, and `undo` nulls the banner. So the banner guard is defensive only. Edits made inside the window drop the banner exactly as they did before 04-15.
+
+**7. Kept versus cleared matches the summary's lists.** The one exception is the boundary case in IN-01, which falls under R6. Apart from it, no edit that keeps the active leg (same index and mark) and does not make it the finish still clears the suppression.
+
+**Verification.** `tests/nav/test_course.py` passes, 274 tests (re-run here). The new grids test real tracks, not just the flag: each one asserts exactly 2 `course_advance` events, plus `suppress_idx` before and after.
 
 ### Previous findings: status
 
-| Previous finding (review of 93cb8b3) | Status after 04-14 |
+| Previous finding (review of ccbbdc2) | Status after 04-15 |
 |---|---|
-| CR-01: an edit of the next mark or the side in the zone after a tight rounding leaves the course stuck | **Closed when no Annuler is pending.** The key split is correct, and the 140-case grid reproduces as claimed. The same stuck class is still reachable through edits that clear `suppress_idx` after an Annuler; see CR-01 below. That path already existed at 93cb8b3; it is not a 04-14 regression. It was not covered by the grid, which never combines Annuler with an edit |
-| WR-01: after Annuler at a normal mark, a zone exit in any direction advances (G-4-R02 reopened) | **Partially closed.** Retreats in the outer approach quadrant (b_in + 210 deg) no longer advance; the repro at 93cb8b3 advanced in every direction. Inside-of-the-turn approach-side retreats still advance; see WR-01 below |
-| WR-02: a one-fix `_beyond` latch outside the zone | **Accepted residual R9**, pinned by `test_one_fix_past_the_abeam_line_then_an_approach_side_exit_advances`, with evidence that each candidate fix either fails to lower the false advances or adds a stuck rounding. Not re-raised |
-| WR-03: the Plan B test asserted a fastnet2ip behaviour that does not happen | **Closed** (`tests/deploy/test_units.py:207-267`). The stand-in exits 1 on relay loss, and the test asserts that both units are active, that NRestarts >= 1 on both, and that Plan B has a new MainPID |
-| IN-01: the crash-path exit drain can outlast the watchdog | Open (advisory, deferred by plan 04-14) |
-| IN-02: a persistent pre-queue fsync failure logs at ERROR every second | **Closed** (`rawlog.py:219-221`, `test_a_failed_submit_retries_on_the_fsync_cadence[dup/submit]`) |
-| Older WR-02 part (Diag/helm alert for background write failures), WR-04, WR-05, IN-01..IN-04 of earlier rounds | Open (advisory, deferred), unchanged by 04-14 |
-
-## Critical Issues
-
-### CR-01: An edit that clears `suppress_idx` while the boat is in the suppressed zone after Annuler leaves the course stuck on the mark just rounded, outside R1-R9
-
-**File:** `src/jabuka/nav/course.py`:
-- the commands that null `suppress_idx` while the active leg is unchanged:
-  - `:379` (`select`, through `course_from_template`);
-  - `:412` (`activate`);
-  - `:452` (`add_mark`);
-  - `:546` (`delete_leg`);
-  - `:579` (`reorder`);
-  - `:598` (`set_finish`);
-- `:794-821`, the CR-02 path that the edit bypasses.
-
-**Issue:**
-
-**How the Annuler path works.** After `undo()`:
-- `_reset_fsm()` runs, so `_entered`, `_near` and `_beyond` are all False.
-- Every suppressed in-zone tick returns at line 797 before any evidence is collected.
-- The only thing that carries the rounding forward is the CR-02 branch at lines 798-821. When the boat leaves the zone it was suppressed in, that branch sets `_entered` and `_near`, plus `_beyond` at a hairpin.
-
-**What the edits break.** That branch runs only while `c.suppress_idx is not None`. The six commands above set `suppress_idx=None` even when the active leg stays the same leg (same index and mark). In that case `_set` does not reset the FSM, but the stand-in is gone. On the next tick the boat is handled as a fresh entry:
-- `_near` is set only if d <= radius + 0.1 nm **now**;
-- `_beyond` is set only if `dot_in > 0` **now**.
-
-A boat that has already rounded and is beating or reaching out, past radius + 0.1 nm and with `dot_in < 0`, never gets either one again. At a hairpin, the exit then needs `_beyond`; at a normal mark with a turn of 60 deg or more, it needs `_near`. Neither comes back, and at 2 nm the gate clears `_entered`. The course stays on the rounded mark, and the router steers back to it.
-
-**Reproduction 1: Jabuka.** This is the real `CourseStore` on Course A, using the track of `test_hairpin_annuler_then_real_rounding_advances`:
-- the far-side wedge advance;
-- Annuler;
-- 5 s suppressed at 300 deg / 0.7 nm (zone 0.85 nm);
-- **the edit**;
-- 5 s more at 300 deg / 0.7 nm;
-- out north along 009 deg to 2.6 nm.
-
-Results:
-
-```
-no edit                                   -> active 3 (Blitvenica), 2 advances  (as the test)
-edit_mark Blitvenica (keeps suppress_idx) -> active 3, 2 advances
-set_finish(3)  "Finir ici" at Blitvenica  -> active 2 (Jabuka), 1 advance   STUCK
-add_mark default position (« Ajouter »)   -> active 2, 1 advance            STUCK
-select("B")                               -> active 2, 1 advance            STUCK
-delete_leg(3)                             -> active 2, 1 advance            STUCK
-activate(2)  (« Rendre active » on it)    -> active 2, 1 advance            STUCK
-```
-
-**Reproduction 2: committee mark.** The setup is the `_committee` geometry (radius 0.05 nm, zone 0.30 nm):
-- the in-zone abeam advance of `_committee_advance_then_annuler`, then Annuler;
-- a suppressed rounding at 0.02 nm;
-- the boat then at turn + 45 deg / 0.2 nm, where the edit is made;
-- a beat out to 1.7 nm.
-
-Results: with a turn of 60 or 75 deg, `add_mark` default, `delete_leg(2)`, `set_finish` and `activate(1)` all give **STUCK** (1 advance). `edit_mark` of the next mark and `set_leg(side)` both advance, because they keep `suppress_idx`.
-
-**Why this matters.** The edits are the ones the UI offers on the active mark (`carte.js:608`, `:769`, `:771-774`):
-- « Ajouter » posts `insert_at: null`, which is the default `active_idx + 1`;
-- "Finir ici" is offered on every leg;
-- « Rendre active » stays enabled on the active leg.
-
-The precondition is also an expected event at Jabuka:
-- Annuler at Jabuka is exactly the CR-02 scenario the code was designed for;
-- the 0.85 nm zone keeps the boat inside it for minutes after the rounding;
-- a shortened course ("Finir ici" at Blitvenica) is a common committee signal on a long night leg.
-
-**Scope and residuals.** The plan claims (04-14-SUMMARY D1, and the `_fsm_outgoing` docstring) that an edit of the next mark, including one "added at the default position, deleted or reordered", restarts only the debounce. That claim is false when an Annuler is pending. None of R1-R9 covers this:
-- R6 is about active, radius and previous-mark edits;
-- R7 is about Annuler tapped outside the zone.
-
-The same scripts against a `git archive 93cb8b3` tree give the identical STUCK rows, so this is pre-existing rather than a 04-14 regression. Under the owner's rule it is still a stuck course on the mark just rounded, with only the crew's « Suiv. » to recover.
-
-**Fix.** Keep the suppression (the CR-02 stand-in) through any edit that leaves the active leg unchanged and does not turn it into the finish. One central place is `_commit`, or a helper called by the six commands:
-
-```python
-def _carry_suppress(self, new: Course) -> Course:
-    """An edit that keeps the active leg keeps the Annuler suppression (CR-02 stand-in)."""
-    old = self.course
-    if (
-        old.suppress_idx is not None
-        and old.suppress_idx == old.active_idx
-        and new.suppress_idx is None
-        and not new.finished
-        and new.active_idx == old.active_idx
-        and new.seq[new.active_idx].mark_id == old.seq[old.active_idx].mark_id
-    ):
-        last = new.finish_idx if new.finish_idx is not None else len(new.seq) - 1
-        if new.active_idx < last:  # never on a leg that became the finish
-            return new.model_copy(update={"suppress_idx": new.active_idx})
-    return new
-```
-
-I checked this by monkeypatching `CourseStore._commit` in scratch:
-- all seven Jabuka rows advance exactly once more (2 advances);
-- every committee row advances;
-- `tests/nav/test_course.py` still passes, 244/244, with the patch loaded as a pytest plugin.
-
-`_step` (« Suiv. »/« Préc. ») must keep clearing it; the guard does that automatically, because the active leg changes. Add regression tests:
-- the Jabuka hairpin Annuler track with `set_finish(3)`, `add_mark` default and `activate(2)` in the zone;
-- the committee Annuler track at turn 60/75 with `add_mark` default and `delete_leg` of the next mark.
-
-Each must give exactly 2 `course_advance` events. Also correct the `_fsm_outgoing` docstring and D1 in the summary.
-
-## Warnings
-
-### WR-01: After Annuler in the zone of a normal mark, an approach-side retreat on the inside of the turn advances again, though the boat never came within radius + MARK_TOL_NM (R1 widened, not documented or pinned)
-
-**File:** `src/jabuka/nav/course.py:810-821` (the `left_this_zone` stand-in `_near = True`) with `:747-752` (`_past_mark`, normal rule); test `tests/nav/test_course.py` `test_annuler_in_the_zone_at_a_committee_mark_then_an_approach_side_retreat_never_advances`
-
-**Issue:** At a normal mark, the CR-02 exit now sets `_near = True` without checking it. The normal rule `dot_out > 0 and _near` then accepts any exit with `dot_out > 0`. That includes the approach-side quadrant on the inside of the turn (`dot_in < 0`, `dot_out > 0`).
-
-R1 accepts that quadrant only after the boat has really come within radius + 0.1 nm, because only then is it indistinguishable from rounding a mark entered off the buoy. After Annuler, the bar drops to "was anywhere in the zone" (radius + 0.25 nm). The regression test retreats only at b_in + 210 deg, the outer quadrant (its docstring says so), so this half of G-4-R02 is untested. 04-14-SUMMARY D3 ("an approach-side retreat never re-advances") overstates the fix.
-
-Reproduction (real `CourseStore`, committee mark, radius 0.05 nm, zone 0.30 nm, near bound 0.15 nm):
-
-- **The plan's own helper.** `_committee_advance_then_annuler`, then 5 s suppressed at b_in + rel / 0.2 nm, then out to 0.6 nm:
-  - turn 45: rel 120 gives **2 advances**;
-  - turn 60 and 90: rel 120 and rel 150 give **2 advances**;
-  - rel 210 gives 1 advance (the pinned case).
-- **Never within 0.25 nm of the mark at any point.** The R9 single-fix advance at 0.28 nm, then the boat tacks back into the zone at b_in + 150 / 0.27 nm, Annuler there, then a retreat to b_in + 120 / 0.7 nm:
-  - turns 45, 60, 75 and 90 all give **2 advances**;
-  - b_in + 150 gives 2 advances at turns 60, 75 and 90;
-  - b_in + 210 gives 1 advance at every turn.
-
-  The same track with no Annuler (fresh entry at 0.27 nm) would never advance, because `_near` would be False and `dot_in < 0`.
-
-This is a false advance, and the crew can recover with Annuler and the banner. A second Annuler tapped outside the zone falls into the R7 fresh-entry path, so it does not loop forever. The plan's reason for not collecting real near/latch evidence on the suppressed ticks also holds: that would make an Annuler tapped beyond radius + 0.1 nm, after a correct advance, stuck on a beat-out. Under the owner's rule, that trade is not allowed.
-
-**Fix:** Do not trade a stuck course for this. Record it in the residual table and pin it:
-
-- Extend R1 (or add R10): "After Annuler in the zone of a normal mark, a zone exit on the inside of the turn (`dot_out > 0`) advances even without having come within radius + 0.1 nm. Crew: Annuler / « Préc. »".
-- Add a pin test next to the b_in + 210 one, e.g. `test_annuler_in_the_zone_then_an_inside_of_the_turn_retreat_advances` (turn 60, b_in + 120, 2 advances), so a later change to the stand-in has to update the table.
-- Correct D3 in 04-14-SUMMARY to "an approach-side retreat on the outside of the turn".
-- A code narrowing for after the race, to be measured on the stuck grids first: collect real `_near` on the suppressed in-zone ticks (`d <= radius + MARK_TOL_NM`), and use the stand-in only when the boat was already past the mark along the outgoing leg (`dot_out > 0`) at the first suppressed tick, i.e. Annuler of a correct advance during the beat-out.
+| CR-01: an edit that nulls `suppress_idx` after Annuler, with the boat still in the zone, leaves the course stuck on the rounded mark | **Closed.** `_carry_suppress` in `_commit`. The 6 Jabuka and 10 committee stuck rows from the previous repro now advance exactly once more, pinned by `test_jabuka_annuler_then_an_edit_that_keeps_the_active_leg_still_advances` and `test_committee_annuler_then_an_edit_that_keeps_the_active_leg_still_advances`. The clear cases are pinned by `test_an_edit_that_changes_the_active_leg_or_makes_it_the_finish_clears_the_suppression`. Re-checked by probe, including persistence across a restart and the 409 path |
+| WR-01: after Annuler in the zone of a normal mark, an inside-of-the-turn retreat advances | **Accepted residual R10**, pinned by `test_annuler_in_the_zone_then_an_inside_of_the_turn_retreat_advances` (turn 45/60/90). The test also proves the crew fallback: a second Annuler outside the zone does not loop. The R10 comment in `_fsm` and the module docstring are accurate. Not re-raised |
+| IN-01: the `_fsm_outgoing` and module docstrings promise more than the edits deliver | **Closed in substance.** Both now say that the evidence and the suppression are kept and the banner is dropped. One completeness gap remains in the list of banner-dropping edits; see IN-02 |
+| Advisories from earlier rounds (crash-path drain, Diag/helm write alert, and others) | Open (advisory, deferred), unchanged by 04-15 |
 
 ## Info
 
-### IN-01: `_fsm_outgoing` and module docstrings promise more than the edit commands deliver
+### IN-01: A kept edit that changes the incoming leg loses the CR-02 stand-in when the very next fix is already outside the zone (R6 boundary; the docstring and R6 row are imprecise)
 
-**File:** `src/jabuka/nav/course.py:27-29`, `:638-645`
+**File:**
+- `src/jabuka/nav/course.py:312-319` (the `_carry_suppress` docstring: "keeps the Annuler suppression, and with it the CR-02 ... stand-in");
+- `:814-819` (a key change calls `_reset_fsm()`, which clears `_suppressed_in_zone`);
+- `:831` (`left_this_zone`).
 
-**Issue:** Both docstrings say that a change of the side or of the next mark ("next mark moved, added at the default position, deleted or reordered") "restarts only the debounce". `add_mark`, `delete_leg` and `reorder` also clear the banner (the pending Annuler offer) and `suppress_idx`. The first is a UX side effect: a crew edit inside the 60 s window removes Annuler. The second is CR-01. A maintainer reading the docstrings would assume these edits are neutral for the state machine.
+**Issue:** `_carry_suppress` keeps `suppress_idx` for any edit that leaves the active index and mark unchanged. That includes `reorder` of two legs before the active one, which changes its previous mark without an index shift. On the next tick, `_fsm_geometry` differs, so `_reset_fsm()` clears `_suppressed_in_zone` while `suppress_idx` stays set:
+- If that tick is still inside the zone, the flag is set again and the stand-in works.
+- If the boat crossed the zone boundary within the same second as the edit, `left_this_zone` is False and the course needs a fresh entry.
 
-**Fix:** After CR-01 is fixed, state in `_fsm_outgoing` that these edits keep the evidence and the Annuler suppression but drop the banner. Alternatively, also carry the banner when the active leg is unchanged.
+Probe (Course A plus a mark X inserted at 1, Jabuka active at 3, the Jabuka Annuler track, the last suppressed fix at 0.84 nm, the edit, then out along 009 deg from 0.86 nm):
+
+```
+none             -> active 4, 2 advances
+activate(3)      -> active 4, 2 advances
+reorder(1, 2)    -> active 3, 1 advance   STUCK ("Suiv.")
+```
+
+With one more in-zone fix after the reorder, it advances (2 advances).
+
+**Severity calibration.** This is not a new defect, for three reasons:
+- It is the R6 class ("changing its previous mark"), with the documented « Suiv. » fallback.
+- Before 04-15 the same reorder cleared the suppression, so it was already stuck, and the window is one second wide.
+- No template switch reaches it, because A and B have the same mark before Plić Sestre and before Jabuka.
+
+The text is still inexact in two places:
+- The docstring says the stand-in is kept unconditionally.
+- The R6 row in 04-15-SUMMARY names only "an index shift" for the Annuler case, and the summary lists the kept reorder as "later legs only", although a reorder of earlier legs is kept too.
+
+**Fix:** After the race, add one clause to the docstring and to R6: "an edit that keeps the active leg but changes its incoming leg (previous mark moved or reordered) keeps `suppress_idx`, but restarts `_suppressed_in_zone` (R6)". Optional code narrowing, also after the race: in the key-change branch of `_fsm`, preserve `_suppressed_in_zone` when `c.suppress_idx == idx`. The suppressed zone is the active mark's, and it is unchanged by a previous-mark edit.
+
+### IN-02: The banner-drop and clear-case lists in the docstrings are incomplete
+
+**File:** `src/jabuka/nav/course.py:29-31` (module docstring), `:674-676` (`_fsm_outgoing`), `:316-319` (`_carry_suppress`)
+
+**Issue:** There are two gaps.
+- **Banner-drop list.** The module and `_fsm_outgoing` docstrings say that "add_mark, delete_leg and reorder also drop the banner". But four more commands set `banner=None` while keeping the active leg:
+  - `select()` (A to B also changes the side and the next mark);
+  - `set_finish(idx > active)` (« Finir ici » at a later mark);
+  - `set_finish(None)`;
+  - `activate(active_idx)`.
+
+  Each of these removes Annuler inside the 60 s window too. The hand-written course-card rule ("An edit made inside the 60 s banner window removes Annuler; use « Préc. »") is general, so the crew is covered; only a maintainer reading the docstring is misled.
+- **Clear-case list.** The `_carry_suppress` docstring names « Finir ici » on the active leg as the finish case. It does not name a `delete_leg` of later legs that leaves the active leg as the last one, which also turns it into the finish and is also cleared. The guard is right; only the text omits the case.
+
+**Fix:** After the race, as a comment-only change:
+- Make the module and `_fsm_outgoing` text say "every edit command except edit_mark, set_leg and confirm_sides drops a pending banner".
+- In `_carry_suppress`, replace "« Finir ici » on the active leg" with "an edit that makes the active leg the finish (« Finir ici » on it, or deleting every later leg)".
 
 ---
 
-_Reviewed: 2026-11-09T16:04:47Z_
+_Reviewed: 2026-11-09T16:57:06Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
