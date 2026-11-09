@@ -295,6 +295,10 @@ if [ "$DRY_RUN" -eq 1 ] || [ -d "$OPT/wheelhouse/prep" ]; then
 else
     warn "no prep/ in the wheelhouse: emergency weather prep NOT installed (re-run scripts/build-wheelhouse.sh)"
 fi
+# One-command weather prep on the Pi (`sudo prerace`); it reports a missing venv itself at run time.
+if [ -f "$SCRIPT_DIR/prerace" ]; then
+    run install -m 0755 "$SCRIPT_DIR/prerace" /usr/local/sbin/prerace
+fi
 
 # --- h. services, journald, hardware watchdog ---------------------------------------------------
 step "h. systemd units and drop-ins"

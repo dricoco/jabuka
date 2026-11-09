@@ -63,6 +63,16 @@ def test_dry_run_prints_every_required_step(dry_run) -> None:
         "/opt/fastnet2ip/venv/bin/pip install --no-index --find-links "
         "/opt/jabuka/wheelhouse/fastnet2ip --require-hashes -r /opt/jabuka/fastnet2ip.lock",
         "/etc/systemd/system/jabuka-fastnet-relay.service",
+        # g2: emergency weather prep venv on the Pi, separate from the app venv
+        "python3 -m venv /opt/jabuka-prep/venv",
+        "/opt/jabuka-prep/venv/bin/pip install --no-index --find-links /opt/jabuka/wheelhouse "
+        "--require-hashes -r /opt/jabuka/requirements.lock",
+        "/opt/jabuka-prep/venv/bin/pip install --no-index --find-links /opt/jabuka/wheelhouse/prep "
+        "--require-hashes -r /opt/jabuka/prep.lock",
+        "--no-deps --force-reinstall /opt/jabuka/wheelhouse/jabuka-",
+        "prep.lock /opt/jabuka/prep.lock",
+        "ln -sfn /opt/jabuka-prep/venv/bin/jabuka-prep /usr/local/bin/jabuka-prep-pi",
+        "/usr/local/sbin/prerace",
         "/etc/systemd/system/fastnet2ip.service",
         "/etc/systemd/system.conf.d/jabuka-watchdog.conf",
         "/etc/systemd/journald.conf.d/jabuka.conf",
@@ -99,6 +109,8 @@ def test_dry_run_order(dry_run) -> None:
         "useradd",
         "--require-hashes",
         "/opt/fastnet2ip/venv/bin/pip install",
+        "/opt/jabuka-prep/venv/bin/pip install",
+        "/usr/local/sbin/prerace",
         "systemctl enable jabuka-ingest-fastnet.service",
         "nmcli connection add",
         "nmcli connection up jabuka-ap",
@@ -130,6 +142,32 @@ def test_plan_b_is_hash_locked_never_live_pypi(dry_run) -> None:
     f2i = [c for c in commands if "/opt/fastnet2ip/venv/bin/pip install" in c]
     assert len(f2i) == 1
     assert "--no-index" in f2i[0] and "--require-hashes" in f2i[0]
+
+
+def test_prep_venv_is_hash_locked_and_separate(dry_run) -> None:
+    """Step g2 never touches the app venv; both lock installs are offline and hash-checked."""
+    assert dry_run.returncode == 0, dry_run.stdout + dry_run.stderr
+    commands = [line for line in dry_run.stdout.splitlines() if line.startswith("+ ")]
+    prep = [c for c in commands if "/opt/jabuka-prep/venv/bin/pip install" in c]
+    assert len(prep) == 3, prep
+    assert all("--no-index" in c for c in prep), prep
+    locked = [c for c in prep if " -r " in c]
+    assert len(locked) == 2 and all("--require-hashes" in c for c in locked), locked
+    wheel = [c for c in prep if " -r " not in c]
+    assert len(wheel) == 1 and "--no-deps" in wheel[0], wheel
+    app = [c for c in commands if "/opt/jabuka/venv/bin/pip install" in c]
+    assert len(app) == 2, app  # step f only
+    out = dry_run.stdout
+    g2 = out[out.index("\n== g2.") : out.index("\n== h.")]
+    for line in g2.splitlines():
+        if line.startswith("+ "):
+            assert "/opt/jabuka/venv/" not in line, line
+
+
+def test_prep_step_warns_when_wheelhouse_prep_absent(deploy_dir: Path) -> None:
+    text = (deploy_dir / "provision.sh").read_text()
+    assert '"$OPT/wheelhouse/prep"' in text
+    assert "emergency weather prep NOT installed" in text
 
 
 def test_only_mutations_through_run(dry_run) -> None:

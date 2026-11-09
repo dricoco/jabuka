@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# prerace: build the race weather ON the Pi (emergency fallback when the laptop is dead).
+# Installed by deploy/provision.sh as /usr/local/sbin/prerace (run with sudo). Manual: deploy/PI-SETUP.md
+# section 8.
+#
+#   sudo prerace                    in the background: phone hotspot only if there is no internet,
+#                                   ICON-EU wind + EWAM waves + check into a staging copy, swap it
+#                                   into /var/lib/jabuka/racepack, restart jabuka-core, back to the AP
+#   sudo prerace --organiser FILE   same, plus FILE (organiser GRIB) as wind_organiser beside the pack
+#                                   (not used as wind.npz)
+#   sudo prerace status             result of the last run (and whether one is running)
+#
+# Follow a run: journalctl -fu jabuka-prerace. A run ends with 0 (OK), 3 (weather incomplete,
+# installed anyway) or 2 (failure, the old pack is kept untouched).
+set -euo pipefail
+
+# Test-harness overrides only (stubbed PATH tests): sudo's env_reset and systemd-run both drop
+# these variables in real use, so the real paths always apply on the Pi.
+DATA="${PRERACE_DATA_DIR:-/var/lib/jabuka}"
+PREP="${PRERACE_PREP:-/opt/jabuka-prep/venv/bin/jabuka-prep}"
+WIFI="${PRERACE_WIFI:-/usr/local/sbin/jabuka-wifi}"
+
+UNIT=jabuka-prerace
+URL=https://opendata.dwd.de
+PHONE=jabuka-phone
+PACK="${DATA:?}/racepack"
+STAGE="${DATA:?}/racepack.new"
+PREV="${DATA:?}/racepack.prev"
+CACHE="${DATA:?}/cache/prep"
+RESULT="${DATA:?}/prerace-last.txt"
+LOG="${DATA:?}/prerace-last.log"
+SELF="$(readlink -f "$0")"
+USAGE="usage : sudo prerace [--organiser FICHIER] | sudo prerace status"
+
+die() {
+    local code="$1"
+    shift
+    echo "prerace: $*" >&2
+    exit "$code"
+}
+
+case "${1:-}" in
+    -h | --help)
+        sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+esac
+
+# /var/lib/jabuka is 0750 jabuka: every subcommand needs root.
+[ "$(id -u)" -eq 0 ] || die 1 "lancer avec sudo : sudo prerace ${*}"
+
+unit_active() { systemctl is-active --quiet "$UNIT.service"; }
+
+# --- launch: re-run detached so a dropped SSH session (Wi-Fi switch) does not stop it -----------
+launch() {
+    local organiser=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --organiser)
+                [ $# -ge 2 ] || die 2 "--organiser demande un FICHIER ; $USAGE"
+                organiser="$2"
+                shift
+                ;;
+            *) die 2 "argument inconnu : $1 ; $USAGE" ;;
+        esac
+        shift
+    done
+    if unit_active; then
+        echo "prerace: une préparation est déjà en cours : journalctl -fu jabuka-prerace" >&2
+        exit 1
+    fi
+    local extra=()
+    if [ -n "$organiser" ]; then
+        local abs
+        abs="$(readlink -f -- "$organiser" || true)"
+        [ -n "$abs" ] && [ -f "$abs" ] || die 2 "fichier de l'organisateur introuvable : $organiser"
+        extra=(--organiser "$abs")
+    fi
+    [ -x "$PREP" ] || die 1 "venv météo du Pi absent ($PREP) : relancer deploy/provision.sh avec deploy/wheelhouse/prep (PI-SETUP §8)"
+    # RuntimeMaxSec is a safety cap: on timeout SIGTERM runs the cleanup and the AP comes back.
+    systemd-run --quiet --unit="$UNIT" --collect --property=RuntimeMaxSec=3600 \
+        "$SELF" _run "${extra[@]}"
+    echo "suivre : journalctl -fu jabuka-prerace ; résultat : sudo prerace status"
+}
+
+# --- status ------------------------------------------------------------------------------------
+status() {
+    if unit_active; then
+        echo "en cours : journalctl -fu jabuka-prerace"
+    fi
+    if [ -f "$RESULT" ]; then
+        cat "$RESULT"
+    else
+        echo "aucune préparation enregistrée (sudo prerace pour en lancer une)"
+    fi
+}
+
+# --- the detached body -------------------------------------------------------------------------
+have_internet() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -sfI --max-time 10 -o /dev/null "$URL"
+    else
+        python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=10)' \
+            "$URL" >/dev/null 2>&1
+    fi
+}
+
+have_phone_profile() {
+    command -v nmcli >/dev/null 2>&1 || return 1
+    nmcli -g NAME connection show 2>/dev/null | grep -x "$PHONE" >/dev/null
+}
+
+note() { NOTES="${NOTES:+$NOTES ; }$*"; }
+
+# "<model> run <run>" from a wind.json / waves.json sidecar, "?" if unknown.
+sidecar() {
+    local f="$1" s=""
+    if [ -f "$f" ] && command -v jq >/dev/null 2>&1; then
+        s="$(jq -r '"\(.model // "?") run \(.run // "?")"' "$f" 2>/dev/null || true)"
+    fi
+    echo "${s:-?}"
+}
+
+write_result() {
+    local rc="$1" dir="$STAGE"
+    [ "$INSTALLED" -eq 0 ] || dir="$PACK"
+    {
+        echo "prerace : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "résultat : $OUTCOME"
+        echo "code : $rc"
+        echo "vent : $(sidecar "$dir/wind.json")"
+        echo "vagues : $(sidecar "$dir/waves.json")"
+        echo "Wi-Fi : $WIFI_NOTE"
+        if [ -n "$NOTES" ]; then echo "notes : $NOTES"; fi
+        echo "--- coverage.txt (fin) ---"
+        tail -n 20 "$dir/coverage.txt" 2>/dev/null || echo "(pas de coverage.txt)"
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            echo "--- journal (fin) ---"
+            tail -n 15 "$LOG" 2>/dev/null || true
+        fi
+    } >"$RESULT.tmp"
+    mv -f "$RESULT.tmp" "$RESULT"
+}
+
+cleanup() {
+    local rc=$?
+    trap - EXIT
+    if [ "$SWITCHED" -eq 1 ]; then
+        if "$WIFI" _switch ap; then
+            WIFI_NOTE="partage du téléphone puis retour au point d'accès"
+        else
+            WIFI_NOTE="partage du téléphone puis ÉCHEC du retour AP : sudo jabuka-wifi ap ou redémarrer"
+        fi
+    fi
+    write_result "$rc" || true
+    if [ "$INSTALLED" -eq 0 ]; then
+        rm -rf "${STAGE:?}" || true
+    fi
+    cat "$RESULT" 2>/dev/null || true
+    exit "$rc"
+}
+
+# prep CMD ARGS...: jabuka-prep as jabuka (never root: GRIB parsing is untrusted input), niced so
+# jabuka-core stays responsive on the Pi 3. Returns jabuka-prep's exit code (pipefail).
+prep() {
+    local rc=0
+    echo "== jabuka-prep $*" | tee -a "$LOG"
+    runuser -u jabuka -- nice -n 10 "$PREP" "$@" --out "$STAGE" --cache "$CACHE" 2>&1 \
+        | tee -a "$LOG" || rc=$?
+    return "$rc"
+}
+
+run_body() {
+    local organiser=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --organiser)
+                organiser="${2:-}"
+                shift
+                ;;
+            *) die 2 "_run : argument inconnu : $1" ;;
+        esac
+        shift
+    done
+
+    cd "$DATA"
+    : >"$LOG"
+    SWITCHED=0
+    INSTALLED=0
+    OUTCOME="ÉCHEC : interrompu"
+    NOTES=""
+    WIFI_NOTE="non utilisé"
+    trap cleanup EXIT
+    trap 'exit 143' TERM INT HUP
+    echo "prerace : début, heure du Pi $(date -u +%Y-%m-%dT%H:%M:%SZ) (UTC ; fausse si le GPS n'a pas réglé l'horloge)"
+
+    # 1. internet: the boat AP has none, so use the phone hotspot (password saved beforehand)
+    if have_internet; then
+        echo "prerace : internet disponible"
+    else
+        if ! have_phone_profile; then
+            OUTCOME="ÉCHEC : pas d'internet et aucun profil $PHONE : lancer d'abord sudo jabuka-wifi phone une fois pour enregistrer le mot de passe"
+            echo "prerace: $OUTCOME" >&2
+            exit 2
+        fi
+        echo "prerace : pas d'internet, bascule vers le partage du téléphone"
+        SWITCHED=1 # before the switch: the trap returns to the AP even after a half-failed switch
+        "$WIFI" _switch phone || true
+        local i online=0
+        for i in $(seq 1 12); do
+            if have_internet; then
+                online=1
+                break
+            fi
+            [ "$i" -eq 12 ] || sleep 5
+        done
+        if [ "$online" -eq 0 ]; then
+            OUTCOME="ÉCHEC : pas d'internet par le partage du téléphone (partage activé ?)"
+            echo "prerace: $OUTCOME" >&2
+            exit 2
+        fi
+        WIFI_NOTE="partage du téléphone"
+    fi
+
+    # 2. staging copy of the live pack (the live pack is never written in place)
+    rm -rf "${STAGE:?}"
+    mkdir -p "$CACHE"
+    if [ -d "$PACK" ]; then
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$PACK/" "$STAGE/"
+        else
+            cp -a "$PACK" "$STAGE"
+        fi
+    else
+        mkdir -p "$STAGE"
+    fi
+    chown -R jabuka:jabuka "$STAGE" "$DATA/cache"
+
+    # 3. wind (fatal), waves (optional), organiser GRIB (optional), check
+    local rc_wind=0 rc_waves=0 rc_check=0 rc_org=0
+    prep wind || rc_wind=$?
+    case "$rc_wind" in
+        0 | 3) ;;
+        *)
+            OUTCOME="ÉCHEC : vent (code $rc_wind), ancien pack conservé"
+            exit 2
+            ;;
+    esac
+    prep waves || rc_waves=$?
+    case "$rc_waves" in
+        0 | 3) ;;
+        *) note "vagues : échec (code $rc_waves), pack sans vagues à jour" ;;
+    esac
+    if [ -n "$organiser" ]; then
+        local base
+        base="$(basename "$organiser")"
+        cp -f "$organiser" "$CACHE/$base"
+        chown jabuka:jabuka "$CACHE/$base"
+        prep grib "$CACHE/$base" --name wind_organiser || rc_org=$?
+        case "$rc_org" in
+            0 | 3) note "prévision de l'organisateur : wind_organiser à côté du pack (non utilisée)" ;;
+            *) note "prévision de l'organisateur : échec (code $rc_org)" ;;
+        esac
+        rm -f "$CACHE/$base"
+    fi
+    prep check || rc_check=$?
+    case "$rc_check" in
+        0 | 3) ;;
+        *)
+            OUTCOME="ÉCHEC : contrôle du pack (code $rc_check), ancien pack conservé"
+            exit 2
+            ;;
+    esac
+    local status=0
+    if [ "$rc_wind" -eq 3 ] || [ "$rc_check" -eq 3 ]; then status=3; fi
+
+    # 4. install by rename swap, exactly one racepack.prev kept
+    rm -rf "${PREV:?}"
+    if [ -e "$PACK" ]; then mv "$PACK" "$PREV"; fi
+    mv "$STAGE" "$PACK"
+    INSTALLED=1
+    chown -R jabuka:jabuka "$PACK"
+    if ! systemctl restart jabuka-core.service; then
+        note "ÉCHEC du redémarrage de jabuka-core : sudo systemctl restart jabuka-core"
+    fi
+    # downloads are purged only after an install (~100 MB per run on the SD card); a failed run
+    # keeps them so a retry resumes
+    rm -rf "${CACHE:?}"
+    if [ "$status" -eq 0 ]; then
+        OUTCOME="OK : pack installé, jabuka-core redémarré"
+    else
+        OUTCOME="MÉTÉO INCOMPLÈTE : pack installé quand même, lire la couverture"
+        echo "!!! MÉTÉO INCOMPLÈTE : pack installé quand même, lire la couverture (sudo prerace status) !!!"
+    fi
+    exit "$status"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    status) status ;;
+    _run)
+        shift
+        run_body "$@"
+        ;;
+    "" | --organiser) launch "$@" ;;
+    *) die 2 "commande inconnue : $cmd ; $USAGE" ;;
+esac
