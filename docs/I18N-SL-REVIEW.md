@@ -277,8 +277,8 @@ Terms chosen (to confirm first):
 | key | fr | en (reference) | sl (to proofread) |
 |---|---|---|---|
 | `lock.lockAria` | Verrouiller l'écran | Lock the screen | Zakleni zaslon |
-| `lock.unlockAria` | Appui 2 s pour déverrouiller | Hold 2 s to unlock | Pridrži 2 s za odklep |
-| `lock.hint` | VERROUILLÉ · appui 2 s | LOCKED · hold 2 s | ZAKLENJENO · pridrži 2 s |
+| `lock.unlockAria` | Appui 2 s puis relâcher pour déverrouiller | Hold 2 s then release to unlock | Pridrži 2 s in spusti za odklep |
+| `lock.hint` | VERROUILLÉ · appui 2 s puis relâcher | LOCKED · hold 2 s, then release | ZAKLENJENO · pridrži 2 s, nato spusti |
 
 ## Diagnostics page
 

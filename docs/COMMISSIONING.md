@@ -260,7 +260,7 @@ Pitfall 17 (pas de Wake Lock sur une origine HTTP sans le drapeau Chrome).
 | 11:45 | **Stay awake** en charge, délai d'écran maximal, optimisation batterie coupée pour Chrome (TABLET-SETUP §3) | HUMAN [R5.setup] | l'écran ne s'éteint pas en 30 min |
 | 11:50 | Plein écran, carte (WebGL), orientation (TABLET-SETUP §4–§7) | HUMAN [R5.setup] | carte dessinée, pas de `CARTE INDISPONIBLE` |
 | 11:55 | Mode nuit `☾ Nuit` et **luminosité** minimale lisible (TABLET-SETUP §6) | HUMAN [R5.setup] | rouge sur noir, aucune lumière blanche |
-| 12:00 | Test du **verrou** : eau sur l'écran, doigts mouillés, paume ; appui 2 s sur le cadenas (TABLET-SETUP §8) | HUMAN [R5.setup] | rien ne bouge verrouillé ; 2 s déverrouille |
+| 12:00 | Test du **verrou** : eau sur l'écran, doigts mouillés, paume ; appui 2 s sur le cadenas puis relâcher (avant 4 s) (TABLET-SETUP §8) | HUMAN [R5.setup] | rien ne bouge verrouillé ; 2 s puis relâcher déverrouille ; un appui sans relâcher ne déverrouille jamais |
 | 12:10 | Montage dans le **support 3D** à la barre, câble de charge passé, angle lisible du barreur | HUMAN [R5.setup] | lisible debout et assis |
 | 18:30 | De nuit à la barre : relire le gros chiffre à bout de bras, vision de nuit préservée après 5 min (02-UAT #3) | HUMAN [R5.setup] | conforme |
 

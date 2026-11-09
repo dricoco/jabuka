@@ -4,14 +4,17 @@
 // A 64 px padlock in the top bar locks. #lock-overlay then covers the whole screen above
 // everything (transparent: the numbers keep updating underneath) and swallows every pointer,
 // touch, wheel, click and context-menu event. Its only live spot is its own 64 px padlock, which
-// unlocks after a continuous 2 s press of the primary pointer (lock_logic.js; a second finger or
-// a non-primary pointer never unlocks), with a progress ring. While locked the map's own
-// interactions are disabled too. The state persists per tablet in localStorage "jabuka.locked".
+// unlocks when the primary pointer is lifted after a 2-4 s press (lock_logic.js, G-4-R07). A
+// longer press, or one that never lifts (a water drop, a palm), does nothing; a second finger or a
+// non-primary pointer never unlocks. A progress ring fills over 2 s and the padlock turns inverted
+// (.ready) while the release window is open. While locked the map's own interactions are disabled
+// too. The state persists per tablet in localStorage "jabuka.locked".
 import { t } from "./i18n.js";
 import { createLongPress } from "./lock_logic.js";
 
 const KEY = "jabuka.locked";
 const HOLD_MS = 2000;
+const MAX_MS = 4000; // a press longer than this is void: lifting after it does nothing
 const SVG = "http://www.w3.org/2000/svg";
 const RING_R = 28;
 const RING_LEN = 2 * Math.PI * RING_R;
@@ -105,7 +108,7 @@ async function applyMap(enabled) {
 export function mount(ctx) {
   const overlay = $("lock-overlay");
   if (!overlay) return;
-  const lp = createLongPress({ holdMs: HOLD_MS });
+  const lp = createLongPress({ holdMs: HOLD_MS, maxMs: MAX_MS });
   let locked = false;
   let raf = 0;
 
@@ -138,6 +141,11 @@ export function mount(ctx) {
   const ring = unlockBtn.querySelector(".lock-ring");
 
   const drawRing = (p) => ring?.setAttribute("stroke-dashoffset", (RING_LEN * (1 - p)).toFixed(2));
+  const setReady = (on) => unlockBtn.classList.toggle("ready", on);
+  const idle = () => {
+    drawRing(0);
+    setReady(false);
+  };
 
   function apply(next) {
     locked = next;
@@ -147,23 +155,22 @@ export function mount(ctx) {
     document.body.classList.toggle("locked", locked);
     store(locked);
     lp.reset();
-    drawRing(0);
+    idle();
     setMapInteractions(!locked);
     ctx.bus?.dispatchEvent(new CustomEvent("lock", { detail: locked }));
   }
 
+  // feedback only: a hold never unlocks, the pointerup handler does (G-4-R07)
   function tick() {
     raf = 0;
-    if (!locked || !lp.pressing()) {
-      drawRing(0);
-      return;
-    }
     const now = performance.now();
-    drawRing(lp.progress(now));
-    if (lp.check(now) === "unlocked") {
-      apply(false);
+    lp.check(now); // voids a press held past MAX_MS
+    if (!locked || !lp.pressing()) {
+      idle();
       return;
     }
+    drawRing(lp.progress(now));
+    setReady(lp.ready(now));
     raf = requestAnimationFrame(tick);
   }
 
@@ -186,11 +193,11 @@ export function mount(ctx) {
         if (lp.down(performance.now(), { isPrimary: ev.isPrimary, pointerId: ev.pointerId })) {
           if (!raf) raf = requestAnimationFrame(tick);
         } else {
-          drawRing(0);
+          idle();
         }
       } else if (lp.pressing()) {
         lp.cancel(); // another finger elsewhere: not a deliberate press
-        drawRing(0);
+        idle();
       }
     },
     { passive: false },
@@ -198,13 +205,11 @@ export function mount(ctx) {
   const release = (ev) => {
     swallow(ev);
     if (!locked) return;
-    const now = performance.now();
-    if (lp.pressing() && lp.check(now) === "unlocked") {
+    if (lp.up(performance.now(), ev.pointerId)) {
       apply(false);
       return;
     }
-    lp.up(now, ev.pointerId);
-    drawRing(lp.progress(now));
+    if (!lp.pressing()) idle(); // another pointer's lift leaves the press running
   };
   overlay.addEventListener("pointerup", release, { passive: false });
   overlay.addEventListener(
@@ -212,13 +217,13 @@ export function mount(ctx) {
     (ev) => {
       swallow(ev);
       lp.cancel();
-      drawRing(0);
+      idle();
     },
     { passive: false },
   );
   unlockBtn.addEventListener("pointerleave", () => {
     lp.cancel();
-    drawRing(0);
+    idle();
   });
   // keyboard (a Bluetooth keyboard, a stuck key) does nothing while locked
   document.addEventListener(

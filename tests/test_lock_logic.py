@@ -1,6 +1,7 @@
 """Long-press unlock state machine of the helm lock (web/static/lock_logic.js), run through node
 (HELM-04, T-02-05-03, G-4-R07): only lifting the primary pointer after a 2-4 s press unlocks; a
-press that never lifts (a water drop), a press longer than 4 s, spray and second fingers never do."""
+press that never lifts (a water drop), a press longer than 4 s, spray and second fingers never
+do."""
 
 from __future__ import annotations
 

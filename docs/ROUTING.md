@@ -256,7 +256,7 @@ Quand l'appuyer :
 `Virement imposé (terre) dans 01:35` : le bord tenu va vers la terre ou un danger. Il faut virer
 avant la fin du décompte, ON RESTE ou pas.
 
-Écran verrouillé (cadenas) : le bouton ne fait rien. Déverrouiller : appui 2 s sur le cadenas.
+Écran verrouillé (cadenas) : le bouton ne fait rien. Déverrouiller : appui 2 s sur le cadenas, puis relâcher (avant 4 s).
 
 `On reste impossible : amure inconnue …` : le Pi ne sait pas sur quel bord on est (pas de vent).
 Attendre le vent, ou saisir un vent manuel.

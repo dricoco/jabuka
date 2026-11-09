@@ -79,8 +79,9 @@ only feature the page uses with it.
 
 - Tap the **padlock** (top right) before spray, rain or a crowded cockpit: the whole screen
   stops reacting (tabs, map, buttons, pinch, wheel) while the numbers keep updating.
-- To unlock, **press and hold the padlock for 2 seconds** (a ring fills up). A short tap, a
-  second finger or water on the screen never unlocks.
+- To unlock, **press and hold the padlock for 2 seconds (a ring fills up), then lift**: the
+  padlock turns solid when you may lift; a press longer than 4 s does nothing (lift and start
+  again). A short tap, a second finger, or water or a palm resting on the padlock never unlocks.
 - The lock is remembered across a reload or a Chrome restart.
 
 ## 9. Badges — Signification des badges
@@ -130,4 +131,4 @@ the top, with the map below. The column has three blocks:
 - [ ] Stay awake while charging ON, tablet on charge, battery optimisation off for Chrome
 - [ ] Map drawn (no `CARTE INDISPONIBLE`), course and marks visible
 - [ ] Night mode readable at the lowest usable brightness, no white/green light
-- [ ] Lock: water on the screen changes nothing; 2 s press unlocks
+- [ ] Lock: water on the screen changes nothing; 2 s press then release unlocks

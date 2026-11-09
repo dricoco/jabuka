@@ -277,6 +277,9 @@ button.lock-btn { width: 64px; height: 64px; min-width: 64px; padding: 0; displa
   background: var(--bg-band); border: 2px solid var(--fg); border-radius: 50%;
   touch-action: none;
 }
+/* G-4-R07: the release window (2-4 s) is open: the padlock turns inverted, meaning "lift now";
+   theme tokens only (night: red disc, black padlock) */
+.unlock-btn.ready { color: var(--bg); background: var(--fg); }
 .unlock-btn svg { pointer-events: none; }
 .lock-hint {
   position: absolute; top: 74px; right: 6px; padding: 4px 8px; border-radius: 6px;
