@@ -8,6 +8,7 @@ import os
 
 import pytest
 
+from jabuka.route import pool as pool_mod
 from jabuka.route import pool_probe
 from jabuka.route.pool import RouterPool
 
@@ -36,6 +37,45 @@ async def test_worker_identity_forkserver_and_nice() -> None:
         assert st["jobs"] == 2 and st["ok"] == 2 and st["restarts"] == 0
         assert st["running"] == 0 and st["pending"] == 0
         assert st["last_ms"] is not None
+    finally:
+        pool.close()
+
+
+def test_raise_oom_score_adj_best_effort(tmp_path) -> None:
+    """G-4-R06: raised to the target only when below it; never raises."""
+    f = tmp_path / "oom_score_adj"
+    f.write_text("-500\n")
+    assert pool_mod.raise_oom_score_adj(500, path=str(f)) == 500
+    assert f.read_text() == "500\n"
+    f.write_text("800\n")
+    assert pool_mod.raise_oom_score_adj(500, path=str(f)) == 800
+    assert f.read_text() == "800\n"
+    assert pool_mod.raise_oom_score_adj(500, path=str(tmp_path / "missing")) is None
+    f.write_text("garbage")
+    assert pool_mod.raise_oom_score_adj(500, path=str(f)) is None
+    assert pool_mod.raise_oom_score_adj(500, path=str(tmp_path)) is None  # a directory
+
+
+def _read_oom_score_adj() -> int | None:
+    try:
+        with open("/proc/self/oom_score_adj") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+async def test_worker_raises_its_oom_score_adj() -> None:
+    """G-4-R06: the forkserver worker does not keep the core's OOMScoreAdjust=-500: it is the
+    OOM killer's first choice, before gpsd, NetworkManager and journald."""
+    parent = _read_oom_score_adj()
+    if parent is None:
+        pytest.skip("/proc/self/oom_score_adj unreadable")
+    pool = make_pool(timeout_s=20.0)
+    try:
+        out = await pool.run_latest(pool_probe.whoami, None)
+        assert out.status == "ok", out
+        assert out.value["oom_score_adj"] == max(pool_mod.WORKER_OOM_SCORE_ADJ, parent)
+        assert _read_oom_score_adj() == parent  # the parent is untouched
     finally:
         pool.close()
 

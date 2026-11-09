@@ -96,6 +96,8 @@ def test_plan_b_conflicts_both_ways_and_not_enabled(parse_unit) -> None:
     # no [Install] section: `systemctl enable fastnet2ip` cannot wire it into boot
     assert "Install" not in planb
     assert _one(planb, "Service", "Restart") == "on-failure"
+    # G-4-R12: a crash loop must not leave Plan B dead (systemd's default: 5 starts in 10 s)
+    assert _one(planb, "Unit", "StartLimitIntervalSec") == "0"
     argv = shlex.split(_one(planb, "Service", "ExecStart"))
     assert argv == [
         "/opt/fastnet2ip/venv/bin/fastnet2ip",
@@ -131,6 +133,7 @@ def test_plan_b_never_gets_the_bus(parse_unit) -> None:
 def test_relay_unit(parse_unit) -> None:
     relay = parse_unit(RELAY)
     assert "Install" not in relay  # only ever pulled in by fastnet2ip
+    assert _one(relay, "Unit", "StartLimitIntervalSec") == "0"  # G-4-R12: never stays dead
     assert _one(relay, "Unit", "StopWhenUnneeded") == "yes"
     assert "jabuka-ingest-fastnet.service" in _words(relay, "Unit", "Conflicts")
     assert _one(relay, "Service", "Type") == "notify"
