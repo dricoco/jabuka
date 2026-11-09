@@ -182,8 +182,12 @@ def _copied(unit: dict, section: str, keys: tuple[str, ...]) -> str:
 
 def test_one_relay_crash_keeps_plan_b_up(parse_unit) -> None:
     """WR-06 on a real (user-scope) systemd: throwaway units carrying the shipped relay and
-    fastnet2ip dependency/restart directives. One kill -9 of the relay must leave Plan B active
-    with the same MainPID and the relay restarted."""
+    fastnet2ip dependency/restart directives. The Plan B stand-in models fastnet2ip 3.3.1, which
+    exits 1 when the relay's pty goes away (SerialException on EIO; read from the 3.3.1 wheel).
+    With RestartMode=direct the relay never passes through inactive/failed, so BindsTo= does
+    not stop Plan B on the relay's crash, and Plan B's own Restart=on-failure brings it back on
+    the restarted relay (review WR-03 of 93cb8b3). One kill -9 of the relay: both units active
+    again with NRestarts >= 1, and Plan B runs a new process."""
     planb = parse_unit(PLANB)
     relay = parse_unit(RELAY)
     assert RELAY in _words(planb, "Unit", "BindsTo")
@@ -193,6 +197,7 @@ def test_one_relay_crash_keeps_plan_b_up(parse_unit) -> None:
         pytest.skip("no user systemd manager (XDG_RUNTIME_DIR / systemctl --user)")
     exe, unit_dir = found
     sleep = shutil.which("sleep") or "/bin/sleep"
+    sh = shutil.which("sh") or "/bin/sh"
     rname = f"jabuka-wr06-{os.getpid()}-relay.service"
     pname = f"jabuka-wr06-{os.getpid()}-planb.service"
     relay_text = (
@@ -201,10 +206,17 @@ def test_one_relay_crash_keeps_plan_b_up(parse_unit) -> None:
         + f"\n[Service]\nType=simple\nExecStart={sleep} infinity\n"
         + _copied(relay, "Service", ("Restart", "RestartSec", "RestartMode"))
     )
+    # the fastnet2ip stand-in: read the relay's MainPID once, exit 1 once that process is gone
+    # ($$ is systemd's escape for a literal $)
+    script = (
+        f"p=$$({exe} --user show -p MainPID --value {rname}); "
+        '[ "$$p" -gt 0 ] || exit 1; '
+        'while kill -0 "$$p" 2>/dev/null; do sleep 0.2; done; exit 1'
+    )
     planb_text = (
         f"[Unit]\nDescription=WR-06 throwaway Plan B\nBindsTo={rname}\nAfter={rname}\n"
         + _copied(planb, "Unit", ("StartLimitIntervalSec",))
-        + f"\n[Service]\nType=simple\nExecStart={sleep} infinity\n"
+        + f"\n[Service]\nType=simple\nExecStart={sh} -c '{script}'\n"
         + _copied(planb, "Service", ("Restart", "RestartSec"))
     )
 
@@ -219,6 +231,9 @@ def test_one_relay_crash_keeps_plan_b_up(parse_unit) -> None:
     def show(unit: str, prop: str) -> str:
         return ctl("show", "-p", prop, "--value", unit)
 
+    def restarts(unit: str) -> int:
+        return int(show(unit, "NRestarts") or 0)
+
     unit_dir.mkdir(parents=True, exist_ok=True)
     files = [unit_dir / rname, unit_dir / pname]
     files[0].write_text(relay_text)
@@ -226,24 +241,30 @@ def test_one_relay_crash_keeps_plan_b_up(parse_unit) -> None:
     try:
         ctl("daemon-reload")
         ctl("start", pname)
+        time.sleep(1.0)
         assert show(pname, "ActiveState") == "active"
         assert show(rname, "ActiveState") == "active"
+        assert show(pname, "NRestarts") == "0"
         planb_pid = show(pname, "MainPID")
         relay_pid = int(show(rname, "MainPID"))
         assert relay_pid > 0 and planb_pid not in ("", "0")
         os.kill(relay_pid, signal.SIGKILL)
-        deadline = time.monotonic() + 20.0
+        deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
-            restarted = int(show(rname, "NRestarts") or 0) >= 1
-            if (restarted and show(rname, "ActiveState") == "active") or show(
-                pname, "ActiveState"
-            ) != "active":
+            if (
+                restarts(rname) >= 1
+                and restarts(pname) >= 1
+                and show(rname, "ActiveState") == "active"
+                and show(pname, "ActiveState") == "active"
+            ):
                 break
             time.sleep(0.2)
-        time.sleep(1.0)
+        time.sleep(3.0)  # and both stay up
         assert show(rname, "ActiveState") == "active"
+        assert restarts(rname) >= 1
         assert show(pname, "ActiveState") == "active"
-        assert show(pname, "MainPID") == planb_pid
+        assert restarts(pname) >= 1
+        assert show(pname, "MainPID") not in ("", "0", planb_pid)
     finally:
         ctl("stop", pname, rname, check=False)
         for f in files:

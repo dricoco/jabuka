@@ -398,6 +398,55 @@ def test_cadence_fsync_recovers_after_a_failed_submit(
         lg.close()
 
 
+@pytest.mark.parametrize("how", ["dup", "submit"])
+def test_a_failed_submit_retries_on_the_fsync_cadence(
+    background, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """IN-02: after a pre-queue fsync failure the retry waits for the normal fsync_s cadence,
+    so a lasting EMFILE logs once per fsync_s, not every second. Nothing 2 s after the failure;
+    exactly one fsync on the durability thread 11 s after it."""
+    names: list[str] = []
+    real_fsync = os.fsync
+
+    def recorder(fd: int) -> None:
+        names.append(threading.current_thread().name)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recorder)
+    mono = FakeMono()
+    lg = _log(tmp_path, mono)
+    try:
+        lg.write_line("one")
+        mono.t += 11
+        with monkeypatch.context() as m:
+            if how == "dup":
+
+                def dup(fd: int) -> int:
+                    raise OSError(errno.EMFILE, "Too many open files")
+
+                m.setattr(os, "dup", dup)
+            else:
+
+                def submit(job) -> None:
+                    raise RuntimeError("can't start new thread")
+
+                m.setattr(atomicio, "_submit", submit)
+            with pytest.raises((OSError, RuntimeError)):
+                lg.maybe_flush()
+        lg.write_line("two")
+        mono.t += 2
+        lg.maybe_flush()  # no retry 2 s after the failure
+        assert atomicio.drain(10.0) is True
+        assert sum(1 for n in names if n == atomicio.WORKER_NAME) == 0, names
+        lg.write_line("three")
+        mono.t += 9
+        lg.maybe_flush()
+        assert atomicio.drain(10.0) is True
+        assert sum(1 for n in names if n == atomicio.WORKER_NAME) == 1, names
+    finally:
+        lg.close()
+
+
 def test_ingest_drains_even_if_the_raw_log_close_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, free_udp_port: int
 ) -> None:
