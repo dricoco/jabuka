@@ -213,8 +213,12 @@ class RotatingAppendLog:
                 except BaseException:
                     # WR-03: fsync_fd can raise before the job exists (os.dup EMFILE, or the
                     # durability thread failing to start on a 1 GB Pi), and then on_done never
-                    # runs: clear the flag so the next cadence retries
+                    # runs: clear the flag so the next cadence retries. The retry waits for the
+                    # normal fsync_s cadence, so a lasting EMFILE or thread-start failure costs
+                    # one raw_errors entry and one ERROR line per fsync_s, not every second
+                    # (review IN-02); _dirty stays True
                     self._fsync_inflight = False
+                    self._last_fsync = now
                     raise
                 self._last_fsync = now
                 self._dirty = False
