@@ -29,6 +29,7 @@ from jabuka.nav.polar import (
     load_racepack_polar,
 )
 from jabuka.nav.settings import ManualWindStore, SettingsStore
+from jabuka.nav.start import StartStore, start_block
 from jabuka.nav.tacks import TackTracker
 
 log = logging.getLogger("jabuka.nav")
@@ -74,6 +75,8 @@ class NavService:
         self.settings_store = SettingsStore(self.data_dir)
         self.course = CourseStore(self.data_dir)
         self.manual = ManualWindStore(self.data_dir)
+        self.start = StartStore(self.data_dir)  # start mode (quick 261110-cuk)
+        self.start_errors = 0
         self.tacks = TackTracker(self.settings_store.settings)
         self.polar_raw = load_racepack_polar(self.racepack_dir)
         self._polar_key: tuple[float, float, float] | None = None
@@ -148,8 +151,24 @@ class NavService:
             log.exception("nav update failed")
             msg = self._envelope(t_mono)
             msg["alerts"].append("Erreur de calcul nav")
+        self._add_start(msg, t_mono)
         self.last = msg
         return msg
+
+    def _add_start(self, msg: dict, t_mono: float) -> None:
+        """The optional "start" block (start mode, quick 261110-cuk): absent while start mode is
+        closed; a failure gives {"open": true, "error": true}, counted in start_errors (never in
+        errors), and never touches the other blocks nor stops the tick (H-01)."""
+        try:
+            block = start_block(
+                self.start, msg, self.polar, self.settings, t_mono, utc_epoch(self.clock)
+            )
+        except Exception:
+            self.start_errors += 1
+            log.exception("start block failed")
+            block = {"open": True, "error": True} if self.start.open else None
+        if block is not None:
+            msg["start"] = block
 
     def _compute(self, t_mono: float) -> dict:
         s = self.settings
