@@ -235,6 +235,12 @@ Terms chosen (to confirm first):
 | `reglages.conflict` | Modifié sur une autre tablette : rechargé, recommencez | Changed on another tablet: reloaded, try again | Spremenjeno na drugi tablici: znova naloženo, poskusi ponovno |
 | `reglages.outOfRange` | Valeur hors limites | Value out of range | Vrednost izven meja |
 | `reglages.noSchema` | Schéma indisponible ({s}) | Schema unavailable ({s}) | Shema ni na voljo ({s}) |
+| `reglages.helpAria` | Aide : {label} | Help: {label} | Pomoč: {label} |
+| `reglages.helpRange` | Plage : {min} à {max} | Range: {min} to {max} | Obseg: {min} do {max} |
+| `reglages.helpDefault` | Défaut : {v} | Default: {v} | Privzeto: {v} |
+| `reglages.helpEmpty` | vide | empty | prazno |
+| `reglages.yes` | oui | yes | da |
+| `reglages.no` | non | no | ne |
 | `opt.computed` | calculé | computed | izračunan |
 | `opt.instrument` | instruments | instruments | instrumenti |
 | `opt.polar` | polaire | polar | polara |
@@ -272,6 +278,12 @@ Terms chosen (to confirm first):
 | `settings.bias_tau_decay_h` | Biais : décroissance (h) | Bias: decay (h) | Popravek: upadanje (h) |
 | `settings.race_start_local` | Fenêtre météo : début | Weather window: start | Vremensko okno: začetek |
 | `settings.race_end_local` | Fenêtre météo : fin | Weather window: end | Vremensko okno: konec |
+
+## Settings help (Réglages ? buttons)
+
+| key | fr | en (reference) | sl (to proofread) |
+|---|---|---|---|
+| `help.heading_offset_deg` | Correction ajoutée au cap du compas B&G et aux directions B&G qui en dérivent (TWD instruments, courant), avant la déclinaison. Laisser 0 si l'écart reste sous 3°. Au moteur, eau calme sans courant, cap stable 2 min : comparer nav.heading.true (Diag) au COG GPS ; à quai, à l'orientation du ponton sur la carte. Nouvelle valeur = valeur actuelle + (référence − cap affiché). Ex. : 115° lu, COG 120° → +5. | Correction added to the B&G compass heading and to the B&G directions derived from it (instrument TWD, current), before the variation. Leave 0 if the error stays under 3°. Under engine, calm water, no current, steady heading 2 min: compare nav.heading.true (Diag) with GPS COG; at the dock, with the pontoon's bearing on the chart. New value = current value + (reference − displayed heading). E.g. 115° read, COG 120° → +5. | Popravek, prištet smeri kompasa B&G in smerem B&G, ki iz nje izhajajo (TWD instrumentov, tok), pred deklinacijo. Pusti 0, če je odstopanje pod 3°. Na motor, mirna voda brez toka, stalna smer 2 min: primerjaj nav.heading.true (Diag) s COG GPS; ob pomolu z usmeritvijo pomola na karti. Nova vrednost = trenutna vrednost + (referenca − prikazana smer). Npr.: odčitano 115°, COG 120° → +5. |
 
 ## Lock
 

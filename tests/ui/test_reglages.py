@@ -86,3 +86,41 @@ def test_manual_wind_form_and_settings(page, feeder) -> None:
 
     assert page.external_requests == [], page.external_requests
     assert page.bad_responses == [], page.bad_responses
+
+
+def test_settings_help(page) -> None:
+    """Réglages "?" help (quick 261110-kxm): a toggle next to the label, collapsed by default,
+    expanding a short help and the schema's range/default line; the input keeps its label."""
+    pg = page.page
+    pg.goto(page.base_url + "/")
+    pg.click("button[data-tab=reglages]")
+    pg.wait_for_function(
+        "() => document.querySelectorAll('#settings-form .reglages-row').length > 10"
+    )
+    row = pg.locator("#settings-form .reglages-row[data-key=heading_offset_deg]")
+    btn = row.locator(".help-btn")
+    panel = pg.locator("#reglages-help-heading_offset_deg")
+    assert btn.get_attribute("aria-expanded") == "false"
+    assert btn.get_attribute("aria-controls") == "reglages-help-heading_offset_deg"
+    assert btn.get_attribute("aria-label") == "Aide : Décalage compas (°)"
+    assert btn.inner_text() == "?"
+    assert panel.is_hidden()
+    label = pg.evaluate(
+        "() => document.querySelector('#settings-form input[name=heading_offset_deg]')"
+        ".labels[0].textContent"
+    )
+    assert label == "Décalage compas (°)"
+
+    btn.click()
+    assert btn.get_attribute("aria-expanded") == "true"
+    assert panel.is_visible()
+    text = panel.inner_text()
+    assert "COG" in text, text
+    assert "Plage : -30 à 30 · Défaut : 0" in text, text
+
+    btn.click()
+    assert btn.get_attribute("aria-expanded") == "false"
+    assert panel.is_hidden()
+
+    assert page.external_requests == [], page.external_requests
+    assert page.bad_responses == [], page.bad_responses

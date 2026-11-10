@@ -47,6 +47,7 @@ SECTIONS = [
     ("reglages.", "Settings (Réglages)"),
     ("opt.", "Settings (Réglages)"),
     ("settings.", "Settings (Réglages)"),
+    ("help.", "Settings help (Réglages ? buttons)"),
     ("lock.", "Lock"),
     ("diag.", "Diagnostics page"),
     ("start.", "Start mode (Départ)"),

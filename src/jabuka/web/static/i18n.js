@@ -143,6 +143,24 @@ const SETTINGS_SL = {
   race_end_local: "Vremensko okno: konec",
 };
 
+// Settings help (Réglages "?" buttons): the key is the Settings model field
+// (jabuka/nav/settings.py); every fact (signs, formulas, which feature a setting affects) follows
+// the code. Plain prose, no {placeholders}; the range and default line is generated from the schema.
+const HELP_FR = {
+  heading_offset_deg:
+    "Correction ajoutée au cap du compas B&G et aux directions B&G qui en dérivent (TWD instruments, courant), avant la déclinaison. Laisser 0 si l'écart reste sous 3°. Au moteur, eau calme sans courant, cap stable 2 min : comparer nav.heading.true (Diag) au COG GPS ; à quai, à l'orientation du ponton sur la carte. Nouvelle valeur = valeur actuelle + (référence − cap affiché). Ex. : 115° lu, COG 120° → +5.",
+};
+
+const HELP_EN = {
+  heading_offset_deg:
+    "Correction added to the B&G compass heading and to the B&G directions derived from it (instrument TWD, current), before the variation. Leave 0 if the error stays under 3°. Under engine, calm water, no current, steady heading 2 min: compare nav.heading.true (Diag) with GPS COG; at the dock, with the pontoon's bearing on the chart. New value = current value + (reference − displayed heading). E.g. 115° read, COG 120° → +5.",
+};
+
+const HELP_SL = {
+  heading_offset_deg:
+    "Popravek, prištet smeri kompasa B&G in smerem B&G, ki iz nje izhajajo (TWD instrumentov, tok), pred deklinacijo. Pusti 0, če je odstopanje pod 3°. Na motor, mirna voda brez toka, stalna smer 2 min: primerjaj nav.heading.true (Diag) s COG GPS; ob pomolu z usmeritvijo pomola na karti. Nova vrednost = trenutna vrednost + (referenca − prikazana smer). Npr.: odčitano 115°, COG 120° → +5.",
+};
+
 const prefixed = (prefix, table) => Object.fromEntries(Object.entries(table).map(([k, v]) => [`${prefix}${k}`, v]));
 
 const FR = {
@@ -367,11 +385,18 @@ const FR = {
   "reglages.conflict": "Modifié sur une autre tablette : rechargé, recommencez",
   "reglages.outOfRange": "Valeur hors limites",
   "reglages.noSchema": "Schéma indisponible ({s})",
+  "reglages.helpAria": "Aide : {label}",
+  "reglages.helpRange": "Plage : {min} à {max}",
+  "reglages.helpDefault": "Défaut : {v}",
+  "reglages.helpEmpty": "vide",
+  "reglages.yes": "oui",
+  "reglages.no": "non",
   "opt.computed": "calculé",
   "opt.instrument": "instruments",
   "opt.polar": "polaire",
   "opt.sailed": "angles réels",
   ...prefixed("settings.", SETTINGS_FR),
+  ...prefixed("help.", HELP_FR),
   // -- lock (lock.js) ------------------------------------------------------------------------------
   "lock.lockAria": "Verrouiller l'écran",
   "lock.unlockAria": "Appui 2 s puis relâcher pour déverrouiller",
@@ -721,11 +746,18 @@ const EN = {
   "reglages.conflict": "Changed on another tablet: reloaded, try again",
   "reglages.outOfRange": "Value out of range",
   "reglages.noSchema": "Schema unavailable ({s})",
+  "reglages.helpAria": "Help: {label}",
+  "reglages.helpRange": "Range: {min} to {max}",
+  "reglages.helpDefault": "Default: {v}",
+  "reglages.helpEmpty": "empty",
+  "reglages.yes": "yes",
+  "reglages.no": "no",
   "opt.computed": "computed",
   "opt.instrument": "instruments",
   "opt.polar": "polar",
   "opt.sailed": "sailed angles",
   ...prefixed("settings.", SETTINGS_EN),
+  ...prefixed("help.", HELP_EN),
   "lock.lockAria": "Lock the screen",
   "lock.unlockAria": "Hold 2 s then release to unlock",
   "lock.hint": "LOCKED · hold 2 s, then release",
@@ -1075,11 +1107,18 @@ const SL = {
   "reglages.conflict": "Spremenjeno na drugi tablici: znova naloženo, poskusi ponovno",
   "reglages.outOfRange": "Vrednost izven meja",
   "reglages.noSchema": "Shema ni na voljo ({s})",
+  "reglages.helpAria": "Pomoč: {label}",
+  "reglages.helpRange": "Obseg: {min} do {max}",
+  "reglages.helpDefault": "Privzeto: {v}",
+  "reglages.helpEmpty": "prazno",
+  "reglages.yes": "da",
+  "reglages.no": "ne",
   "opt.computed": "izračunan",
   "opt.instrument": "instrumenti",
   "opt.polar": "polara",
   "opt.sailed": "dejanski koti",
   ...prefixed("settings.", SETTINGS_SL),
+  ...prefixed("help.", HELP_SL),
   "lock.lockAria": "Zakleni zaslon",
   "lock.unlockAria": "Pridrži 2 s in spusti za odklep",
   "lock.hint": "ZAKLENJENO · pridrži 2 s, nato spusti",

@@ -4,9 +4,24 @@
 .reglages-status { color: var(--warn); min-height: 1.4em; font-weight: 600; }
 .reglages-form { display: grid; gap: 6px; max-width: 720px; }
 .reglages-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
   padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 18px;
 }
+/* label + "?" help toggle; the help panel takes the full row width below (collapsed: hidden). */
+.reglages-name { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.help-btn {
+  flex: 0 0 auto; min-width: 48px; min-height: 48px; border-radius: 6px;
+  font-size: 22px; font-weight: 700; cursor: pointer;
+  color: var(--accent); background: var(--bg); border: 2px solid var(--line);
+}
+.help-btn[aria-expanded="true"] { border-color: var(--accent); }
+.reglages-help {
+  flex-basis: 100%; margin: 0 0 4px; padding: 6px 10px; font-size: 16px; line-height: 1.35;
+  color: var(--fg); border-left: 4px solid var(--accent);
+}
+.reglages-help p { margin: 0 0 4px; }
+.reglages-help-meta { color: var(--dim); }
+.reglages-help[hidden] { display: none; }
 .reglages-row input, .reglages-row select {
   min-height: 48px; min-width: 140px; font-size: 18px;
   color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 6px;

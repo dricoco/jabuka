@@ -8,7 +8,9 @@
 //   age come from the nav bus events. 422 errors are shown inline.
 // - a form generated from GET /api/settings/schema, saving one field per change with
 //   PUT {base_version, patch}; a 409 (edited on another tablet) reloads. Field labels come from
-//   i18n.js ("settings.<field>"), the schema's French "label" being the fallback.
+//   i18n.js ("settings.<field>"), the schema's French "label" being the fallback. A "?" button
+//   next to each label toggles a short help ("help.<field>") plus the schema's range and default
+//   (helpMeta); open helps stay open across re-renders (a save, a settings event).
 // DOM built with textContent only. Texts in the tablet's language (i18n.js).
 import { LANGS, getLang, setLang, t } from "./i18n.js";
 
@@ -191,11 +193,38 @@ function optionLabel(value) {
   return text === key ? String(value) : text;
 }
 
+// A number as the tablet writes it: decimal comma in fr and sl, point in en.
+function fmtNum(x) {
+  const s = String(x);
+  return getLang() === "en" ? s : s.replace(".", ",");
+}
+
+// Pure: the "Range: min to max · Default: v" line of a schema property ("" when nothing is known).
+export function helpMeta(prop) {
+  const spec = fieldSpec(prop);
+  const parts = [];
+  if (spec.kind === "number" && spec.min !== undefined && spec.max !== undefined) {
+    parts.push(t("reglages.helpRange", { min: fmtNum(spec.min), max: fmtNum(spec.max) }));
+  }
+  if ("default" in prop) {
+    const d = prop.default;
+    let v;
+    if (d === null) v = t("reglages.helpEmpty");
+    else if (typeof d === "boolean") v = t(d ? "reglages.yes" : "reglages.no");
+    else if (spec.kind === "enum") v = optionLabel(d);
+    else if (typeof d === "number") v = fmtNum(d);
+    else v = String(d);
+    parts.push(t("reglages.helpDefault", { v }));
+  }
+  return parts.join(" · ");
+}
+
 export function mount(ctx) {
   const root = ctx.section;
   if (!root) return;
   let schema = null;
   let current = null; // {version, settings}
+  const openHelp = new Set(); // fields whose help is expanded, kept across render()
   const form = el("form", { class: "reglages-form", id: "settings-form" });
   const status = el("div", { class: "reglages-status", "aria-live": "polite" });
   const title = el("h2", {}, t("tab.reglages"));
@@ -229,6 +258,7 @@ export function mount(ctx) {
       input = el("input", { type: "text", name: key });
       input.value = value ?? "";
     }
+    input.id = `reglages-in-${key}`;
     input.addEventListener("change", () => save(key, spec, input));
     return input;
   }
@@ -236,10 +266,43 @@ export function mount(ctx) {
   function render() {
     if (!schema || !current) return;
     const rows = Object.entries(schema.properties ?? {}).map(([key, prop]) => {
-      const row = el("label", { class: "reglages-row" });
-      const label = t(`settings.${key}`);
-      row.append(el("span", { class: "reglages-label" }, label === `settings.${key}` ? (prop.label ?? prop.title ?? key) : label));
-      row.append(inputFor(key, prop));
+      const row = el("div", { class: "reglages-row", "data-key": key });
+      const tr = t(`settings.${key}`);
+      const label = tr === `settings.${key}` ? (prop.label ?? prop.title ?? key) : tr;
+      const name = el("div", { class: "reglages-name" });
+      name.append(el("label", { class: "reglages-label", for: `reglages-in-${key}` }, label));
+      const help = t(`help.${key}`);
+      let panel = null;
+      if (help !== `help.${key}`) {
+        const panelId = `reglages-help-${key}`;
+        const open = openHelp.has(key);
+        const btn = el(
+          "button",
+          {
+            type: "button",
+            class: "help-btn",
+            "aria-expanded": open ? "true" : "false",
+            "aria-controls": panelId,
+            "aria-label": t("reglages.helpAria", { label }),
+          },
+          "?",
+        );
+        panel = el("div", { class: "reglages-help", id: panelId });
+        panel.hidden = !open;
+        panel.append(el("p", { class: "reglages-help-text" }, help));
+        const meta = helpMeta(prop);
+        if (meta) panel.append(el("p", { class: "reglages-help-meta" }, meta));
+        btn.addEventListener("click", () => {
+          const now = !openHelp.has(key);
+          if (now) openHelp.add(key);
+          else openHelp.delete(key);
+          btn.setAttribute("aria-expanded", now ? "true" : "false");
+          panel.hidden = !now;
+        });
+        name.append(btn);
+      }
+      row.append(name, inputFor(key, prop));
+      if (panel) row.append(panel);
       return row;
     });
     form.replaceChildren(...rows);
