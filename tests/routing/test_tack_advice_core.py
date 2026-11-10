@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -46,6 +47,63 @@ def _kept(fake_pool):
     return script
 
 
+def _iso(t: float) -> str:
+    return datetime.fromtimestamp(round(t), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(s: str) -> float:
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
+
+LEG2_END_BRG = 250.0  # leg 2 runs 3 nm at 250 deg from Plic Sestre
+
+
+def _two_legs(rh, delta_s: float = 420.0, old_extra_s: float | None = None):
+    """Script: optimal = two legs (Plic Sestre at +3600 s, tack at +900 s; then 3 nm at 250
+    deg in 1800 s with one tack 600 s after the mark, port -> starboard), forced = the current
+    leg held 600 s longer, arriving ``delta_s`` later at Plic Sestre. When the request carries
+    the displayed route (``old_path``) and ``old_extra_s`` is set, the cycle re-evaluates it to
+    the composed finish ETA + ``old_extra_s`` (old_valid True), like ``_kept``."""
+
+    def script(creq) -> CycleResult:
+        b = creq.base
+        t0 = b.t0
+        leg1 = rh.straight_route(
+            t0, b.lat, b.lon, eta_s=3600.0, tack_at_s=900.0, request_id=b.request_id
+        )
+        end = geo.offset(*rh.PLIC_SESTRE, math.radians(LEG2_END_BRG), 3.0)
+        mid = geo.offset(*rh.PLIC_SESTRE, math.radians(LEG2_END_BRG), 1.0)
+        mark2 = b.marks[1].mark_id if len(b.marks) >= 2 else "m2"
+        leg2 = (
+            PathPoint(t0 + 3600.0, *rh.PLIC_SESTRE, -40.0, -1, 6.0, 45.0, 18.0),
+            PathPoint(t0 + 4200.0, *mid, 40.0, 1, 6.0, 45.0, 18.0),
+            PathPoint(t0 + 5400.0, *end, 40.0, 1, 6.0, 45.0, 18.0),
+        )
+        opt = dataclasses.replace(
+            leg1,
+            path=(*leg1.path[:-1], *leg2),
+            tacks=(*leg1.tacks, TackPoint(t0 + 4200.0, *mid, -1, 1, "tack")),
+            legs=(
+                LegResult("plic-sestre", t0 + 3600.0, *rh.PLIC_SESTRE),
+                LegResult(mark2, t0 + 5400.0, *end),
+            ),
+            eta=t0 + 5400.0,
+        )
+        forced = rh.straight_route(
+            t0,
+            b.lat,
+            b.lon,
+            eta_s=3600.0 + delta_s,
+            tack_at_s=900.0 + 600.0,
+            request_id=b.request_id,
+        )
+        old = creq.old_path is not None and old_extra_s is not None
+        eta_old = opt.eta + delta_s + old_extra_s if old else None
+        return CycleResult(opt, forced, delta_s, eta_old, True if old else None, None, {})
+
+    return script
+
+
 def test_stay_on_tack_shows_the_forced_route_and_cancels(routing_core, fake_pool, rh) -> None:
     core, pos = _start(routing_core, fake_pool, rh)
     for bad in ({}, {"active": "oui"}, {"active": True, "x": 1}):
@@ -72,6 +130,38 @@ def test_stay_on_tack_shows_the_forced_route_and_cancels(routing_core, fake_pool
     nav = _run(core, pos, 1)
     assert nav["route"]["kind"] == "optimal" and nav["route"]["version"] == 3
     assert nav["route"]["stay"]["active"] is False
+
+
+def test_stay_route_keeps_the_later_legs(routing_core, fake_pool, rh) -> None:
+    """quick-261110-iil: with "On reste" the displayed route is the forced current leg + the
+    optimal continuation shifted by the forced delay (D-01), its ETA the finish (D-02), and the
+    helm still follows the forced leg (next tack = its first tack, D-05)."""
+    core, pos = _start(routing_core, fake_pool, rh)
+    fake_pool.script = _two_legs(rh, delta_s=420.0)
+    core.client.post("/api/route/stay", json={"active": True})
+    nav = _run(core, pos, 1)
+    r = nav["route"]
+    assert r["kind"] == "stay" and r["version"] == 2
+    t0 = fake_pool.requests[-1].base.t0
+    msg = core.client.get("/api/route").json()
+    assert msg["kind"] == "stay"
+    assert len(msg["legs"]) == 2
+    assert msg["legs"][0] == {"mark_id": "plic-sestre", "eta_utc": _iso(t0 + 4020.0)}
+    assert msg["legs"][1]["eta_utc"] == _iso(t0 + 5400.0 + 420.0)
+    assert msg["eta_utc"] == _iso(t0 + 5820.0)
+    feats = msg["geojson"]["features"]
+    line = next(f for f in feats if f["properties"]["role"] == "route")
+    end = geo.offset(*rh.PLIC_SESTRE, math.radians(LEG2_END_BRG), 3.0)
+    assert line["geometry"]["coordinates"][-1] == [round(end[1], 6), round(end[0], 6)]
+    tacks = {f["properties"]["t_utc"] for f in feats if f["properties"]["role"] == "tack"}
+    assert _iso(t0 + 1500.0) in tacks  # the forced tack
+    assert _iso(t0 + 3600.0 + 600.0 + 420.0) in tacks  # leg 2's tack, shifted by delta
+    nxt = [f for f in feats if f["properties"]["role"] == "next_tack"]
+    assert len(nxt) == 1 and nxt[0]["properties"]["t_utc"] == _iso(t0 + 1500.0)
+    # nav block: finish ETA and the forced arrival at the active mark (D-02)
+    assert _parse_iso(r["eta_utc"]) == pytest.approx(t0 + 5820.0, abs=5.0)
+    assert _parse_iso(r["leg_eta_utc"]) == pytest.approx(t0 + 4020.0, abs=5.0)
+    assert r["countdown_s"] == pytest.approx(1500.0, abs=3.0)
 
 
 def test_a_detected_tack_clears_stay_and_reroutes(routing_core, fake_pool, rh) -> None:

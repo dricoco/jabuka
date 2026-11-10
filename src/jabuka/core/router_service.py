@@ -61,6 +61,7 @@ from jabuka.route.racepack import (
     pack_fingerprint,
     window_from_local,
 )
+from jabuka.route.stay import stay_route
 from jabuka.route.types import (
     FAIL_LAND,
     FAIL_PACK,
@@ -970,7 +971,14 @@ class RouterService:
         f = res.forced
         if req.stay_active and self.stay.active:
             if f is not None and f.ok and f.valid and f.path:
-                shown, kind = f, "stay"
+                # forced current leg + the optimal continuation shifted by the forced delay
+                # (quick-261110-iil D-01/D-02); a composition bug must never drop the cycle
+                try:
+                    shown = stay_route(f, opt)
+                except Exception:  # noqa: BLE001 - best effort: the forced leg alone still steers
+                    log.exception("stay route composition failed: forced leg only")
+                    shown = f
+                kind = "stay"
         forced_eff = forced or self._force_carry
         if self.route is not None and self.route.kind != kind:
             forced_eff = True
@@ -982,6 +990,10 @@ class RouterService:
             age = now - self.route.t0
             if "off_route" in reasons or "tack" in reasons:  # outdated for this boat
                 age = max(age, ROUTE_MAX_AGE_S + 1.0)
+            # D-04: shown.eta is the composed finish ETA, the same span as eta_old_now (the
+            # displayed route re-evaluated by the worker). A stay cycle that falls back to the
+            # forced leg alone (stay_route) compares a leg ETA with a finish ETA once: at worst
+            # one extra, harmless replacement.
             replace, why = should_replace(
                 float(shown.eta if shown.eta is not None else math.inf),
                 now,
@@ -1115,7 +1127,10 @@ class RouterService:
 
     @staticmethod
     def _whole_eta(req: CycleRequest, shown: RouteResult, kind: str) -> float | None:
-        """ETA of the shown route (a "stay" route covers the current leg only)."""
+        """ETA of the shown route. A "stay" route is composed (route/stay.py: the forced
+        current leg + the same cycle's optimal continuation shifted by the forced delay), so its
+        eta is the finish ETA like an optimal route's; only when the composition is not
+        possible (last leg, or a fallback) is it the forced leg's ETA."""
         return shown.eta
 
     # -- advice ------------------------------------------------------------------------------
