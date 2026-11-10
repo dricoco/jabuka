@@ -63,6 +63,7 @@ def test_dry_run_prints_every_required_step(dry_run) -> None:
         "/opt/fastnet2ip/venv/bin/pip install --no-index --find-links "
         "/opt/jabuka/wheelhouse/fastnet2ip --require-hashes -r /opt/jabuka/fastnet2ip.lock",
         "/etc/systemd/system/jabuka-fastnet-relay.service",
+        "/etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt",
         # g2: emergency weather prep venv on the Pi, separate from the app venv
         "python3 -m venv /opt/jabuka-prep/venv",
         "/opt/jabuka-prep/venv/bin/pip install --no-index --find-links /opt/jabuka/wheelhouse "
@@ -107,6 +108,7 @@ def test_dry_run_order(dry_run) -> None:
         "systemctl enable --now chrony.service",
         "systemctl enable --now gpsd.service",
         "useradd",
+        "/etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt",
         "--require-hashes",
         "/opt/fastnet2ip/venv/bin/pip install",
         "/opt/jabuka-prep/venv/bin/pip install",
@@ -119,6 +121,33 @@ def test_dry_run_order(dry_run) -> None:
     assert positions == sorted(positions), list(zip(order, positions, strict=True))
     # the AP comes up last of all mutating commands
     commands = [line for line in out.splitlines() if line.startswith("+ ")]
+    assert commands[-1] == "+ nmcli connection up jabuka-ap"
+
+
+DISPATCHER_DEST = "/etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt"
+DISPATCHER_ENABLE = "+ systemctl enable NetworkManager-dispatcher.service"
+
+
+def _dispatcher_lines(stdout: str) -> tuple[list[str], list[str]]:
+    commands = [line for line in stdout.splitlines() if line.startswith("+ ")]
+    installs = [
+        c for c in commands if c.startswith("+ install ") and c.endswith(" " + DISPATCHER_DEST)
+    ]
+    return commands, installs
+
+
+def test_dry_run_installs_the_ap_keymgmt_dispatcher_before_the_ap(dry_run) -> None:
+    """brcmfmac key_mgmt fix: root:root 0755 (NM ignores other dispatcher scripts), enabled."""
+    assert dry_run.returncode == 0, dry_run.stdout + dry_run.stderr
+    commands, installs = _dispatcher_lines(dry_run.stdout)
+    assert len(installs) == 1, installs
+    assert "-D -o root -g root -m 0755" in installs[0], installs[0]
+    src = installs[0].split()[-2]
+    assert src.endswith("deploy/nm-dispatcher/90-jabuka-ap-keymgmt"), installs[0]
+    assert DISPATCHER_ENABLE in commands
+    up = commands.index("+ nmcli connection up jabuka-ap")
+    assert commands.index(installs[0]) < up
+    assert commands.index(DISPATCHER_ENABLE) < up
     assert commands[-1] == "+ nmcli connection up jabuka-ap"
 
 

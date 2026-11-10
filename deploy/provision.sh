@@ -242,6 +242,14 @@ fi
 if [ -f "$SCRIPT_DIR/jabuka-wifi" ]; then
     run install -m 0755 "$SCRIPT_DIR/jabuka-wifi" /usr/local/sbin/jabuka-wifi
 fi
+# brcmfmac key_mgmt fix for the AP (WPA-PSK only), see PI-SETUP.md section 4 g. Installed always,
+# also with --skip-ap, because jabuka-wifi can bring the AP up at any time.
+[ -f "$SCRIPT_DIR/nm-dispatcher/90-jabuka-ap-keymgmt" ] \
+    || die 3 "missing file in the repo: $SCRIPT_DIR/nm-dispatcher/90-jabuka-ap-keymgmt"
+# Explicit owner: NetworkManager ignores dispatcher scripts not owned by root.
+run install -D -o root -g root -m 0755 "$SCRIPT_DIR/nm-dispatcher/90-jabuka-ap-keymgmt" \
+    /etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt
+run_tolerant systemctl enable NetworkManager-dispatcher.service
 run python3 -m venv "$VENV"
 run "$VENV/bin/pip" install --no-index --find-links "$OPT/wheelhouse" --require-hashes \
     -r "$OPT/requirements.lock"

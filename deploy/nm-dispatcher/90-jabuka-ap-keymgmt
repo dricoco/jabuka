@@ -1,0 +1,98 @@
+#!/bin/bash
+# NetworkManager dispatcher: when the boat access point "jabuka-ap" comes up on wlan0, reset
+# wpa_supplicant's key_mgmt of that network to plain WPA-PSK.
+#
+# Why: on the Pi 3B (NetworkManager 1.52, brcmfmac firmware without MFP/SAE) NetworkManager hands
+# wpa_supplicant key_mgmt "WPA-PSK WPA-PSK-SHA256" even with wifi-sec.pmf disable. The firmware
+# beacons its own RSN IE (PSK only) while message 3 of the 4-way handshake carries PSK +
+# PSK-SHA256: clients see the mismatch and drop right after M3, although the passphrase is right.
+#
+# Installed by deploy/provision.sh as /etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt,
+# root:root 0755 (NetworkManager ignores dispatcher scripts not owned by root or writable by
+# group/other). Every activation of jabuka-ap fires the same "up" event, so all paths are covered:
+# boot autoconnect, provision, `sudo jabuka-wifi ap` and its fallbacks, NetworkManager's own
+# fallback when the phone hotspot disappears. Log: journalctl -t jabuka-wifi (PI-SETUP.md 4 g).
+# Test hooks: JABUKA_WPA_CLI, JABUKA_WIFI_RUN_DIR. nm-dispatcher builds the environment itself,
+# so only the tests (or root) can set them.
+#
+# Never breaks NetworkManager: errexit is never enabled and the script always exits 0.
+set -u
+
+# nm-dispatcher may give no PATH, and bash's default PATH has no sbin dirs (wpa_cli is in
+# /usr/sbin). Appended, never prepended, so test stubs placed first still win.
+PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin"
+export PATH
+
+IFACE=wlan0
+AP_CON=jabuka-ap
+AP_SSID=jabuka
+TAG=jabuka-wifi
+WPA_CLI="${JABUKA_WPA_CLI:-wpa_cli}"
+
+log() { logger -t "$TAG" -- "$*" 2>/dev/null || true; }
+
+wpa() { "$WPA_CLI" -i "$IFACE" "$@" 2>&1; }
+
+is_id() { case "${1:-}" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# pick_id: read `list_networks` output on stdin, print the id of the AP network: the row whose
+# ssid is jabuka, else the first [CURRENT] row, else nothing. Header and noise rows (first field
+# not all digits) are skipped.
+pick_id() {
+    local id ssid bssid flags current=""
+    while IFS=$'\t' read -r id ssid bssid flags; do
+        is_id "$id" || continue
+        if [ "$ssid" = "$AP_SSID" ]; then
+            printf '%s\n' "$id"
+            return 0
+        fi
+        case "$flags" in
+            *'[CURRENT]'*) [ -n "$current" ] || current="$id" ;;
+        esac
+    done
+    [ -n "$current" ] && printf '%s\n' "$current"
+    return 0
+}
+
+# lookup: set NET_ID and KEY_MGMT for the AP network; non-zero if not found.
+lookup() {
+    local listing
+    NET_ID=""
+    KEY_MGMT=""
+    listing="$(wpa list_networks)" || return 1
+    NET_ID="$(pick_id <<<"$listing")"
+    is_id "$NET_ID" || return 1
+    KEY_MGMT="$(wpa get_network "$NET_ID" key_mgmt)" || return 1
+    KEY_MGMT="$(printf '%s' "$KEY_MGMT" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$KEY_MGMT" ] || return 1
+    return 0
+}
+
+# apply ID OLD: plain WPA-PSK, then re-select the network so the AP restarts with it.
+apply() {
+    local id="$1" old="$2"
+    is_id "$id" || return 0
+    wpa set_network "$id" key_mgmt WPA-PSK >/dev/null
+    wpa disconnect >/dev/null
+    wpa select_network "$id" >/dev/null
+    log "$AP_CON : key_mgmt « $old » -> WPA-PSK sur le réseau $id (brcmfmac sans PSK-SHA256), AP relancé"
+}
+
+main() {
+    [ "${1:-}" = "$IFACE" ] || return 0
+    [ "${2:-}" = up ] || return 0
+    [ "${CONNECTION_ID:-}" = "$AP_CON" ] || return 0
+
+    if ! command -v "$WPA_CLI" >/dev/null 2>&1; then
+        log "wpa_cli introuvable : correctif key_mgmt de $AP_CON non appliqué"
+        return 0
+    fi
+    lookup || return 0
+    case "$KEY_MGMT" in
+        *WPA-PSK-SHA256*) apply "$NET_ID" "$KEY_MGMT" ;;
+    esac
+    return 0
+}
+
+main "$@"
+exit 0
