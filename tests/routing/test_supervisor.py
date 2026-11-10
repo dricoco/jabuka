@@ -488,6 +488,91 @@ def test_accelerated_sim_clock_never_recycles_a_slow_job(routing_core, rh) -> No
         _unwedge(made)
 
 
+def _wait_watch(core, pos) -> None:
+    """Same-time ticks until the watchdog is timing the running job (the first tick after the
+    submit sees stats["running"] == 1)."""
+    for _ in range(5):
+        core.sail(*pos, 157.0)
+        core.tick(0.0)
+        if core.call(lambda: core.router._pool_watch is not None):
+            return
+    raise AssertionError("the watchdog never saw the running job")
+
+
+# quick-261110-lqa: the converse, a job really stuck 121 s is recycled even with a frozen sim clock
+def test_stuck_job_is_recycled_on_real_time_while_the_sim_clock_stands_still(
+    routing_core, rh
+) -> None:
+    from jabuka.core.router_service import POOL_STUCK_S
+
+    made: list = []
+
+    def factory():
+        p = rh.FakePool()
+        p.hold = not made  # the first job is wedged
+        made.append(p)
+        return p
+
+    core = routing_core(pool_factory=factory, real_clock=True)
+    pos = rh.boat_near_plic(2.0)
+    t0 = core.clock.monotonic()
+    try:
+        core.sail(*pos, 157.0)
+        core.tick(1.0)  # submits the job
+        _wait_watch(core, pos)
+        core.advance_real(POOL_STUCK_S + 1.0)
+        core.sail(*pos, 157.0)
+        nav = core.tick(0.0)
+        assert len(made) == 2, "a job stuck for 121 real s must be recycled"
+        assert core.router.health()["pool_recycled"] == 1
+        alerts = [a for a in nav["alerts"] if a.startswith("ROUTEUR RELANCÉ")]
+        assert alerts and "calcul bloqué depuis plus de 120 s" in alerts[0], nav["alerts"]
+        assert core.clock.monotonic() - t0 <= 1.0
+    finally:
+        _unwedge(made)
+
+
+# quick-261110-lqa: after a failed re-creation the next attempt waits POOL_RETRY_S real seconds
+def test_pool_recreation_retry_waits_real_seconds(routing_core, rh) -> None:
+    from jabuka.core.router_service import POOL_RETRY_S, POOL_STUCK_S
+
+    made: list = []
+    calls = [0]
+
+    def factory():
+        calls[0] += 1
+        if calls[0] == 2:
+            raise OSError(12, "Cannot allocate memory")
+        p = rh.FakePool()
+        p.hold = not made  # the first job is wedged
+        made.append(p)
+        return p
+
+    core = routing_core(pool_factory=factory, real_clock=True)
+    core.real_rate = 1.0 / 20.0  # the soak's --speed 20
+    pos = rh.boat_near_plic(2.0)
+    try:
+        core.sail(*pos, 157.0)
+        core.tick(1.0)  # submits the job
+        _wait_watch(core, pos)
+        core.advance_real(POOL_STUCK_S + 1.0)
+        core.sail(*pos, 157.0)
+        core.tick(0.0)
+        assert core.router.health()["pool_recycled"] == 1
+        assert core.router.pool is None and calls[0] == 2  # the re-creation failed
+        for _ in range(200):  # 200 sim s = 10 real s < POOL_RETRY_S
+            core.sail(*pos, 157.0)
+            core.tick(1.0)
+        assert calls[0] == 2 and core.router.pool is None
+        core.advance_real(POOL_RETRY_S)
+        core.sail(*pos, 157.0)
+        core.tick(0.0)
+        assert calls[0] == 3
+        assert core.router.pool is made[1]
+    finally:
+        _unwedge(made)
+
+
 # 04-05 (04-REVIEW WR-05): a routing cycle lost to a recycled pool is a failed cycle
 def _shown_route_then_wedge(routing_core, rh):
     """First route adopted (version 1) from an answering pool, then that pool and every later

@@ -1,5 +1,7 @@
 """Inject the clock everywhere: core/, common/ (except common/clock.py), nav/ and route/ never read
-the time directly (route/ may time itself with time.perf_counter, which is not banned)."""
+the time directly (route/ may time itself with time.perf_counter, which is not banned).
+common.clock.os_monotonic is the OS clock for process supervision only: allowed in
+core/router_service.py (the router pool watchdog, quick-261110-lqa) and nowhere else."""
 
 from __future__ import annotations
 
@@ -113,3 +115,49 @@ def test_detector_catches_violations(tmp_path: Path) -> None:
         "a = time.time()\nb = time.monotonic()\nc = datetime.now()\nd = datetime.utcnow()\n"
     )
     assert len(_violations(sample)) == 5
+
+
+OS_MONOTONIC_ALLOWED = {"common/clock.py", "core/router_service.py"}
+
+
+def _os_monotonic_uses(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    rel = path.relative_to(PKG).as_posix() if path.is_relative_to(PKG) else path.name
+    out = []
+    for node in ast.walk(tree):
+        name = (
+            node.id
+            if isinstance(node, ast.Name)
+            else node.attr
+            if isinstance(node, ast.Attribute)
+            else None
+        )
+        if name == "os_monotonic":
+            out.append(f"{rel}:{node.lineno} os_monotonic")
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "os_monotonic":
+                    out.append(f"{rel}:{node.lineno} os_monotonic")
+    return out
+
+
+def test_os_monotonic_stays_in_process_supervision() -> None:
+    """The OS clock bypasses the injected (sim) Clock: only the worker supervision may use it."""
+    files = _scanned() + [PKG / "common" / "clock.py"]
+    bad = [
+        v
+        for f in files
+        if f.relative_to(PKG).as_posix() not in OS_MONOTONIC_ALLOWED
+        for v in _os_monotonic_uses(f)
+    ]
+    assert bad == [], "os_monotonic is for process supervision only:\n" + "\n".join(bad)
+
+
+def test_os_monotonic_detector(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from jabuka.common.clock import os_monotonic\n"
+        "import jabuka.common.clock as c\n"
+        "a = os_monotonic()\nb = c.os_monotonic()\nf = os_monotonic\n"
+    )
+    assert len(_os_monotonic_uses(sample)) == 4
