@@ -38,15 +38,15 @@ SUPPORT = [
     ("VESA_Head", 1, (120, 79, 120), 120.8, "Tête VESA 100 (inclinaison). <b>1 écrou M8 captif</b> (inclinaison)."),
 ]
 BOITE = [
-    ("BOX_Boite", 1, (247, 14, 192), 196.6, "Boîte (logement tablette). <b>8 écrous M3 captifs</b>, fentes ouvertes côté logement. Min. 3 périmètres (peau de 0,7 mm devant les écrous)."),
-    ("BOX_Cadre", 1, (247, 3, 192), 46.5, "Cadre avant (fenêtre écran, encoche bouton home, drains)."),
+    ("BOX_Boite", 1, (250, 14, 192), 202.0, "Boîte (logement tablette). <b>8 écrous M3 captifs</b>, fentes ouvertes côté logement. Min. 3 périmètres (peau de 0,7 mm devant les écrous)."),
+    ("BOX_Cadre", 1, (250, 3, 192), 48.9, "Cadre avant (fenêtre écran, encoche bouton home). Drains en rainure au dos, peau de 1 mm côté écran : une seule pièce. Imprimer face avant sur le plateau."),
     ("BOX_Poussoir", 1, (8, 8, 8), 0.2, "Poussoir du bouton marche/arrêt, mis en place par l'intérieur avant la tablette."),
     ("BOX_Module_powerbank", 1, (120, 21, 192), 209.8, "Module powerbank + interface VESA. <b>8 écrous M4 + 2 écrous M3 captifs</b>, fentes ouvertes vers le logement powerbank."),
     ("BOX_Bouchon", 1, (120, 21, 47), 15.2, "Bouchon inférieur (tient la powerbank, sorties câbles vers le bas)."),
 ]
 
 QUINC = [
-    ("Support", "Collier de serrage inox W5 (316), 60–80 mm, bande 12 mm", 4, "2 par berceau, dans les tunnels, vis côté extérieur (jamais vers les rayons)"),
+    ("Support", "Collier de serrage inox A4 (316), 60–80 mm, bande 12 mm", 4, "2 par berceau, dans les tunnels, vis côté extérieur (jamais vers les rayons)"),
     ("Support", "Vis M6 × 45 + rondelle large (M6 × 18)", 2, "Pivots : poutre → coulisseau → berceau. <b>Pas plus longue que 45</b> (le bout arrive au fond du V)"),
     ("Support", "Vis M6 × 20 + rondelle", 4, "Pied de colonne → poutre"),
     ("Support", "Écrou M6 (DIN 934, 10 mm s/plats)", 6, "4 dans la poutre, 1 par berceau"),
@@ -125,7 +125,7 @@ SHOP = [
     ("Visserie", "Écrous M3", "14", "10 utilisés + 4 rechange (ça se perd)"),
     ("Serrage", "Bouton étoile/lobé M8 à tige filetée, tige 50 mm", "1", "lacet. <b>Si introuvable :</b> vis hexagonale M8 × 50 (un bouton à enfoncer sur la tête pourra être imprimé)"),
     ("Serrage", "Bouton étoile/lobé M8 à tige filetée, tige 45 mm", "1", "inclinaison. <b>Si introuvable :</b> vis hexagonale M8 × 45 (ou M8 × 50)"),
-    ("Plomberie", "Colliers de serrage inox, plage 60–80 mm, bande 12 mm (W5 si possible)", "4", "tubes du piédestal Ø40 + caoutchouc ; vérifier la plage sur l'étiquette"),
+    ("Plomberie", "Colliers de serrage inox A4, plage 60–80 mm, bande 12 mm. En slovène : <i>inox cevna objemka</i> ; kamm.si : « RF OBJEMKA CEV. 60-80/12 3017 A4 »", "4 (+1)", "pas de zingué ; 70–90 ne serre pas assez (il faut ≈ Ø66) ; 50–70 passe en dépannage, en fin de course"),
     ("Cycle / divers", "Chambre à air vélo usagée (ou plaque caoutchouc 2 mm)", "1", "garniture du V des berceaux"),
     ("Isolation", "Joint mousse EPDM adhésif, ~1,5–2 mm d'épaisseur", "1 rouleau", "dos de la tablette"),
 ]

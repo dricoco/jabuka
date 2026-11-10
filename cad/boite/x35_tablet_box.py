@@ -148,7 +148,7 @@ def build():
     fr = fr.cut(box(XC - HOME_W / 2, XC + HOME_W / 2, Y_RIM - 1, Y_FR + 1,
                     ZC + ACT_H / 2, ZC + T_H / 2 - 1.0))                 # home button notch
     for xd in X_DRAIN:                    # rain drains at the bottom of the window
-        fr = fr.cut(box(xd - 5, xd + 5, Y_RIM - 1, Y_FR + 1, -OZ - 1, ZC - ACT_H / 2 - WIN_M + 1))
+        fr = fr.cut(box(xd - 5, xd + 5, Y_RIM - 1, Y_FR - 1.0, -OZ - 1, ZC - ACT_H / 2 - WIN_M + 1))   # drain groove on the back face, 1 mm front skin keeps the frame in one piece
     for x in FR_X:
         for z in (-Z_SCREW, Z_SCREW):
             fr = fr.cut(csk(x, Y_FR, z, 1, L=8))
