@@ -18,8 +18,12 @@ from the mark measured in the local frame.
 - The previous MARK (not the boat) fixes b_in, so the waypoints do not move between reruns.
   Waypoints of the first mark already passed (boat inside the zone and past them in sweep order)
   are dropped; when all are passed the mark is skipped.
-- Side "none" or the last mark of the course: one waypoint at the mark itself ("mark" /
-  "finish").
+- Side "none": one waypoint at the mark itself ("mark"). The last mark of the course ("finish"):
+  the mark itself when its side is "none" and its centre is clear water (Vodice); otherwise
+  (rounding side, or centre on land such as the Blitvenica islet) one waypoint on its radius
+  circle on the approach side (towards the previous mark, the boat when there is none), pushed
+  outward like the rounding waypoints (the centre when no clear point is found on that bearing:
+  the router then snaps it to clear water or fails with "cible dans la terre").
 - A waypoint inside the land mask is pushed radially outward in 0.02 nm steps (up to 0.5 nm) with
   a note; otherwise ValueError with a French reason naming the mark.
 """
@@ -128,6 +132,18 @@ def expand(
         next_pos = (marks[i + 1].lat, marks[i + 1].lon) if i + 1 < n else None
         arc = _arc(prev_pos, m, next_pos, frame)
         if arc is None:
+            if i == n - 1 and (m.side in ("port", "stbd") or not _clear(mask, frame, m.lat, m.lon)):
+                bearing = _bearing(frame, (m.lat, m.lon), prev_pos)
+                if bearing is None:
+                    bearing = _bearing(frame, (m.lat, m.lon), (boat_lat, boat_lon))
+                if bearing is None:
+                    bearing = 0.0
+                try:
+                    lat, lon = _push(mask, frame, m, bearing, notes)
+                except ValueError:  # no water on that bearing: the centre, snapped by the router
+                    lat, lon = m.lat, m.lon
+                out.append(Waypoint(lat, lon, m.mark_id, "finish", i))
+                continue
             out.append(Waypoint(m.lat, m.lon, m.mark_id, "finish" if i == n - 1 else "mark", i))
             continue
         a1, sweep, direction = arc

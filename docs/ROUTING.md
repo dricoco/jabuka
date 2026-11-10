@@ -127,7 +127,9 @@ VMG targets inside the upwind/downwind cone (the layline tack is not rounded to 
 The course is routed mark by mark through rounding waypoints on a circle of the mark's radius,
 on the required side (starboard clockwise, port counter-clockwise, one waypoint per 90 deg of
 turn; a mark passed while the course bends away from it gets an abeam waypoint plus an entry
-waypoint, no loop). Every shipped polyline (at most 300 points after mask-aware decimation) is
+waypoint, no loop). The last mark is targeted at its centre when it is a plain finish point in
+open water (Vodice); otherwise (rounding side, or centre on land such as Blitvenica) at the point
+of its radius circle facing the previous mark, pushed into open water. Every shipped polyline (at most 300 points after mask-aware decimation) is
 re-validated against the mask; an invalid one is never returned.
 
 One worker cycle (`run_cycle`) answers both questions from the same snapshot: the optimal route

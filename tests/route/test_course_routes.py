@@ -15,6 +15,7 @@ else:  # Phase 2 worktrees without numpy skip instead of failing
     np = pytest.importorskip("numpy")
 
 from jabuka.route.isochrone import route  # noqa: E402
+from jabuka.route.rounding import expand  # noqa: E402
 from jabuka.route.types import LEVELS  # noqa: E402
 
 T0 = 1793923200.0
@@ -142,3 +143,37 @@ def test_leg_eta_matches_mark(run, mask) -> None:
             (leg.lat - m.lat) * 60, (leg.lon - m.lon) * 60 * math.cos(math.radians(m.lat))
         )
         assert d <= m.radius_nm + 0.35  # at the mark's last waypoint (or the snapped finish)
+
+
+# ------------------------------------------------- course ending on an islet (quick 261110-klg)
+def _islet_marks(course, shape: str):
+    start, marks = course("A")
+    plic, jab, blit = marks[0], marks[1], marks[2]
+    if shape == "plic-blit-stbd":
+        return start, (plic, blit)
+    if shape == "plic-blit-none":
+        return start, (plic, blit._replace(side="none"))
+    return start, (plic, jab, blit)  # Course A without its Vodice finish (reported shape)
+
+
+@pytest.mark.parametrize("shape", ["plic-blit-stbd", "plic-blit-none", "a-without-finish"])
+def test_course_ending_on_an_islet_routes_to_its_circle(
+    shape, course, mask, env_factory, uniform_wind, course_geofields, make_request
+) -> None:
+    start, marks = _islet_marks(course, shape)
+    env = env_factory(uniform_wind(225.0, 12.0), geofields=course_geofields)
+    req = make_request(start.lat, start.lon, marks, prev_mark=start, t0=T0, tack0=1)
+    r = route(req, env)
+    assert r.ok, r.reason
+    assert [leg.mark_id for leg in r.legs] == [m.mark_id for m in marks]
+    xs, ys = mask.frame.to_xy(np.array([p.lat for p in r.path]), np.array([p.lon for p in r.path]))
+    v0 = 1 if r.start_in_margin else 0
+    ok, bad = mask.validate_polyline(xs[v0:], ys[v0:])
+    assert ok, f"segment {bad} crosses the mask"
+    fin = expand(start, marks, start.lat, start.lon, mask)[-1]
+    fx, fy = mask.frame.to_xy(fin.lat, fin.lon)
+    for lat, lon in ((r.path[-1].lat, r.path[-1].lon), (r.legs[-1].lat, r.legs[-1].lon)):
+        x, y = mask.frame.to_xy(lat, lon)
+        assert math.hypot(x - fx, y - fy) <= 0.05
+    assert "cible dans la terre" not in (r.reason or "")
+    assert not any("cible dans la terre" in n for n in r.notes)

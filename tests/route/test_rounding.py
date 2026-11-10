@@ -140,3 +140,92 @@ def test_unpushable_waypoint_fails_in_french(course, mask) -> None:
     inland = CourseMark("x", "Intérieur", 43.80, 15.95, "stbd", 0.1)  # deep on the mainland
     with pytest.raises(ValueError, match="Intérieur"):
         expand(start, (inland, *marks[1:]), start.lat, start.lon, mask)
+
+
+# --------------------------------------------------------------- last mark (quick 261110-klg)
+def _brg_f(frame, mark: CourseMark, lat: float, lon: float) -> float:
+    mx, my = frame.to_xy(mark.lat, mark.lon)
+    x, y = frame.to_xy(lat, lon)
+    return math.degrees(math.atan2(x - mx, y - my)) % 360.0
+
+
+def _dist_f(frame, mark: CourseMark, lat: float, lon: float) -> float:
+    mx, my = frame.to_xy(mark.lat, mark.lon)
+    x, y = frame.to_xy(lat, lon)
+    return math.hypot(x - mx, y - my)
+
+
+def _adiff(a: float, b: float) -> float:
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def _blit_plic(course):
+    start, marks = course("A")
+    plic, blit = marks[0], marks[2]
+    assert (plic.mark_id, blit.mark_id) == ("plic-sestre", "blitvenica")
+    return start, plic, blit
+
+
+@pytest.mark.parametrize(("side", "radius"), [("stbd", 0.55), ("none", 0.55), ("none", 0.0)])
+def test_last_islet_mark_targets_its_circle_on_the_approach_side(
+    course, mask, side, radius
+) -> None:
+    """Blitvenica's centre is on the islet: the finish waypoint is a clear point of its radius
+    circle facing the previous mark (Plić Sestre), pushed outward when the circle is on land."""
+    start, plic, blit = _blit_plic(course)
+    last = blit._replace(side=side, radius_nm=radius)
+    notes: list[str] = []
+    wps = expand(start, (plic, last), start.lat, start.lon, mask, notes)
+    w = wps[-1]
+    assert (w.kind, w.mark_id, w.mark_index) == ("finish", "blitvenica", 1)
+    f = mask.frame
+    x, y = f.to_xy(w.lat, w.lon)
+    assert bool(mask.points_clear(x, y)[0])
+    snap = mask.snap_clear(x, y, 1.0)
+    assert snap is not None and snap[2] is False
+    d = _dist_f(f, last, w.lat, w.lon)
+    assert radius - 1e-6 <= d <= radius + 0.5 + 1e-6
+    assert d > 0.0
+    to_plic = _brg_f(f, last, plic.lat, plic.lon)
+    assert _adiff(_brg_f(f, last, w.lat, w.lon), to_plic) <= 1.5
+    if radius == 0.0:
+        assert any("Blitvenica" in n for n in notes)
+
+
+def test_last_buoy_with_a_side_targets_its_circle() -> None:
+    plic = CourseMark("plic-sestre", "Plić Sestre", 43.684627, 15.811626, "stbd", 0.3)
+    start = CourseMark("vodice", "Vodice", 43.75, 15.78, "none", 0.15)
+    m2 = CourseMark("m2", "M2", 43.751111, 15.778849, "stbd", 0.1)
+    w = expand(start, (plic, m2), start.lat, start.lon)[-1]
+    assert (w.kind, w.mark_id) == ("finish", "m2")
+    assert _dist(m2, w) == pytest.approx(0.1, abs=1e-6)
+    to_plic = _brg_f(DEFAULT_FRAME, m2, plic.lat, plic.lon)
+    assert _adiff(_brg(m2, w), to_plic) <= 1e-6
+
+
+def test_vodice_finish_keeps_its_centre_with_the_mask(course, mask) -> None:
+    start, marks = course("A")
+    notes: list[str] = []
+    w = expand(start, marks, start.lat, start.lon, mask, notes)[-1]
+    assert w.kind == "finish" and w.mark_id == "vodice"
+    assert (w.lat, w.lon) == (marks[-1].lat, marks[-1].lon)
+    assert not any("Vodice" in n for n in notes)
+
+
+def test_single_last_mark_faces_the_previous_mark_else_the_boat(course, mask) -> None:
+    start, plic, blit = _blit_plic(course)
+    f = mask.frame
+    boat = (43.70, 15.50)  # north-west of Blitvenica, far from the Plić Sestre bearing
+    w = expand(plic, (blit,), *boat, mask)[-1]
+    assert _adiff(_brg_f(f, blit, w.lat, w.lon), _brg_f(f, blit, plic.lat, plic.lon)) <= 1.5
+    w2 = expand(None, (blit,), *boat, mask)[-1]
+    assert _adiff(_brg_f(f, blit, w2.lat, w2.lon), _brg_f(f, blit, *boat)) <= 1.5
+
+
+def test_unplaceable_last_mark_keeps_its_centre(course, mask) -> None:
+    """Deep inland: no circle point at sea on the approach bearing -> the centre (the router's
+    snap then fails with "cible dans la terre"), never a rounding ValueError."""
+    start, marks = course("A")
+    inland = CourseMark("x", "Intérieur", 43.80, 15.95, "none", 0.0)
+    w = expand(start, (marks[0], inland), start.lat, start.lon, mask)[-1]
+    assert (w.kind, w.lat, w.lon) == ("finish", inland.lat, inland.lon)
