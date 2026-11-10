@@ -150,6 +150,18 @@ Race-pack step on the laptop, after `land build`:
 .venv/bin/python -m jabuka.prep.cli geofields --marks src/jabuka/nav/data/marks.json --out var/racepack
 ```
 
+### Worker supervision: which clock
+
+The pool watchdog's stuck threshold (`POOL_STUCK_S`, 120 s) and its creation back-off
+(`POOL_RETRY_S`, 30 s) run on the OS monotonic clock (`jabuka.common.clock.os_monotonic`,
+injectable as `RouterService(real_monotonic=...)`), never on the core clock, because the worker is
+a real process. Under `--clock sim` (replay, soak at `--speed 20`) the core clock runs x20 and
+recycled a 6 s Pi job as "stuck for 120 s" (quick-261110-lqa). RouterPool's 60 s job timeout is
+asyncio loop time, also real. Alert lifetimes (ROUTEUR RELANCÉ, ROUTE INVALIDE, 5 min), the bias
+save period and the pack re-check stay on the core clock: they belong to the displayed timeline.
+With `--clock gps` both clocks are the same OS clock, so race behaviour is unchanged. The soak
+waits up to 180 wall s for the first route (`FIRST_ROUTE_TIMEOUT_S`).
+
 ## Banc d'essai Pi (porte du 2026-11-09)
 
 The gate decides whether the Raspberry Pi 3B runs the router at full settings (L0) or degraded

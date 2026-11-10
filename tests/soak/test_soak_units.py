@@ -7,6 +7,7 @@ import json
 import signal
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -367,3 +368,30 @@ def test_soak_sh_refuses_system_scope_without_root(tmp_path: Path) -> None:
         assert r.returncode == 2, r.stdout + r.stderr
         err = [ln for ln in r.stderr.splitlines() if ln.strip()]
         assert len(err) == 1 and "sudo" in err[0], r.stderr
+
+
+# -- first route wait (quick-261110-lqa) -------------------------------------------------------
+def test_first_route_wait_is_real_seconds_and_covers_a_pool_retry(monkeypatch) -> None:
+    import jabuka.soak.tablet as tablet
+    from jabuka.core.router_service import POOL_STUCK_S, POOL_TIMEOUT_S, RETRY_NO_ROUTE_S
+    from jabuka.tools.soak import FIRST_ROUTE_TIMEOUT_S
+
+    # one job killed at the pool timeout + the no-route retry delay + a complete second attempt
+    assert FIRST_ROUTE_TIMEOUT_S >= 2 * POOL_TIMEOUT_S + RETRY_NO_ROUTE_S
+    assert FIRST_ROUTE_TIMEOUT_S > POOL_STUCK_S
+
+    # the deadline is read from tablet's time.monotonic (real seconds, not the sim clock): patch
+    # the module REFERENCE inside tablet.py only, never the shared global time module. The client
+    # is built first (its Signals stamp time.time()) and never started: no socket, no thread.
+    client = tablet.TabletClient("ws://127.0.0.1:9/ws")
+    ticks = iter(range(1000))
+    calls = []
+
+    def counter() -> float:
+        calls.append(1)
+        return float(next(ticks))
+
+    fake_time = types.SimpleNamespace(monotonic=counter, sleep=lambda s: None)
+    monkeypatch.setattr(tablet, "time", fake_time)
+    assert client.wait(lambda tb: None, 5.0) is None
+    assert len(calls) <= 8

@@ -63,7 +63,13 @@ REFUSED_OUT = Path("/var/lib/jabuka")
 SYNTH_KINDS = frozenset({"bus-silent", "garbage", "noise", "unplug", "gps-loss", "clock-jump"})
 LOCAL_TZ = "Europe/Zagreb"
 STARTUP_TIMEOUT_S = 60.0
-FIRST_ROUTE_TIMEOUT_S = 120.0
+# WALL (real) seconds: TabletClient.wait runs on time.monotonic, so the wait does not shrink with
+# --speed. On the Pi 3B the first route = forkserver spawn + worker init (pack, land mask,
+# geofields) + one L0 cycle (bench p95 5.04 s), about 15-30 s real. 180 s covers one RouterPool
+# job killed at POOL_TIMEOUT_S (60 s) + the RETRY_NO_ROUTE_S retry delay (60 s at speed 1, less
+# when accelerated) + a complete second attempt (<= 60 s) (quick-261110-lqa; parity-tested in
+# tests/soak/test_soak_units.py against jabuka.core.router_service, not imported here).
+FIRST_ROUTE_TIMEOUT_S = 180.0
 # the reason of a fault skipped by a shortened run (--duration). scripts/freeze-check.sh matches
 # this phrase: F3/F4 never count such a report (plan 04-07, parity-tested)
 SKIP_AFTER_END = "after the end of the run"
@@ -643,7 +649,7 @@ class Harness:
         r = self.tablet.wait(lambda tb: tb.routes[:1], FIRST_ROUTE_TIMEOUT_S)
         if not r:
             block = self.tablet.route_block()
-            raise SoakAbort(f"no route adopted within {FIRST_ROUTE_TIMEOUT_S:.0f} s: {block}")
+            raise SoakAbort(f"no route adopted within {FIRST_ROUTE_TIMEOUT_S:.0f} wall s: {block}")
         self.log(
             "first_route", version=r[0]["version"], after_s=round(r[0]["t_wall"] - self.t0_wall, 2)
         )
