@@ -134,7 +134,13 @@ One worker cycle (`run_cycle`) answers both questions from the same snapshot: th
 for the whole remaining course, and the forced route for the current leg held on the boat's tack
 until the advised tack + 5 min ("On reste"; released with "virement imposé (terre)" when the held
 tack runs into land). Cost of not tacking = max(0, forced leg ETA - optimal leg ETA). When the core
-passes the current route, it is re-sailed under the new wind for the hysteresis rule.
+passes the current route, it is re-sailed under the new wind for the hysteresis rule. With
+"On reste" active the core displays the forced current leg followed by the same cycle's optimal
+route from the active mark onward, shifted by delta = forced arrival - optimal arrival at that
+mark (`src/jabuka/route/stay.py`; the forced leg alone when they cannot be joined, e.g. on the
+last leg). The route ETA is then the finish (optimal ETA + delta), and that is what the
+hysteresis compares with the displayed route re-evaluated, both spanning the whole course. The
+worker's forced route and the cost of not tacking are unchanged (still the current leg only).
 
 Race-pack step on the laptop, after `land build`:
 
@@ -250,6 +256,9 @@ Quand l'appuyer :
   (min) »).
 - Le bouton devient `ANNULER ON RESTE`. Le compte à rebours montre le **premier virement
   possible**.
+- La route affichée va jusqu'à l'arrivée : la branche en cours tenue sur le bord actuel, puis
+  les branches suivantes de la route optimale, décalées du temps perdu à la marque. L'ETA
+  affichée est celle de l'arrivée.
 - Fin automatique : au prochain virement détecté (TWA qui change de signe pendant 30 s), ou
   `ANNULER ON RESTE`.
 
