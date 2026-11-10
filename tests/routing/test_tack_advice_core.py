@@ -164,6 +164,26 @@ def test_stay_route_keeps_the_later_legs(routing_core, fake_pool, rh) -> None:
     assert r["countdown_s"] == pytest.approx(1500.0, abs=3.0)
 
 
+def test_stay_hysteresis_compares_whole_routes(routing_core, fake_pool, rh) -> None:
+    """D-04: the worker re-evaluates the DISPLAYED route (now whole) into eta_old_now, so the
+    hysteresis must compare it with the composed finish ETA, not the forced leg ETA: an equal
+    re-evaluation keeps the route, a gain over 3 min replaces it."""
+    core, pos = _start(routing_core, fake_pool, rh)
+    fake_pool.script = _two_legs(rh, delta_s=420.0)
+    core.client.post("/api/route/stay", json={"active": True})
+    nav = _run(core, pos, 1)
+    assert nav["route"]["kind"] == "stay" and nav["route"]["version"] == 2
+    fake_pool.script = _two_legs(rh, delta_s=420.0, old_extra_s=0.0)
+    core.call(core.router.request, "timer", False)
+    nav = _run(core, pos, 1)
+    assert fake_pool.requests[-1].old_path is not None
+    assert nav["route"]["kind"] == "stay" and nav["route"]["version"] == 2  # kept
+    fake_pool.script = _two_legs(rh, delta_s=420.0, old_extra_s=600.0)
+    core.call(core.router.request, "timer", False)
+    nav = _run(core, pos, 1)
+    assert nav["route"]["kind"] == "stay" and nav["route"]["version"] == 3  # gain
+
+
 def test_a_detected_tack_clears_stay_and_reroutes(routing_core, fake_pool, rh) -> None:
     core, pos = _start(routing_core, fake_pool, rh)
     core.client.post("/api/route/stay", json={"active": True})
