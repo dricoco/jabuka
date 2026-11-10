@@ -125,7 +125,10 @@ def _route_after(
     """A newly adopted route (land-checked by the tablet) within the route budget: version >
     v_before, or after a core restart any version other than the restored one (a saved route
     computed for an earlier course version is rightly not restored, and the numbering restarts
-    at 1; the helm app redraws on any version change)."""
+    at 1; the helm app redraws on any version change). v_before is the version adopted last
+    before the fault (tablet.last_route_version), never the run-wide maximum: after such a
+    restart that maximum belongs to an earlier process and is unreachable (Pi soak
+    20261110T153632Z f67/f71/f79)."""
     budget = h.sc.budget("route")
     deadline = max(time.time(), t_from) + budget
 
@@ -228,7 +231,7 @@ def kill_core(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     """SIGKILL of the core's main pid: restarted after RestartSec; live data within the process
     budget; the saved route.json is restored (shown "outdated" until checked) and a newer route
     is adopted after the first cycle."""
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before)
     pid = h.sup.kill("core", signal.SIGKILL)
     rec["t_wall"] = time.time()
@@ -282,7 +285,7 @@ def kill_worker(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     """SIGKILL of the router worker only (child of the forkserver child of the core), while it
     computes a forced reroute: the core keeps its pid, the pool counts the crash, and a new route
     version arrives within the route budget."""
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before)
     core = h.sup.main_pid("core")
     if core is None:
@@ -346,7 +349,7 @@ def sigterm_storm(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     exit codes 0 or SIGTERM only."""
     n = int(spec.params.get("n", 5))
     gap = float(spec.params.get("gap_s", 0.1))
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before, n=n)
     t0 = rec["t_wall"] = time.time()
     for _ in range(n):
@@ -411,6 +414,36 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_bytes().decode("utf-8"))
     except (OSError, ValueError):
         return None
+
+
+MANUAL_DURABLE_S = 10.0  # wall s: the acknowledged manual wind is on disk before a clean pull
+
+
+def _wait_manual_on_disk(h: Harness, rec: dict[str, Any], want: dict | None) -> float | None:
+    """The core answers POST /api/wind/manual before its durability thread has put
+    wind_manual.json in place (fsync + rename, FIFO behind the log fsyncs, atomicio G-4-R05): a
+    power cut inside that window loses the change by design. A clean pull models a cut AFTER the
+    acknowledged state is on disk (Pi soak 20261110T153632Z f55: SIGKILL 0.4 s after the POST),
+    so wait for it and record the lag; not on disk within MANUAL_DURABLE_S is a failure (a
+    stalled durability thread). want None (nothing posted): nothing to wait for."""
+    if want is None:
+        return 0.0
+    path = Path(h.data_dir) / "wind_manual.json"
+    t0 = time.monotonic()
+    while True:
+        lag = time.monotonic() - t0
+        if _read_json(path) == want:
+            rec["manual_durable_s"] = round(lag, 2)
+            return lag
+        if lag >= MANUAL_DURABLE_S:
+            rec["manual_durable_s"] = None
+            _fail(
+                rec,
+                f"manual wind not on disk {MANUAL_DURABLE_S:g} s after its 200 "
+                "(durability thread stalled?)",
+            )
+            return None
+        time.sleep(0.02)
 
 
 def _persistence(
@@ -488,11 +521,12 @@ def power_pull(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     settings and manual wind is checked on the first answers; logcheck runs after every pull."""
     off_s = float(spec.params.get("off_s", 60.0))
     action = spec.params.get("corrupt")
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before, off_s=off_s, corrupt=action)
-    # a manual wind to carry over the pull (cleared after the check)
+    # a manual wind to carry over the pull (cleared after the check), on disk before the cut
     h.http("POST", "/api/wind/manual", {"twd": 150.0, "tws_kn": 11.5, "ref": "T"})
     snap = _snapshot(h)
+    _wait_manual_on_disk(h, rec, (snap.get("manual") or {}).get("manual"))
     rec["t_wall"] = t_pull = time.time()
     files: dict[str, Any] = {}
     target = None
@@ -553,7 +587,7 @@ def power_pull(h: Harness, spec: FaultSpec) -> dict[str, Any]:
 def watchdog_hang(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     """SIGSTOP of the core for longer than WatchdogSec: the shim (as systemd) sees no WATCHDOG=1,
     sends SIGABRT then SIGKILL, and restarts it. SIGCONT is never needed."""
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before)
     wd = h.sup.watchdog_sec("core")
     if not wd:
@@ -732,7 +766,7 @@ def clock_jump(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     """GPS time steps +jump_s, then back. SimClock: the forward step moves sim time, the step back
     is ignored by mono; the tick loop keeps running, no traceback, a route after the window.
     GpsClock: the jumps are counted, time stays valid (holdover, re-anchor), route ok at the end."""
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before)
     with h.tablet.lock:
         clk0 = dict((h.tablet.last_diag or {}).get("clock") or {})
@@ -934,7 +968,7 @@ def grib_gap(h: Harness, spec: FaultSpec) -> dict[str, Any]:
 def course_change(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     """Course template changed mid-leg: a route for the new course version within the route
     budget (the follow helm steers to the new mark)."""
-    v_before = h.tablet.max_route_version()
+    v_before = h.tablet.last_route_version()
     rec = _rec(spec, h, route_version_before=v_before)
     st, c = h.http("GET", "/api/course")
     if st != 200:
@@ -984,7 +1018,7 @@ def stay_toggle(h: Harness, spec: FaultSpec) -> dict[str, Any]:
     _hold(h, t_on, spec.dur)
     stay_routes = [r for r in h.tablet.routes_after(t_on) if r.get("kind") == "stay"]
     rec["stay_routes"] = len(stay_routes)
-    v_off = h.tablet.max_route_version()
+    v_off = h.tablet.last_route_version()
     st, out = h.http("POST", "/api/route/stay", {"active": False})
     rec["cleared_wall"] = t_off = time.time()
     if st != 200:

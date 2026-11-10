@@ -69,5 +69,10 @@
               "ws-stall": 300}
   },
   "quiet_tail_s": 43200,
-  "expected_tracebacks": {}
+  "expected_tracebacks": {
+    "ws-stall": [
+      {"pattern": "websockets/legacy/protocol\\.py\\W+line \\d+, in keepalive_ping\\n[\\s\\S]*\\n\\s+assert waiter is None or waiter\\.cancelled\\(\\)\\n[\\s\\S]*\\nAssertionError$",
+       "why": "uvicorn's deprecated legacy websockets protocol (core/main.py ws='websockets'): the keepalive ping to a client that has not read for longer than ws_ping_interval (20 s) asserts in _drain_helper; only that connection's ping task dies, core and other clients unaffected (Pi soak 20261110T153632Z f41/f72; websockets-sansio is a post-race follow-up)"}
+    ]
+  }
 }

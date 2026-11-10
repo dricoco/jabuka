@@ -364,6 +364,16 @@ class TabletClient(threading.Thread):
             vs = [r["version"] for r in self.routes if isinstance(r.get("version"), int)]
             return max(vs) if vs else 0
 
+    def last_route_version(self) -> int:
+        """Version of the route adopted last (what the helm shows now), 0 before any: the "before"
+        baseline of a fault. Not max_route_version: a core restart whose saved route is rightly
+        not restored numbers from 1 again (Pi soak 20261110T153632Z, f65 -> f67..f85)."""
+        with self.lock:
+            for r in reversed(self.routes):
+                if isinstance(r.get("version"), int):
+                    return r["version"]
+            return 0
+
     def routes_after(self, t: float) -> list[dict]:
         with self.lock:
             return [dict(r) for r in self.routes if r["t_wall"] >= t]

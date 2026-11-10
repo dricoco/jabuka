@@ -716,8 +716,10 @@ class Harness:
     def write_full_wind(self) -> None:
         from jabuka.soak.pack import write_wind
 
+        # state_root, like every harness write into the stack's files: system scope keeps the pack
+        # under /var/lib/jabuka/soak-<ts>, outside the run dir (Pi soak 20261110T153632Z grib-gap)
         write_wind(
-            self.pack_dir, self.run_dir, self.start_utc, self.wind_end_utc(), **self.wind_kw()
+            self.pack_dir, self.state_root, self.start_utc, self.wind_end_utc(), **self.wind_kw()
         )
 
     def preapply(self) -> None:
