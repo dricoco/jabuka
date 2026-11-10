@@ -16,7 +16,7 @@ T_W, T_H, T_D, T_R = 235.0, 158.0, 7.9, 8.0
 ACT_W, ACT_H = 217.0, 136.0     # visible screen (10.1" 16:10) [MEASURE]
 # Feonal K116 photo: USB-C on a LONG edge near one corner, power/vol on the adjacent short edge.
 # Landscape with that long edge DOWN -> port faces down. Viewer's left (seen from the screen) = +x.
-PORT_FROM_CORNER = 29.5         # USB-C centre from the left-bottom corner seen from the screen (port starts 25 mm from the edge)
+PORT_FROM_CORNER = 30.0         # USB-C centre from the button corner of the tablet (measured 30 mm)
 CLR = 2.0                       # clearance tablet-in-bag to walls
 PLUG = 16.0                     # gap under the tablet for a 90deg USB-C plug + cable running along the bottom
 # Amazon photo (native landscape: home button bottom-centre, USB-C on the top long edge 25 mm from the right edge,
@@ -31,7 +31,7 @@ BTN_Z0, BTN_Z1, BTN_MARGIN = 10.5, 46.5, 5.0
 X_PLUS = 3.0                    # extra width on the +x side only (250 = A1 bed check limit; YA of the mount unchanged up to 4)
 REL_DEPTH = 4.5                 # wall relief beyond the pocket over the button zone (wall left there: WALL_S + X_PLUS - REL_DEPTH)
 HOME_W, HOME_H = 22.0, 8.0       # notch in the frame for the home button (top bezel, centred) [MEASURE]
-X_EXIT = 20.0                   # cable exit slot in the bottom wall (near the cap slot at x=+15)
+X_EXIT = None                   # cable exit slot in the bottom wall: right under the USB-C port (X_PORT, set below)
 FOAM, BAG = 1.5, 0.6            # foam pad behind tablet, freezer bag
 WALL_S, WALL_TB, BACK, FRONT = 4.0, 8.0, 3.0, 3.0
 WIN_M = 2.0                     # window larger than active area
@@ -101,9 +101,10 @@ XC = 0.0
 ZC = (PLUG - CLR) / 2                     # tablet centre z
 TX0, TX1 = XC - T_W / 2, XC + T_W / 2
 X_PORT = TX1 - PORT_FROM_CORNER
+X_EXIT = X_PORT
 Z_SCREW = PZ + WALL_TB / 2
 FR_X = [-105.0, -40.0, 40.0, 105.0]
-X_DRAIN = (-70.0, 80.0)
+X_DRAIN = (-70.0, 70.0)          # +x drain moved off the cable exit (frame notch xd+-5 must clear it)
 Z_BTN = ZC - T_H / 2 + BTN_FROM_BOTTOM    # buttons on the +x short edge (same end as the USB-C)
 Y_BTN = Y_T0 + T_D / 2
 
