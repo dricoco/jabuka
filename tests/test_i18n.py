@@ -6,6 +6,9 @@
 - every alert / reason text the core emits (collected from the Python sources) is translated in en
   and sl, and left exactly as sent in fr;
 - helm and route values in en and sl (decimal point / comma, countdown words);
+- every Settings field has a short help text ("help.<field>", Réglages "?" buttons, quick
+  261110-kxm) in fr, en and sl, with the signs and formulas of the code, and reglages.js
+  helpMeta() writes the schema's range and default in each language;
 - docs/I18N-SL-REVIEW.md is in sync with the dictionaries."""
 
 from __future__ import annotations
@@ -74,6 +77,61 @@ def test_settings_labels_cover_every_field_and_match_the_schema() -> None:
     schema = Settings.model_json_schema()["properties"]
     for field, prop in schema.items():
         assert fr.get(f"settings.{field}") == prop["label"], field
+
+
+HELP_MAX = 450  # characters, every language (FR target <= 380)
+
+
+def test_every_setting_has_a_help_text_in_every_language() -> None:
+    from jabuka.nav.settings import Settings
+
+    d = node(out("I.DICT"))
+    fields = set(Settings.model_json_schema()["properties"])
+    for lang in ("fr", "en", "sl"):
+        table = d[lang]
+        helps = {k.removeprefix("help.") for k in table if k.startswith("help.")}
+        assert helps == fields, (lang, sorted(helps ^ fields))
+        for field in fields:
+            text = table[f"help.{field}"]
+            assert text.strip() and text == text.strip(), (lang, field)
+            assert len(text) <= HELP_MAX, (lang, field, len(text))
+            assert text != table[f"settings.{field}"], (lang, field)
+            assert "{" not in text and "\n" not in text, (lang, field)
+
+
+def test_help_texts_keep_the_signs_and_formulas_of_the_code() -> None:
+    fr = node(out("I.DICT.fr"))
+    # conventions.apply_heading_offset: sensor + offset, then the variation
+    assert "COG" in fr["help.heading_offset_deg"] and "+5" in fr["help.heading_offset_deg"]
+    # mag_to_true: East-positive
+    assert "Est" in fr["help.variation_deg"] and "Ouest" in fr["help.variation_deg"]
+    # nav_service: pct = speed / (eff x polar) x 100 -> new eff = eff x pct / 100
+    assert "% polaire" in fr["help.efficiency"] and "0,87" in fr["help.efficiency"]
+
+
+def test_help_meta_writes_range_and_default_in_each_language() -> None:
+    from jabuka.nav.settings import Settings
+
+    props = json.dumps(Settings.model_json_schema()["properties"])
+    res = node(
+        f"const P = {props};\n"
+        "const r = {};\n"
+        "for (const lang of ['fr', 'en', 'sl']) {\n"
+        "  I.setLang(lang, {persist: false});\n"
+        "  r[lang] = Object.fromEntries(Object.keys(P).map((k) => [k, M0.helpMeta(P[k])]));\n"
+        "}\n" + out("r"),
+        "reglages.js",
+    )
+    fr, en, sl = res["fr"], res["en"], res["sl"]
+    assert fr["efficiency"] == "Plage : 0,5 à 1,2 · Défaut : 0,92"
+    assert en["efficiency"] == "Range: 0.5 to 1.2 · Default: 0.92"
+    assert sl["efficiency"] == "Obseg: 0,5 do 1,2 · Privzeto: 0,92"
+    assert fr["efficiency_up"] == "Plage : 0,5 à 1,2 · Défaut : vide"
+    assert fr["routing_enabled"] == "Défaut : oui"
+    assert en["use_current"] == "Default: no"
+    assert fr["true_wind_source"] == "Défaut : calculé"
+    assert fr["race_start_local"] == "Défaut : 2026-11-13T18:00"
+    assert fr["heading_offset_deg"] == "Plage : -30 à 30 · Défaut : 0"
 
 
 def test_t_falls_back_and_fills_placeholders() -> None:

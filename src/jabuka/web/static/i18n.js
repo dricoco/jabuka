@@ -147,18 +147,210 @@ const SETTINGS_SL = {
 // (jabuka/nav/settings.py); every fact (signs, formulas, which feature a setting affects) follows
 // the code. Plain prose, no {placeholders}; the range and default line is generated from the schema.
 const HELP_FR = {
+  variation_deg:
+    "Déclinaison magnétique de la zone : cap vrai = cap magnétique + déclinaison. Est positif, Ouest négatif (environ +4,5 à +5° E vers Šibenik en 2026). Source : rose du compas de la carte (corrigée de la variation annuelle) ou calculateur NOAA/WMM. Contrôle à quai (décalage compas à 0) : Diag navigation.heading + déclinaison = nav.heading.true, à 1° près. Sert aussi au vent manuel en °M et aux caps affichés en °M.",
   heading_offset_deg:
     "Correction ajoutée au cap du compas B&G et aux directions B&G qui en dérivent (TWD instruments, courant), avant la déclinaison. Laisser 0 si l'écart reste sous 3°. Au moteur, eau calme sans courant, cap stable 2 min : comparer nav.heading.true (Diag) au COG GPS ; à quai, à l'orientation du ponton sur la carte. Nouvelle valeur = valeur actuelle + (référence − cap affiché). Ex. : 115° lu, COG 120° → +5.",
+  heading_ref_unknown:
+    "Quand le bus B&G ne dit pas si un cap ou une direction est magnétique ou vrai (Diag : référence « ? » et une ligne bandg.layoutRecord), elle est traitée comme ceci. Pour choisir, au moteur : cap du bus + déclinaison ≈ COG → M ; cap du bus ≈ COG → T. Sans effet quand le bus donne la référence.",
+  heading_display:
+    "Affichage seulement : les caps de la tablette en magnétique (°M, comme le compas et le B&G) ou en vrai (°T). Tous les calculs restent en vrai ; °M = vrai − déclinaison.",
+  true_wind_source:
+    "calculé : le Pi calcule le vent réel depuis AWA, AWS, BSP et le cap (dérive comprise). instruments : TWD/TWS du Hercules. Sous voiles, 5 min sur chaque bord : garder celui dont le TWD saute le moins d'un bord à l'autre (Diag). Si la source choisie manque, l'autre prend le relais.",
+  efficiency:
+    "Multiplie les vitesses de la polaire (cibles, % polaire, lay-lines, routage) ; les angles ne changent pas. 0,92 = 92 % de la polaire. Mesure : plusieurs minutes de navigation régulière et bien réglée, lire le % polaire de la Barre ; nouvelle valeur = valeur actuelle × % / 100 (ex. 0,92 × 95 % → 0,87).",
+  efficiency_up:
+    "Comme l'efficacité polaire, mais seulement au près. Vide = efficacité polaire. Même mesure, en lisant le % polaire au près uniquement.",
+  efficiency_down:
+    "Comme l'efficacité polaire, mais seulement au portant. Vide = efficacité polaire. Même mesure, en lisant le % polaire au portant uniquement.",
+  heavy_wind_start_kn:
+    "Vent réel (TWS) à partir duquel la polaire est réduite pour le vent fort. La réduction grandit ensuite jusqu'au seuil « réduction complète ». Elle s'applique aux cibles, au % polaire, aux lay-lines et au routage, avant l'efficacité.",
+  heavy_wind_full_kn:
+    "TWS à partir duquel toute la réduction s'applique. Doit être plus grand que le début ; entre les deux, la réduction est progressive.",
+  heavy_wind_reduction:
+    "Part de vitesse retirée à la polaire au-delà du seuil complet : 0,05 = −5 %, 0 = désactivé. À augmenter si, par vent fort et bien réglé, le % polaire reste nettement sous 100.",
+  layline_source:
+    "polaire : angles de virement de la polaire (VMG). angles réels : angles vraiment tenus (route fond contre vent, médiane des 3 derniers bords d'au moins 2 min), courant et dérive compris ; badge ANGLES RÉELS. Un bord sans mesure garde la polaire ; rien n'est appris dans la zone Jabuka. Passer en angles réels après quelques virements si les lay-lines tombent mal.",
+  use_current:
+    "Ajoute aux lay-lines le courant mesuré par le B&G (set/drift) ; badge COURANT. Ignoré dans la zone Jabuka et quand les deux bords sont en angles réels (le courant y est déjà). Laisser désactivé tant que compas et loch ne sont pas vérifiés.",
+  leeway_deg:
+    "Angle dont le bateau glisse sous le vent. Sert seulement au vent réel calculé par le Pi (source calculé). Mesure : au près, eau sans courant, écart entre cap vrai et COG (Diag). Bien réglée, le TWD calculé saute moins à chaque virement.",
+  tau_helm_s:
+    "Lissage du vent (TWD, TWS, TWA) affiché à la Barre : gros chiffre et écart LOFER/ABATTRE. Plus grand = chiffres plus calmes mais en retard sur les bascules ; plus petit = plus nerveux. Augmenter par mer formée si les chiffres sautent.",
+  tau_layline_s:
+    "Lissage du TWD utilisé par les lay-lines. Plus grand = lay-lines stables mais lentes à suivre une bascule durable ; plus petit = elles bougent à chaque risée.",
+  zone_lat:
+    "Latitude du centre de la zone d'anomalie magnétique (îlot de Jabuka par défaut), en degrés décimaux, pas en degrés-minutes. Dans le cercle, le compas n'est pas fiable : cap = COG GPS (au-dessus de 1 nd), direction et courant B&G ignorés, biais GRIB gelé ; alerte CAP NON FIABLE.",
+  zone_lon:
+    "Longitude Est du centre de la zone magnétique de Jabuka, en degrés décimaux (pas en degrés-minutes). Le défaut est l'îlot de Jabuka.",
+  zone_radius_nm:
+    "Rayon du cercle où le compas est ignoré (cap = COG GPS, biais GRIB gelé, angles réels non appris). 0 = zone désactivée. Agrandir si le cap B&G part en vrille en approchant Jabuka avant d'entrer dans la zone.",
+  manual_wind_max_age_min:
+    "Âge au-delà duquel un vent manuel est périmé : badge PÉRIMÉ, cadre VENT PÉRIMÉ, chiffres grisés. Ressaisir alors le vent lu sur le B&G (panneau Vent manuel, plus haut). L'âge demande l'heure GPS ; sans elle il est inconnu.",
+  routing_enabled:
+    "Active le calcul de route sur le Pi. Décoché : plus de route, la Barre affiche les lay-lines et « Routage désactivé (Réglages) ».",
+  route_level:
+    "Finesse du routage : L0 = complet ; chaque niveau ajoute un allègement (L1 caps tous les 10°, L2 pas de temps plus longs, L3 marque suivante + une seule, L4 recalcul toutes les 10 min, L5 coût du « ne pas virer » un cycle sur deux). Mettre le NIVEAU RECOMMANDÉ du banc Pi ; monter d'un niveau si la route a souvent plus de 10 min ou si Diag montre des timeouts.",
+  route_cadence_min:
+    "Temps entre deux calculs de route programmés. Plus court = route plus fraîche mais Pi plus chargé. Les niveaux L4 et L5 imposent au moins 10 min. Un changement de parcours ou une sortie de route relance aussi un calcul.",
+  tack_penalty_s:
+    "Temps perdu à chaque virement ou empannage dans le routage, compté comme du temps sans avancer. Plus grand = route avec moins de virements. Repère : chronométrer du début du virement au retour à la vitesse cible ; la perte vaut à peu près la moitié de ce temps. Pas utilisé par le mode départ.",
+  stay_extra_min:
+    "ON RESTE : le Pi recalcule en tenant le bord actuel jusqu'au virement conseillé plus cette marge, puis la route jusqu'à l'arrivée. Plus grand = on reste plus longtemps sur ce bord.",
+  route_waves:
+    "Le routage ralentit le bateau dans les vagues (au plus −30 %), selon la hauteur Hs du pack (EWAM), sinon estimée depuis le vent. Décocher pour router sans pénalité de vagues.",
+  route_current:
+    "Le routage ajoute le courant du pack de course (Copernicus) quand le pack en contient ; sans effet sinon. Différent de « Courant sur les lay-lines » (courant mesuré par le B&G).",
+  start_tack_s:
+    "Mode départ seulement : durée d'un virement ajoutée au temps « Autre bord » et à la zone de départ. Repère : chronométrer un virement serré, de la mise de barre au bateau stabilisé sur l'autre bord. Le routage utilise la « Pénalité de virement », pas ce réglage.",
+  grib_wind_fallback:
+    "Bus B&G muet et pas de vent manuel : le Pi prend le vent du GRIB du pack (corrigé du biais) à la position GPS ; cap = COG, vitesse = SOG ; badge GRIB. Sous 1 nd, pas de TWA ni de lay-lines. Décoché : PAS DE VENT à la place.",
+  bias_enabled:
+    "Le Pi compare le vent mesuré au GRIB (après environ 10 min de mesures stables) et corrige le GRIB du routage : direction + x°, force × k (ligne « Biais GRIB » de la Barre). Décocher si le biais paraît faux (capteur de vent déréglé) : la route suivante utilise le GRIB brut.",
+  bias_tau_decay_h:
+    "Sans mesure fiable du vent, la correction du GRIB s'estompe avec ce temps caractéristique. Plus court = retour plus rapide au GRIB brut ; plus long = la correction apprise dure plus longtemps.",
+  race_start_local:
+    "Début de la période que le pack météo doit couvrir, en heure locale de Croatie, au format AAAA-MM-JJTHH:MM. Si le pack ne couvre pas la fenêtre ou une marque : alerte MÉTÉO INCOMPLÈTE. Mettre un peu avant le départ (départ 20:00 → 18:00).",
+  race_end_local:
+    "Fin de la période que le pack météo doit couvrir (heure locale, AAAA-MM-JJTHH:MM), après le début. Mettre l'heure limite ou l'arrivée la plus tardive prévue.",
 };
 
 const HELP_EN = {
+  variation_deg:
+    "Magnetic variation of the area: true heading = magnetic heading + variation. East positive, West negative (about +4.5 to +5° E near Šibenik in 2026). Source: the chart's compass rose (corrected for the annual change) or the NOAA/WMM calculator. Dock check (compass offset at 0): Diag navigation.heading + variation = nav.heading.true, within 1°. Also used for manual wind in °M and headings shown in °M.",
   heading_offset_deg:
     "Correction added to the B&G compass heading and to the B&G directions derived from it (instrument TWD, current), before the variation. Leave 0 if the error stays under 3°. Under engine, calm water, no current, steady heading 2 min: compare nav.heading.true (Diag) with GPS COG; at the dock, with the pontoon's bearing on the chart. New value = current value + (reference − displayed heading). E.g. 115° read, COG 120° → +5.",
+  heading_ref_unknown:
+    "When the B&G bus does not say whether a heading or direction is magnetic or true (Diag: reference “?” and a bandg.layoutRecord line), it is taken as this. To choose, under engine: bus heading + variation ≈ COG → M; bus heading ≈ COG → T. No effect when the bus gives the reference.",
+  heading_display:
+    "Display only: the tablet's headings in magnetic (°M, like the compass and the B&G) or true (°T). All computations stay in true; °M = true − variation.",
+  true_wind_source:
+    "computed: the Pi computes the true wind from AWA, AWS, BSP and the heading (leeway included). instruments: the Hercules TWD/TWS. Under sail, 5 min on each tack: keep the one whose TWD jumps least from one tack to the other (Diag). If the chosen source is missing, the other takes over.",
+  efficiency:
+    "Multiplies the polar speeds (targets, polar %, laylines, routing); the angles do not change. 0.92 = 92% of the polar. Measure: several minutes of steady, well-trimmed sailing, read the polar % on the Helm tab; new value = current value × % / 100 (e.g. 0.92 × 95% → 0.87).",
+  efficiency_up:
+    "Like the polar efficiency, but upwind only. Empty = polar efficiency. Same measure, reading the polar % upwind only.",
+  efficiency_down:
+    "Like the polar efficiency, but downwind only. Empty = polar efficiency. Same measure, reading the polar % downwind only.",
+  heavy_wind_start_kn:
+    "True wind (TWS) from which the polar is reduced for heavy wind. The reduction then grows up to the “full reduction” threshold. It applies to the targets, the polar %, the laylines and the routing, before the efficiency.",
+  heavy_wind_full_kn:
+    "TWS from which the whole reduction applies. Must be higher than the start; in between, the reduction is gradual.",
+  heavy_wind_reduction:
+    "Share of speed taken off the polar above the full threshold: 0.05 = −5%, 0 = off. Increase it if, in heavy wind and well trimmed, the polar % stays clearly under 100.",
+  layline_source:
+    "polar: the polar's tacking angles (VMG). sailed angles: the angles actually held (course over ground vs wind, median of the last 3 legs of at least 2 min), current and leeway included; badge SAILED ANGLES. A tack with no measurement keeps the polar; nothing is learnt in the Jabuka zone. Switch to sailed angles after a few tacks if the laylines are off.",
+  use_current:
+    "Adds the current measured by the B&G (set/drift) to the laylines; badge CURRENT. Ignored in the Jabuka zone and when both tacks use sailed angles (the current is already in them). Leave off until compass and log are checked.",
+  leeway_deg:
+    "Angle the boat slips to leeward. Used only for the true wind computed by the Pi (source computed). Measure: upwind, water without current, gap between true heading and COG (Diag). Well set, the computed TWD jumps less at each tack.",
+  tau_helm_s:
+    "Smoothing of the wind (TWD, TWS, TWA) shown on the Helm tab: big number and HEAD UP/BEAR AWAY gap. Larger = calmer numbers but late on shifts; smaller = more jumpy. Increase in a rough sea if the numbers jump.",
+  tau_layline_s:
+    "Smoothing of the TWD used by the laylines. Larger = steady laylines but slow to follow a lasting shift; smaller = they move with every gust.",
+  zone_lat:
+    "Latitude of the centre of the magnetic anomaly zone (Jabuka islet by default), in decimal degrees, not degrees-minutes. Inside the circle the compass is not trusted: heading = GPS COG (above 1 kn), B&G direction and current ignored, GRIB bias frozen; alert HEADING UNRELIABLE.",
+  zone_lon:
+    "East longitude of the centre of the Jabuka magnetic zone, in decimal degrees (not degrees-minutes). The default is the Jabuka islet.",
+  zone_radius_nm:
+    "Radius of the circle where the compass is ignored (heading = GPS COG, GRIB bias frozen, sailed angles not learnt). 0 = zone off. Enlarge it if the B&G heading goes wild approaching Jabuka before entering the zone.",
+  manual_wind_max_age_min:
+    "Age after which a manual wind is stale: badge STALE, WIND STALE frame, greyed numbers. Then enter again the wind read on the B&G (Manual wind panel, above). The age needs GPS time; without it, it is unknown.",
+  routing_enabled:
+    "Turns route computation on the Pi on. Unchecked: no route, the Helm tab shows the laylines and “Routing off (Settings)”.",
+  route_level:
+    "Routing detail: L0 = full; each level adds a lightening (L1 headings every 10°, L2 longer time steps, L3 next mark + one only, L4 recompute every 10 min, L5 cost of “not tacking” every other cycle). Set the Pi bench's NIVEAU RECOMMANDÉ (recommended level); go up one level if the route is often older than 10 min or if Diag shows timeouts.",
+  route_cadence_min:
+    "Time between two scheduled route computations. Shorter = fresher route but a busier Pi. Levels L4 and L5 impose at least 10 min. A course change or leaving the route also triggers a computation.",
+  tack_penalty_s:
+    "Time lost at each tack or gybe in the routing, counted as time without progress. Larger = route with fewer tacks. Guide: time from the start of the tack until back at target speed; the loss is about half of that. Not used by start mode.",
+  stay_extra_min:
+    "HOLD TACK: the Pi recomputes holding the current tack until the advised tack plus this margin, then the route to the finish. Larger = stay longer on this tack.",
+  route_waves:
+    "The routing slows the boat in waves (at most −30%), from the pack's wave height Hs (EWAM), otherwise estimated from the wind. Uncheck to route without a wave penalty.",
+  route_current:
+    "The routing adds the race pack's current (Copernicus) when the pack has one; no effect otherwise. Different from “Current on the laylines” (current measured by the B&G).",
+  start_tack_s:
+    "Start mode only: duration of a tack added to the “Other tack” time and to the start zone. Guide: time a tight tack, from putting the helm over to the boat settled on the other tack. The routing uses the “Tack penalty”, not this setting.",
+  grib_wind_fallback:
+    "B&G bus silent and no manual wind: the Pi takes the wind from the pack's GRIB (bias-corrected) at the GPS position; heading = COG, speed = SOG; badge GRIB. Under 1 kn, no TWA and no laylines. Unchecked: NO WIND instead.",
+  bias_enabled:
+    "The Pi compares the measured wind with the GRIB (after about 10 min of steady measurements) and corrects the routing's GRIB: direction + x°, speed × k (“GRIB bias” line on the Helm tab). Uncheck if the bias looks wrong (wind sensor out of calibration): the next route uses the raw GRIB.",
+  bias_tau_decay_h:
+    "Without a reliable wind measurement, the GRIB correction fades with this time constant. Shorter = quicker return to the raw GRIB; longer = the learnt correction lasts longer.",
+  race_start_local:
+    "Start of the period the weather pack must cover, in Croatian local time, format YYYY-MM-DDTHH:MM. If the pack does not cover the window or a mark: alert WEATHER INCOMPLETE. Set it a bit before the start (start 20:00 → 18:00).",
+  race_end_local:
+    "End of the period the weather pack must cover (local time, YYYY-MM-DDTHH:MM), after the start. Set the time limit or the latest expected finish.",
 };
 
 const HELP_SL = {
+  variation_deg:
+    "Magnetna deklinacija območja: prava smer = magnetna smer + deklinacija. Vzhod pozitivno, zahod negativno (okoli +4,5 do +5° E pri Šibeniku leta 2026). Vir: kompasna roža na karti (popravljena za letno spremembo) ali kalkulator NOAA/WMM. Preverjanje ob pomolu (popravek kompasa 0): Diag navigation.heading + deklinacija = nav.heading.true, na 1° natančno. Velja tudi za ročni veter v °M in smeri, prikazane v °M.",
   heading_offset_deg:
     "Popravek, prištet smeri kompasa B&G in smerem B&G, ki iz nje izhajajo (TWD instrumentov, tok), pred deklinacijo. Pusti 0, če je odstopanje pod 3°. Na motor, mirna voda brez toka, stalna smer 2 min: primerjaj nav.heading.true (Diag) s COG GPS; ob pomolu z usmeritvijo pomola na karti. Nova vrednost = trenutna vrednost + (referenca − prikazana smer). Npr.: odčitano 115°, COG 120° → +5.",
+  heading_ref_unknown:
+    "Ko vodilo B&G ne pove, ali je smer magnetna ali prava (Diag: referenca „?“ in vrstica bandg.layoutRecord), se obravnava tako. Za izbiro, na motor: smer z vodila + deklinacija ≈ COG → M; smer z vodila ≈ COG → T. Brez učinka, ko vodilo poda referenco.",
+  heading_display:
+    "Samo prikaz: smeri na tablici v magnetnih (°M, kot kompas in B&G) ali pravih stopinjah (°T). Vsi izračuni ostanejo v pravih; °M = prava − deklinacija.",
+  true_wind_source:
+    "izračunan: Pi izračuna pravi veter iz AWA, AWS, BSP in smeri (z zanosom). instrumenti: TWD/TWS iz Herculesa. Pod jadri 5 min na vsakem boku: obdrži tistega, katerega TWD najmanj skoči z boka na bok (Diag). Če izbrani vir manjka, ga nadomesti drugi.",
+  efficiency:
+    "Pomnoži hitrosti polare (cilji, % polare, laylini, izračun poti); koti se ne spremenijo. 0,92 = 92 % polare. Merjenje: nekaj minut enakomerne, dobro trimane plovbe, odčitaj % polare na Krmilu; nova vrednost = trenutna vrednost × % / 100 (npr. 0,92 × 95 % → 0,87).",
+  efficiency_up:
+    "Kot izkoristek polare, a samo v orcu. Prazno = izkoristek polare. Enako merjenje, z odčitkom % polare samo v orcu.",
+  efficiency_down:
+    "Kot izkoristek polare, a samo v krmo. Prazno = izkoristek polare. Enako merjenje, z odčitkom % polare samo v krmo.",
+  heavy_wind_start_kn:
+    "Pravi veter (TWS), od katerega se polara zmanjša zaradi močnega vetra. Zmanjšanje nato raste do praga „polno zmanjšanje“. Velja za cilje, % polare, layline in izračun poti, pred izkoristkom.",
+  heavy_wind_full_kn:
+    "TWS, od katerega velja celotno zmanjšanje. Mora biti večji od začetka; vmes je zmanjšanje postopno.",
+  heavy_wind_reduction:
+    "Delež hitrosti, odvzet polari nad polnim pragom: 0,05 = −5 %, 0 = izklopljeno. Povečaj, če ob močnem vetru in dobrem trimu % polare ostaja precej pod 100.",
+  layline_source:
+    "polara: koti obrata iz polare (VMG). dejanski koti: dejansko držani koti (smer nad dnom proti vetru, mediana zadnjih 3 bokov, dolgih vsaj 2 min), s tokom in zanosom; značka DEJANSKI KOTI. Bok brez meritve ohrani polaro; v območju Jabuka se nič ne nauči. Preklopi na dejanske kote po nekaj obratih, če laylini ne ustrezajo.",
+  use_current:
+    "Laylinom doda tok, ki ga meri B&G (set/drift); značka TOK. Prezrt v območju Jabuka in ko oba boka uporabljata dejanske kote (tok je že v njih). Pusti izklopljeno, dokler kompas in log nista preverjena.",
+  leeway_deg:
+    "Kot, za katerega čoln drsi v zavetrje. Uporablja se samo za pravi veter, ki ga izračuna Pi (vir izračunan). Merjenje: v orcu, voda brez toka, razlika med pravo smerjo in COG (Diag). Ob dobri nastavitvi izračunani TWD ob vsakem obratu manj skoči.",
+  tau_helm_s:
+    "Glajenje vetra (TWD, TWS, TWA), prikazanega na Krmilu: velika številka in odmik ORCAJ/ODPADI. Večje = mirnejše številke, a z zamikom ob zasukih vetra; manjše = bolj nemirne. Povečaj ob razburkanem morju, če številke skačejo.",
+  tau_layline_s:
+    "Glajenje TWD, ki ga uporabljajo laylini. Večje = stabilni laylini, a počasni ob trajnem zasuku vetra; manjše = premikajo se ob vsakem sunku.",
+  zone_lat:
+    "Zemljepisna širina središča območja magnetne anomalije (privzeto otoček Jabuka), v decimalnih stopinjah, ne v stopinjah in minutah. V krogu kompas ni zanesljiv: smer = COG GPS (nad 1 kn), smer in tok B&G prezrta, popravek GRIB zamrznjen; opozorilo SMER NI ZANESLJIVA.",
+  zone_lon:
+    "Vzhodna zemljepisna dolžina središča magnetnega območja Jabuka, v decimalnih stopinjah (ne v stopinjah in minutah). Privzeto je otoček Jabuka.",
+  zone_radius_nm:
+    "Polmer kroga, v katerem je kompas prezrt (smer = COG GPS, popravek GRIB zamrznjen, dejanski koti se ne učijo). 0 = območje izklopljeno. Povečaj, če se smer B&G ob približevanju Jabuki zmeša, preden vstopiš v območje.",
+  manual_wind_max_age_min:
+    "Starost, po kateri ročni veter zastari: značka ZASTARELO, okvir VETER ZASTAREL, sive številke. Takrat znova vnesi veter, odčitan na B&G (plošča Ročni veter, zgoraj). Starost potrebuje čas GPS; brez njega je neznana.",
+  routing_enabled:
+    "Vklopi izračun poti na Pi. Izklopljeno: ni poti, Krmilo prikaže layline in „Izračun poti izklopljen (Nastavitve)“.",
+  route_level:
+    "Natančnost izračuna poti: L0 = polno; vsaka raven doda olajšavo (L1 smeri na 10°, L2 daljši časovni koraki, L3 naslednja boja + samo še ena, L4 ponovni izračun na 10 min, L5 cena „brez obrata“ vsak drugi cikel). Nastavi NIVEAU RECOMMANDÉ (priporočena raven) iz testa Pi; dvigni za eno raven, če je pot pogosto starejša od 10 min ali Diag kaže timeoute.",
+  route_cadence_min:
+    "Čas med dvema načrtovanima izračunoma poti. Krajši = svežejša pot, a bolj obremenjen Pi. Ravni L4 in L5 zahtevata vsaj 10 min. Sprememba proge ali odhod s poti prav tako sproži izračun.",
+  tack_penalty_s:
+    "Čas, izgubljen pri vsakem obratu ali križu v izračunu poti, štet kot čas brez napredovanja. Večje = pot z manj obrati. Napotek: izmeri čas od začetka obrata do vrnitve na ciljno hitrost; izguba je približno polovica tega časa. Način start je ne uporablja.",
+  stay_extra_min:
+    "OSTANEMO: Pi ponovno izračuna z držanjem trenutnega boka do priporočenega obrata plus ta rezerva, nato pot do cilja. Večje = dlje ostanemo na tem boku.",
+  route_waves:
+    "Izračun poti upočasni čoln v valovih (največ −30 %), glede na višino valov Hs iz paketa (EWAM), sicer ocenjeno iz vetra. Izklopi za izračun brez kazni za valove.",
+  route_current:
+    "Izračun poti doda tok iz paketa regate (Copernicus), ko ga paket vsebuje; sicer brez učinka. Drugače kot „Tok na laylinih“ (tok, ki ga meri B&G).",
+  start_tack_s:
+    "Samo način start: trajanje obrata, prišteto času „Drugi bok“ in startnemu območju. Napotek: izmeri tesen obrat, od zasuka krmila do čolna, umirjenega na drugem boku. Izračun poti uporablja „Izguba pri obratu“, ne te nastavitve.",
+  grib_wind_fallback:
+    "Vodilo B&G tiho in ni ročnega vetra: Pi vzame veter iz GRIB paketa (s popravkom) na položaju GPS; smer = COG, hitrost = SOG; značka GRIB. Pod 1 kn ni TWA ne laylinov. Izklopljeno: namesto tega NI VETRA.",
+  bias_enabled:
+    "Pi primerja izmerjeni veter z GRIB (po približno 10 min stabilnih meritev) in popravi GRIB za izračun poti: smer + x°, moč × k (vrstica „Popravek GRIB“ na Krmilu). Izklopi, če se popravek zdi napačen (senzor vetra ni umerjen): naslednja pot uporabi surovi GRIB.",
+  bias_tau_decay_h:
+    "Brez zanesljive meritve vetra popravek GRIB pojenja s to časovno konstanto. Krajše = hitrejša vrnitev na surovi GRIB; daljše = naučeni popravek traja dlje.",
+  race_start_local:
+    "Začetek obdobja, ki ga mora pokriti vremenski paket, po lokalnem času Hrvaške, v obliki LLLL-MM-DDTHH:MM. Če paket ne pokrije okna ali boje: opozorilo VREME NEPOPOLNO. Nastavi malo pred startom (start 20:00 → 18:00).",
+  race_end_local:
+    "Konec obdobja, ki ga mora pokriti vremenski paket (lokalni čas, LLLL-MM-DDTHH:MM), po začetku. Nastavi časovno omejitev ali najkasnejši pričakovani prihod v cilj.",
 };
 
 const prefixed = (prefix, table) => Object.fromEntries(Object.entries(table).map(([k, v]) => [`${prefix}${k}`, v]));
