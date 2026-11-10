@@ -125,6 +125,39 @@ the top, with the map below. The column has three blocks:
    (the MapLibre map), `localStorage` keys `jabuka.theme`, `jabuka.brightness`,
    `jabuka.mapMode`, `jabuka.centred`, `jabuka.locked`.
 
+## 11. Start mode — Mode départ
+
+- **Open:** on the Barre tab, tap **`DÉPART`** (bottom left of the map). The start panel opens
+  on every tablet (the state lives on the Pi); **`Fermer le départ`** closes it. The line is kept
+  when start mode is closed and across a power cut.
+- **Line:** take the GPS antenna (the Pi's VK-162) next to the committee boat's flag and tap
+  **`Ping comité`**, then next to the pin buoy and tap **`Ping bouée`**: each stores the boat's
+  current GPS position. Fallback: **`Saisir`** and type the end in degrees + decimal minutes
+  (`43 42,966`), exactly like a mark on the Carte tab. The map shows the line and its two ends.
+- **Timer:** tap **`5:00`** at the 5-minute signal (19:55 for the 20:00 start). At every later
+  signal tap **`SYNC`**: it rounds the countdown to the nearest full minute (4:40 → 5:00,
+  4:20 → 4:00); under 0:30 it means "the gun is now". **`STOP`** if the start is postponed. The
+  countdown is kept on the Pi: a page reload shows the same time; after a power cut it comes back
+  once the GPS time is valid.
+- **Numbers:** **`Ligne au cap`** is the time to the line on the current heading (pinching above
+  the polar beat angle counts as bearing away to it); **`Autre bord`** the time after one tack
+  (the heading mirrored about the wind, same angle, plus « Départ : durée d'un virement (s) » from
+  Réglages, `start_tack_s`, 10 s by default, 0–60; start mode only: the router's « Pénalité de
+  virement » is a different setting and is not used here). `marge` = remaining time − time to the
+  line: **positive = time to burn**, negative = late; it turns green within ±5 s. `hors ligne`:
+  that heading crosses the line's extension, outside the ends. Model: measured wind, polar ×
+  efficiency, no current, no acceleration. Without line, GPS, heading or wind the times read `—`
+  and the panel says why.
+- **Zone:** while the timer runs the map shows the start zone: its edge is where the boat reaches
+  the line exactly at the gun at full VMG after one tack of `start_tack_s`. Inside = time to burn,
+  outside = late. It shrinks with the countdown and disappears in the last `start_tack_s`
+  seconds. The course side is the side of the active mark (else windward).
+- **Alert:** when the other tack's margin reaches zero the panel turns inverted and reads
+  **`VIREZ POUR LA LIGNE`**, with three beeps. Tap the panel once after loading the page so the
+  tablet is allowed to play sound.
+- **Gun:** at 0:00 the timer stops and start mode closes on every tablet; routing to the first
+  mark goes on unchanged.
+
 ## Night-before checklist — Check-list de la veille
 
 - [ ] `ÉCRAN: verrou` after one tap on `http://10.42.0.1`
@@ -132,3 +165,4 @@ the top, with the map below. The column has three blocks:
 - [ ] Map drawn (no `CARTE INDISPONIBLE`), course and marks visible
 - [ ] Night mode readable at the lowest usable brightness, no white/green light
 - [ ] Lock: water on the screen changes nothing; 2 s press then release unlocks
+- [ ] Mode départ : ping, 5:00, SYNC, rechargement, Fermer (TABLET-SETUP §11)

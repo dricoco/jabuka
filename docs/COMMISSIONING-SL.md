@@ -42,6 +42,12 @@ Podrobnosti v francoščini: [COMMISSIONING.md](COMMISSIONING.md).
 Pritisni, ko zdaj ne želiš obrniti (sunek vetra, promet, posadka ni pripravljena). Pi
 preračuna pot na tem halzu. `Virement imposé (terre)`: obrni pred koncem odštevanja (kopno!).
 
+## Start (DÉPART)
+
+**`DÉPART`** odpre start. **`Ping comité`** / **`Ping bouée`**: GPS ob ladji odbora / ob boji.
+**`5:00`** ob 5-minutnem signalu, **`SYNC`** ob vsakem naslednjem (zaokroži na celo minuto).
+**`VIREZ POUR LA LIGNE`** (+ pisk): obrni zdaj, da prideš na črto ob strelu. Ob strelu se zapre.
+
 ## Noč in zaklep
 
 - Gumb **`☾ Nuit`**: rdeče na črnem. Drsnik zmanjša svetlost.

@@ -313,6 +313,10 @@ et d'arrivée), et on sait le changer en moins de 30 s en course.
 | 13:10 | **« Côtés confirmés »** : l'alerte « Côtés à confirmer (IC) » disparaît | HUMAN [R7.si] | plus d'alerte |
 | 13:15 | Exercice : passer à l'autre parcours, « Finir ici », l'annuler, revenir, en moins de **30 s** (répété par le script) | [R7.drill] HUMAN [R7.si] | < 30 s, aucun `409` |
 | 13:20 | Imprimer ou écrire la carte du parcours (marques, côtés, ligne, réglages notés au §4) | HUMAN | carte dans le sac |
+| 13:30 | Exercice **mode départ** à quai (TABLET-SETUP §11) : `DÉPART`, `Ping comité`, saisie de la bouée, `5:00`, `SYNC`, recharger la page, `Fermer le départ` | HUMAN | chrono conservé au rechargement, ligne affichée sur la carte, panneau fermé |
+
+La vraie ligne de départ se « pingue » en mer, avant le signal d'avertissement (comité puis
+bouée, antenne GPS au plus près de chacun).
 
 Renvois : 02-UAT #6 (marques, côtés, ligne contre les IC), 02-04 human item 1 (exercice sur la
 tablette). Le script fait le même enchaînement que la tablette, chaque changement portant

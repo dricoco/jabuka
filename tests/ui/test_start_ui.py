@@ -131,3 +131,82 @@ def test_start_zone_and_times_on_the_map(page, feeder) -> None:
     )
     assert page.console_errors == []
     assert page.external_requests == []
+
+
+# -- Task 3: layout and night (HELM-03, night start at 20:00) --------------------------------------
+LAYOUT_JS = """() => {
+  const r = (id) => document.getElementById(id).getBoundingClientRect();
+  const hit = (a, b) => a.left < b.right - 1 && b.left < a.right - 1
+    && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+  const p = r("start-panel"), col = r("helm-col"), ctrls = r("map-ctrls"), bar = r("topbar");
+  return {
+    visible: p.width > 0 && p.height > 0,
+    hitCol: hit(p, col), hitCtrls: hit(p, ctrls),
+    bottom: p.bottom, mapMid: (bar.bottom + window.innerHeight) / 2,
+    right: p.right, W: window.innerWidth,
+    scrollX: document.documentElement.scrollWidth > window.innerWidth + 1,
+  };
+}"""
+
+NIGHT_JS = """() => {
+  const ok = (c) => {
+    const skip = ["none", "auto", "transparent", "currentcolor"];
+    if (!c || skip.includes(c)) return true;
+    const m = /^rgba?\\(([^)]+)\\)$/.exec(c);
+    if (!m) return false;
+    const p = m[1].split(/[\\s,\\/]+/).filter(Boolean).map(Number);
+    return p[1] === 0 && p[2] === 0;
+  };
+  const props = ["color", "backgroundColor", "borderTopColor", "borderRightColor",
+    "borderBottomColor", "borderLeftColor", "outlineColor", "fill", "stroke", "caretColor"];
+  const bad = [];
+  let checked = 0;
+  for (const el of document.querySelectorAll(
+    "#start-panel, #start-panel *, #start-ctrls, #start-ctrls *")) {
+    if (!el.getClientRects().length) continue;
+    checked += 1;
+    const cs = getComputedStyle(el);
+    for (const p of props) if (!ok(cs[p])) bad.push(`${el.id || el.className} ${p}=${cs[p]}`);
+  }
+  return {bad, checked};
+}"""
+
+
+def test_start_panel_layout(page, feeder) -> None:
+    pg = _open_start(page, feeder)
+    _set_line(pg, feeder)
+    pg.click("#start-go")
+    feeder.wait_nav(lambda n: n["start"]["timer"]["state"] == "running")
+    for w, h in ((1280, 800), (1024, 600)):
+        pg.set_viewport_size({"width": w, "height": h})
+        pg.wait_for_timeout(300)
+        lay = pg.evaluate(LAYOUT_JS)
+        assert lay["visible"], (w, h, lay)
+        assert not lay["hitCol"] and not lay["hitCtrls"], (w, h, lay)
+        assert lay["bottom"] < lay["mapMid"], (w, h, lay)
+        assert lay["right"] <= lay["W"] and not lay["scrollX"], (w, h, lay)
+    pg.set_viewport_size({"width": 600, "height": 1024})
+    pg.wait_for_timeout(300)
+    lay = pg.evaluate(LAYOUT_JS)
+    assert lay["visible"] and not lay["hitCol"] and not lay["hitCtrls"], lay
+    assert not lay["scrollX"], lay
+    assert page.console_errors == []
+
+
+def test_start_panel_night_is_red_only(page, feeder) -> None:
+    pg = _open_start(page, feeder)
+    _set_line(pg, feeder)
+    pg.click("#start-go")
+    feeder.wait_nav(lambda n: n["start"]["timer"]["state"] == "running")
+    pg.click("#night-toggle")
+    pg.wait_for_function("() => document.body.classList.contains('theme-night')")
+    pg.click("#start-type-pin")  # the typed form (inputs) too
+    pg.wait_for_function("() => !document.getElementById('start-form').hidden")
+    res = pg.evaluate(NIGHT_JS)
+    assert res["checked"] > 15 and res["bad"] == [], res
+    pg.click("#start-form-cancel")
+    pg.click("#start-close")
+    pg.wait_for_function(HIDDEN_JS, timeout=5000)
+    res = pg.evaluate(NIGHT_JS)  # the DÉPART button alone
+    assert res["checked"] >= 2 and res["bad"] == [], res
+    assert page.console_errors == []
