@@ -32,6 +32,10 @@ correspondre à l'encombrement de la boîte (250 × 200 × 37,5 mm, bouchon comp
 avec croquis, quantités et remarques. Régénérer avec `python3 bom/make_bom.py`
 (reportlab ; croquis dans `bom/img/`, rendus depuis FreeCAD).
 
+`bom/X35_support_tablette_montage.pdf` : notice de montage pas à pas (vues éclatées, visserie dessinée
+à l'échelle 1:1). Vues régénérées dans l'interface FreeCAD avec `exec(open('bom/manual_scenes.py').read())`,
+puis PDF avec `python3 bom/make_manual.py`.
+
 ## Points de montage à respecter
 
 - Écrous captifs partout (pas d'inserts à chaud) : glisser les écrous dans leurs fentes avant
