@@ -31,6 +31,7 @@ BTN_Z0, BTN_Z1, BTN_MARGIN = 10.5, 46.5, 5.0
 X_PLUS = 3.0                    # extra width on the +x side only (250 = A1 bed check limit; YA of the mount unchanged up to 4)
 REL_DEPTH = 4.5                 # wall relief beyond the pocket over the button zone (wall left there: WALL_S + X_PLUS - REL_DEPTH)
 HOME_W, HOME_H = 22.0, 8.0       # notch in the frame for the home button (top bezel, centred) [MEASURE]
+EXIT_W = 8.0                    # cable exit slot width: flat USB cable 6 mm wide + 1 mm each side
 X_EXIT = None                   # cable exit slot in the bottom wall: right under the USB-C port (X_PORT, set below)
 FOAM, BAG = 1.5, 0.6            # foam pad behind tablet, freezer bag
 WALL_S, WALL_TB, BACK, FRONT = 4.0, 8.0, 3.0, 3.0
@@ -119,7 +120,7 @@ def build():
     zb = ZC - T_H / 2                                                            # tablet bottom edge
     body = body.cut(box(PX - 1, REL_X, Y_B1, Y_FR + 5,
                         zb + BTN_Z0 - BTN_MARGIN, zb + BTN_Z1 + BTN_MARGIN))       # relief for the proud buttons
-    body = body.cut(box(X_EXIT - 2.75, X_EXIT + 2.75, Y_B1, Y_FR + 5, -OZ - 1, -PZ + 0.1))   # cable exit, faces down, closed by the frame
+    body = body.cut(box(X_EXIT - EXIT_W / 2, X_EXIT + EXIT_W / 2, Y_B1, Y_FR + 5, -OZ - 1, -PZ + 0.1))   # cable exit, faces down, closed by the frame
     for xd in X_DRAIN:
         body = body.cut(cyl(2.0, 20, V(xd, (Y_B1 + Y_RIM) / 2, -OZ - 1), V(0, 0, 1)))       # drain holes
     for x in FR_X:
