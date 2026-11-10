@@ -193,10 +193,29 @@ f. **Boot with no internet.** Unplug Ethernet, reboot, and wait for a GPS fix ou
    Expected: the correct UTC time (within a second). On the diagnostics page the routing time gate
    goes from `blocked` to `ok`.
 
-g. **Tablet joins the AP.** On the tablet, forget other networks and turn mobile data off. Join
-   `jabuka` with the passphrase, then open **http://10.42.0.1/**.
+g. **Tablet joins the AP.** First check the AP's key management on the Pi:
 
-   Expected: the Jabuka diagnostics page, with values, sources and ages.
+   ```bash
+   sudo wpa_cli -i wlan0 status | grep key_mgmt
+   journalctl -b -t jabuka-wifi | grep key_mgmt
+   ```
+
+   Expected: `key_mgmt=WPA2-PSK` (never a `...-SHA256` value), and a line from this boot saying
+   key_mgmt was reset to WPA-PSK (or was already WPA-PSK).
+
+   Why: on this Pi (NetworkManager 1.52, brcmfmac firmware without MFP/SAE) NetworkManager asks
+   wpa_supplicant for WPA-PSK plus WPA-PSK-SHA256, even with `wifi-sec.pmf disable`. The firmware
+   beacons PSK only, but message 3 of the 4-way handshake carries PSK + PSK-SHA256, so clients
+   drop right after it although the passphrase is right. Provision installs
+   `/etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt`, which resets it to WPA-PSK each time
+   jabuka-ap comes up (boot, provision, `sudo jabuka-wifi ap`, fallback from the phone hotspot).
+
+   Then on the tablet, forget other networks and turn mobile data off. Join `jabuka` with the
+   passphrase, then open **http://10.42.0.1/**. Join `jabuka` from a phone too.
+
+   Expected: the tablet and the phone both join `jabuka`, and the tablet shows the Jabuka
+   diagnostics page, with values, sources and ages. After `sudo jabuka-wifi phone` then
+   `sudo jabuka-wifi ap`, the key_mgmt check gives `key_mgmt=WPA2-PSK` again.
 
 h. **kill -9 recovery.**
 
@@ -323,13 +342,29 @@ its own venv), and `nmea2000` 2026.11.3 was released days before it was locked. 
   on its own, and a reboot always starts on the AP. Re-running provision keeps the profile. To
   build the race weather on the Pi itself, see section 8 (`sudo prerace`).
 
-- **Tablet cannot join, or joins and drops:** some clients do not get along with PMF disabled or
-  enabled on the Pi's brcmfmac radio. Toggle it, then forget and rejoin on the tablet:
+- **Tablet cannot join, or joins and drops:** first run the key_mgmt check of section 4 g
+  (`sudo wpa_cli -i wlan0 status | grep key_mgmt`). If it shows a `...-SHA256` value, check that
+  the dispatcher is in place:
 
   ```bash
-  sudo nmcli connection modify jabuka-ap wifi-sec.pmf default
-  sudo nmcli connection up jabuka-ap
+  ls -l /etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt   # -rwxr-xr-x root root
+  systemctl is-enabled NetworkManager-dispatcher                # enabled
+  journalctl -t jabuka-wifi | grep key_mgmt                     # what it did
   ```
+
+  The journal says "boucle évitée" if the loop guard stopped it (3 fixes within 60 s). Re-run
+  `sudo deploy/provision.sh --skip-ap` if the file is missing or not owned by root. Manual fix:
+
+  ```bash
+  sudo wpa_cli -i wlan0 list_networks          # note the id of jabuka
+  sudo wpa_cli -i wlan0 set_network <id> key_mgmt WPA-PSK
+  sudo wpa_cli -i wlan0 disconnect
+  sudo wpa_cli -i wlan0 select_network <id>
+  ```
+
+  Then forget and rejoin `jabuka` on the tablet. The manual fix lasts until the next activation of
+  jabuka-ap, which the dispatcher fixes again. Leave `wifi-sec.pmf` at `disable` (what provision
+  sets): the PMF setting does not remove WPA-PSK-SHA256.
 
 - **/dev/fastnet missing:** compare `lsusb` against the IDs in `/etc/udev/rules.d/99-jabuka.rules`,
   fix the rule, then:
