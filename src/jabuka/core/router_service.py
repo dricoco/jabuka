@@ -10,7 +10,9 @@ advice; RESEARCH Patterns 9 and 11).
   and recreated when stuck or crashed) never blocks the loop. The last good route is kept with
   its growing age.
 - Every time comes from the injected clock: UTC epoch seconds from ``clock.now_utc()`` (GPS
-  disciplined on the Pi) for routing, ``clock.monotonic()`` for state rows.
+  disciplined on the Pi) for routing, ``clock.monotonic()`` for state rows; except the pool
+  watchdog and its re-creation back-off, which supervise a real OS process and run on real
+  monotonic time (``real_monotonic``, quick-261110-lqa).
 
 Units in the route block: degrees TRUE, knots, nm, seconds; unknown values are null, never NaN.
 """
@@ -29,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from jabuka.common.atomicio import atomic_write_json, load_json_with_bak
-from jabuka.common.clock import Clock
+from jabuka.common.clock import Clock, os_monotonic
 from jabuka.common.units import kn_to_ms
 from jabuka.core.state import StateStore
 from jabuka.nav.polar import Polar, polar_to_json
@@ -80,8 +82,10 @@ log = logging.getLogger("jabuka.router")
 ROUTE_MSG_VERSION = 1
 POOL_TIMEOUT_S = 60.0
 POOL_NICE = 10
-POOL_STUCK_S = 2.0 * POOL_TIMEOUT_S  # one job "running" longer than this: the pool is wedged
-POOL_RETRY_S = 30.0  # no pool (creation failed): try again after this
+# one job "running" longer than this: the pool is wedged (real s: OS monotonic, never the sim clock)
+POOL_STUCK_S = 2.0 * POOL_TIMEOUT_S
+# no pool (creation failed): try again after this (real s: OS monotonic, never the sim clock)
+POOL_RETRY_S = 30.0
 MAX_ROUTE_POINTS = 300
 RETRY_NO_ROUTE_S = 60.0  # no route yet and the last request failed: retry after this
 # Route expiry (03-REVIEW CR-02): a displayed route goes stale, then is withdrawn ("outdated":
@@ -215,9 +219,13 @@ class RouterService:
         racepack_dir: str | Path | None,
         *,
         pool_factory: Callable[[], Any] | None = None,
+        real_monotonic: Callable[[], float] = os_monotonic,
     ) -> None:
         self.state = state
         self.clock = clock
+        # real OS time for supervising the worker process (injectable for tests); with --clock gps
+        # it is the same clock as clock.monotonic, so production behaviour is identical
+        self.real_monotonic = real_monotonic
         self.nav = nav
         self.hub = hub
         self.data_dir = Path(data_dir)
@@ -265,10 +273,10 @@ class RouterService:
         }
         # pool watchdog (03-REVIEW CR-01): never let routing stop silently
         self._pool_wanted = False  # startup created a pool: keep one alive
-        self._pool_watch: tuple[Any, float] | None = None  # (running job key, since t_mono)
+        self._pool_watch: tuple[Any, float] | None = None  # (running job key, since real t)
         self._pool_faults_seen = 0
         self._pool_alert: tuple[str, float] | None = None  # (text, until t_mono)
-        self._pool_retry_mono: float | None = None
+        self._pool_retry_mono: float | None = None  # last pool creation attempt (real t)
         self.last_block: dict | None = None
         self._missed_edge = False
         # tack advice (ROUT-06..10)
@@ -801,6 +809,7 @@ class RouterService:
     # -- worker ------------------------------------------------------------------------------
     def _pool_alarm(self, why: str) -> None:
         """Routing-health alert (5 min) and Diag reason for a pool failure or restart."""
+        # alert lifetimes are UI-facing: they stay on the core clock, like INVALID_ALERT_S
         self._pool_alert = (ALERT_POOL + why, self.clock.monotonic() + POOL_ALERT_S)
         self._last_fail = f"routeur relancé : {why}"
         self._fail_course_version = self.nav.course.version
@@ -825,8 +834,12 @@ class RouterService:
 
     def _watch_pool(self) -> None:
         """1 Hz pool watchdog (03-REVIEW CR-01): alert on pool faults, recycle a pool whose job
-        has been running for more than POOL_STUCK_S, recreate a missing pool."""
-        mono = self.clock.monotonic()
+        has been running for more than POOL_STUCK_S, recreate a missing pool.
+
+        POOL_STUCK_S and POOL_RETRY_S are measured in real seconds (``real_monotonic``) because
+        the worker is a real process: under --clock sim x20 the core clock turned a 6 s Pi job
+        into "stuck for 120 s" (quick-261110-lqa)."""
+        mono = self.real_monotonic()
         pool = self.pool
         if pool is None:
             self._pool_watch = None
@@ -879,7 +892,7 @@ class RouterService:
         self.pool = None
         new = self._new_pool()
         self.pool = new
-        self._pool_retry_mono = self.clock.monotonic()
+        self._pool_retry_mono = self.real_monotonic()  # same clock as _watch_pool's back-off
         if old is not None and old is not new:
             try:
                 old.close()

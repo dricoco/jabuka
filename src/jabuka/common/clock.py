@@ -6,6 +6,8 @@ or the monotonic clock (enforced by tests/test_no_wallclock.py).
 - GpsClock: UTC disciplined by gpsd TPV fixes (3 consistent sane fixes), holdover, jump handling.
 - SimClock: a simulated monotonic clock that only moves forward, driven by advance(dt) in tests
   and by observe_utc(t_sim) from replay/sim messages.
+- os_monotonic(): the OS monotonic clock, never simulated, for supervising real OS processes only
+  (the router worker pool watchdog, quick-261110-lqa).
 """
 
 from __future__ import annotations
@@ -30,6 +32,14 @@ class Clock(Protocol):
     def status(self) -> dict: ...
 
     async def sleep_until(self, t_mono: float) -> None: ...
+
+
+def os_monotonic() -> float:
+    """The OS monotonic clock in seconds, never simulated or accelerated. Only for supervising
+    real OS processes (the router worker pool watchdog and its re-creation back-off), whose run
+    time is real seconds whatever the injected Clock (SimClock follows sim message time, x20
+    under the soak). Domain time still comes from the injected Clock (quick-261110-lqa)."""
+    return time.monotonic()
 
 
 def utc_epoch(clock: Clock) -> float | None:

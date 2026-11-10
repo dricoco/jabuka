@@ -431,7 +431,7 @@ def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
         return made[-1]
 
     pools[0].hold = True  # the first job never completes: a wedged pool
-    core = routing_core(pool_factory=factory)
+    core = routing_core(pool_factory=factory, real_clock=True)
     pos = rh.boat_near_plic(2.0)
     nav = None
     for _ in range(int(2 * 60 + 5)):
@@ -453,6 +453,41 @@ def test_wedged_pool_is_recycled_with_an_alert(routing_core, rh) -> None:
     pools[0].hold = False
 
 
+# quick-261110-lqa (Pi soak: --clock sim x20): the watchdog supervises a real OS process, so it
+# measures real seconds. 200 sim s at x20 are 10 real s: a slow first job is never recycled.
+def test_accelerated_sim_clock_never_recycles_a_slow_job(routing_core, rh) -> None:
+    from jabuka.core.router_service import POOL_STUCK_S
+
+    made: list = []
+
+    def factory():
+        p = rh.FakePool()
+        p.hold = not made  # the first job runs (slowly) until released
+        made.append(p)
+        return p
+
+    core = routing_core(pool_factory=factory, real_clock=True)
+    core.real_rate = 1.0 / 20.0  # the soak's --speed 20
+    pos = rh.boat_near_plic(2.0)
+    t0 = core.clock.monotonic()
+    nav = None
+    try:
+        for _ in range(200):
+            core.sail(*pos, 157.0)
+            nav = core.tick(1.0)
+        assert core.clock.monotonic() - t0 > POOL_STUCK_S  # the core clock alone would recycle
+        assert len(made) == 1, "a job running 10 real s must not be recycled"
+        assert core.router.health()["pool_recycled"] == 0
+        assert not any(a.startswith("ROUTEUR RELANCÉ") for a in nav["alerts"]), nav["alerts"]
+        assert core.router.busy()
+        made[0].hold = False
+        core.settle()
+        nav = core.tick(0.0)
+        assert nav["route"]["state"] == "ok" and nav["route"]["version"] >= 1, nav["route"]
+    finally:
+        _unwedge(made)
+
+
 # 04-05 (04-REVIEW WR-05): a routing cycle lost to a recycled pool is a failed cycle
 def _shown_route_then_wedge(routing_core, rh):
     """First route adopted (version 1) from an answering pool, then that pool and every later
@@ -465,7 +500,7 @@ def _shown_route_then_wedge(routing_core, rh):
         made.append(p)
         return p
 
-    core = routing_core(pool_factory=factory)
+    core = routing_core(pool_factory=factory, real_clock=True)
     pos = rh.boat_near_plic(2.0)
     core.sail(*pos, 157.0)
     core.tick(1.0)
@@ -555,7 +590,7 @@ def test_watchdog_never_recreates_a_pool_after_shutdown(routing_core, fake_pool,
         made.append(rh.FakePool())
         return made[-1]
 
-    core = routing_core(pool_factory=factory)
+    core = routing_core(pool_factory=factory, real_clock=True)
     pos = rh.boat_near_plic(2.0)
     core.sail(*pos, 157.0)
     core.tick(1.0)

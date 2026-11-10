@@ -4,7 +4,9 @@
   a generated uniform wind.npz with its sha256 sidecar (prep.wxpack.write_npz).
 - ``RoutingCore``: CoreContext + TestClient with the 1 Hz tick loop disabled; the test drives the
   ticks itself, inside the event loop thread (``client.portal.call``), so the router's tasks are
-  scheduled exactly as in production.
+  scheduled exactly as in production. ``real_clock=True`` installs a manual real clock as
+  ``router.real_monotonic`` (the pool watchdog's OS time): ``tick(dt)`` advances it by
+  ``dt * real_rate`` and ``advance_real(s)`` moves it alone (quick-261110-lqa).
 - ``FakePool``: scripted stand-in for RouterPool (deterministic CycleResults, no process).
 """
 
@@ -240,7 +242,9 @@ class FakePool:
 
 
 class RoutingCore:
-    """CoreContext + TestClient; ticks run in the event-loop thread via the portal."""
+    """CoreContext + TestClient; ticks run in the event-loop thread via the portal.
+    ``real_clock=True``: the router's watchdog reads ``real_t`` (manual real time) instead of
+    the OS monotonic clock."""
 
     def __init__(
         self,
@@ -252,6 +256,7 @@ class RoutingCore:
         utc: float | None = T_START,
         pool_factory: Callable[..., Any] | None = None,
         tick_loop: bool = False,
+        real_clock: bool = False,
     ) -> None:
         self.clock = clock if clock is not None else SimClock(start_utc=utc)
         self.ctx = CoreContext.create(
@@ -259,6 +264,12 @@ class RoutingCore:
         )
         if pool_factory is not None:
             self.ctx.router.pool_factory = pool_factory
+        # manual real (OS) seconds for the pool watchdog; real_rate = real s per sim s of tick(dt)
+        # (1/20 = the soak's --speed 20). Without real_clock the router keeps os_monotonic.
+        self.real_t = 0.0
+        self.real_rate = 1.0
+        if real_clock:
+            self.ctx.router.real_monotonic = lambda: self.real_t
         if not tick_loop:
 
             async def _no_tick_loop(first_target: float) -> None:
@@ -346,11 +357,16 @@ class RoutingCore:
     def tick(self, dt: float = 0.0) -> dict:
         if dt and isinstance(self.clock, SimClock):
             self.clock.advance(dt)
+        self.real_t += dt * self.real_rate
         self.call(self.ctx.tick_once)
         nav = self.ctx.nav.last
         assert nav is not None
         self.navs.append(nav)
         return nav
+
+    def advance_real(self, seconds: float) -> None:
+        """Real time passes while the sim clock stands still (only seen with real_clock=True)."""
+        self.real_t += seconds
 
     def settle(self, timeout: float = 5.0) -> None:
         """Let the router's pending tasks run (real time, the clock does not move)."""
