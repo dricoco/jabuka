@@ -108,6 +108,10 @@ detach() {
     fi
 }
 
+# Every `nmcli connection up "$AP"` below (ap, and the fallback after a failed phone join), like
+# NetworkManager's own autoconnect fallback, fires a dispatcher "up" event for jabuka-ap:
+# /etc/NetworkManager/dispatcher.d/90-jabuka-ap-keymgmt then resets wpa_supplicant's key_mgmt to
+# WPA-PSK (brcmfmac, PI-SETUP.md section 4 g), so no extra step is needed here.
 do_switch() {
     case "$1" in
         phone)

@@ -174,3 +174,156 @@ def test_sha256_is_reset_to_wpa_psk_on_the_listed_id(env: Env) -> None:
     for token in ("WPA-PSK-SHA256", "-> WPA-PSK", " 3 "):
         assert token in logs[0], logs[0]
     assert env.state_file.read_text().strip() == "WPA-PSK"
+
+
+def test_already_wpa_psk_is_left_alone(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state("WPA-PSK")
+    proc = env.run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for sub in ("set_network", "disconnect", "select_network"):
+        assert not env.wpa(sub), env.calls()
+    logs = env.logs()
+    assert len(logs) == 1 and "rien à faire" in logs[0], logs
+
+
+def test_second_up_event_is_a_no_op(env: Env) -> None:
+    """The re-select may fire another "up" for jabuka-ap: the stateful fake now says WPA-PSK."""
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    assert env.run().returncode == 0
+    assert env.run().returncode == 0
+    assert len(env.wpa("set_network")) == 1, env.calls()
+    logs = env.logs()
+    assert len(logs) == 2 and "rien à faire" in logs[1], logs
+
+
+@pytest.mark.parametrize(
+    ("iface", "action", "connection_id"),
+    [
+        ("wlan0", "up", "jabuka-phone"),
+        ("wlan0", "up", "Wired connection 1"),
+        ("wlan0", "down", "jabuka-ap"),
+        ("wlan0", "pre-down", "jabuka-ap"),
+        ("wlan0", "dhcp4-change", "jabuka-ap"),
+        ("wlan0", "reapply", "jabuka-ap"),
+        ("eth0", "up", "jabuka-ap"),
+        ("none", "hostname", None),
+        ("wlan0", "connectivity-change", None),
+    ],
+)
+def test_every_other_event_is_silent(
+    env: Env, iface: str, action: str, connection_id: str | None
+) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    proc = env.run(iface, action, connection_id)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert env.calls() == []
+
+
+def test_missing_wpa_cli_logs_and_exits_0_without_waiting(env: Env) -> None:
+    proc = env.run(JABUKA_WPA_CLI=str(env.tmp / "no-such-wpa_cli"))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    logs = env.logs()
+    assert len(logs) == 1 and "wpa_cli introuvable" in logs[0], logs
+    assert not env.sleeps()
+
+
+def test_wpa_cli_failing_waits_bounded_then_gives_up(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    proc = env.run(FAKE_WPA_FAIL="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(env.wpa("list_networks")) == 10, env.calls()
+    assert env.sleeps() == ["sleep 1"] * 9
+    assert not env.wpa("set_network")
+    logs = env.logs()
+    assert len(logs) == 1 and "non appliqué" in logs[0], logs
+
+
+def test_get_network_fail_is_bounded_and_changes_nothing(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    proc = env.run(FAKE_GET_FAIL="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(env.wpa("list_networks")) == 10, env.calls()
+    assert len(env.sleeps()) == 9
+    assert not env.wpa("set_network")
+    logs = env.logs()
+    assert len(logs) == 1 and "non appliqué" in logs[0], logs
+
+
+def test_set_network_fail_leaves_the_ap_running(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    proc = env.run(FAKE_SET_FAIL="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(env.wpa("set_network")) == 1
+    assert not env.wpa("disconnect"), env.calls()
+    assert not env.wpa("select_network"), env.calls()
+    logs = env.logs()
+    assert len(logs) == 1 and "ÉCHEC set_network" in logs[0], logs
+
+
+def test_waits_for_wpa_supplicant_to_list_the_network(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    proc = env.run(FAKE_LIST_EMPTY_FIRST="2")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert env.sleeps() == ["sleep 1"] * 2
+    assert env.wpa("set_network") == ["wpa_cli -i wlan0 set_network 3 key_mgmt WPA-PSK"]
+    assert env.wpa("select_network") == ["wpa_cli -i wlan0 select_network 3"]
+
+
+def test_falls_back_to_the_current_network(env: Env) -> None:
+    env.set_networks([("2", "x", "any", "[DISABLED]"), ("5", "other-ssid", "any", "[CURRENT]")])
+    env.set_state(SHA)
+    proc = env.run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert env.wpa("set_network") == ["wpa_cli -i wlan0 set_network 5 key_mgmt WPA-PSK"]
+    assert env.wpa("select_network") == ["wpa_cli -i wlan0 select_network 5"]
+
+
+def test_loop_guard_stops_after_three_fixes_in_60s(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    for _ in range(4):
+        assert env.run(FAKE_STICKY="1").returncode == 0
+    assert len(env.wpa("set_network")) == 3, env.calls()
+    last = env.logs()[-1]
+    assert "boucle" in last, env.logs()
+    assert len(env.wpa("disconnect")) == 3
+
+
+def test_stale_stamps_do_not_block_the_fix(env: Env) -> None:
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    env.run_dir.mkdir()
+    old = "1000000000\n1000000001\n1000000002\n"
+    (env.run_dir / "ap-keymgmt-fixes").write_text(old)
+    proc = env.run(FAKE_STICKY="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(env.wpa("set_network")) == 1, env.calls()
+    assert "boucle" not in " ".join(env.logs())
+    stamps = (env.run_dir / "ap-keymgmt-fixes").read_text().split()
+    assert len(stamps) == 1 and int(stamps[0]) > 1000000002
+
+
+def test_errexit_never_enabled() -> None:
+    for line in SCRIPT.read_text().splitlines():
+        s = line.strip()
+        if s.startswith("set "):
+            assert "-e" not in s and "errexit" not in s, line
+
+
+def test_future_and_junk_stamps_do_not_block_the_fix(env: Env) -> None:
+    """Clock stepped back by chrony: stamps in the future are dropped, junk lines ignored."""
+    env.set_networks(AP_ROWS)
+    env.set_state(SHA)
+    env.run_dir.mkdir()
+    (env.run_dir / "ap-keymgmt-fixes").write_text("9999999999\n9999999998\n9999999997\nx\n08\n")
+    proc = env.run(FAKE_STICKY="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stderr == ""
+    assert len(env.wpa("set_network")) == 1, env.calls()

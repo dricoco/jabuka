@@ -235,6 +235,11 @@ def test_skip_ap_with_example_secrets(deploy_dir: Path) -> None:
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "nmcli" not in proc.stdout
+    # jabuka-wifi can still bring the AP up: the key_mgmt dispatcher is installed anyway
+    commands, installs = _dispatcher_lines(proc.stdout)
+    assert len(installs) == 1, installs
+    assert "-D -o root -g root -m 0755" in installs[0], installs[0]
+    assert DISPATCHER_ENABLE in commands
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="the root check needs a non-root user")

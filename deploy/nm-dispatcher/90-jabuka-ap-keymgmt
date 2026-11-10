@@ -28,10 +28,34 @@ AP_CON=jabuka-ap
 AP_SSID=jabuka
 TAG=jabuka-wifi
 WPA_CLI="${JABUKA_WPA_CLI:-wpa_cli}"
+# wpa_supplicant may not list the network yet when "up" fires: 10 lookups, 1 s apart (about 10 s,
+# short enough for the serial dispatcher queue).
+ATTEMPTS=10
+# Loop guard: at most 3 fixes in 60 s. /run is a tmpfs, so the stamps are cleared at boot.
+RUN_DIR="${JABUKA_WIFI_RUN_DIR:-/run/jabuka-wifi}"
+STAMPS="$RUN_DIR/ap-keymgmt-fixes"
+WINDOW_S=60
+MAX_FIXES=3
 
 log() { logger -t "$TAG" -- "$*" 2>/dev/null || true; }
 
-wpa() { "$WPA_CLI" -i "$IFACE" "$@" 2>&1; }
+# wpa ARGS...: wpa_cli on wlan0, stderr folded in, whitespace and CR stripped. Keeps the exit code.
+wpa() {
+    local out rc
+    out="$("$WPA_CLI" -i "$IFACE" "$@" 2>&1)"
+    rc=$?
+    printf '%s' "$out" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+    return "$rc"
+}
+
+# wpa_ok ARGS...: success means exit 0 AND the reply OK (a FAIL reply may still exit 0).
+# The reply is left in WPA_REPLY (short, logged on failure).
+wpa_ok() {
+    WPA_REPLY="$(wpa "$@")"
+    local rc=$?
+    WPA_REPLY="$(printf '%s' "$WPA_REPLY" | head -n 1 | cut -c1-80)"
+    [ "$rc" -eq 0 ] && [ "$WPA_REPLY" = OK ]
+}
 
 is_id() { case "${1:-}" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 
@@ -54,7 +78,7 @@ pick_id() {
     return 0
 }
 
-# lookup: set NET_ID and KEY_MGMT for the AP network; non-zero if not found.
+# lookup: one attempt; set NET_ID and KEY_MGMT for the AP network, non-zero if not found.
 lookup() {
     local listing
     NET_ID=""
@@ -63,18 +87,66 @@ lookup() {
     NET_ID="$(pick_id <<<"$listing")"
     is_id "$NET_ID" || return 1
     KEY_MGMT="$(wpa get_network "$NET_ID" key_mgmt)" || return 1
-    KEY_MGMT="$(printf '%s' "$KEY_MGMT" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    KEY_MGMT="$(printf '%s' "$KEY_MGMT" | head -n 1)"
     [ -n "$KEY_MGMT" ] || return 1
+    case "$KEY_MGMT" in FAIL*) return 1 ;; esac
     return 0
 }
 
-# apply ID OLD: plain WPA-PSK, then re-select the network so the AP restarts with it.
+# wait_lookup: bounded wait, `sleep 1` only between attempts (9 sleeps at most).
+wait_lookup() {
+    local i
+    for ((i = 1; i <= ATTEMPTS; i++)); do
+        lookup && return 0
+        [ "$i" -lt "$ATTEMPTS" ] && sleep 1
+    done
+    return 1
+}
+
+# guard_allows: false when MAX_FIXES fixes were already applied within WINDOW_S; otherwise
+# records this one. Best effort: an unwritable RUN_DIR never blocks the fix.
+guard_allows() {
+    local now line age kept=() n
+    now="$(date +%s)"
+    is_id "$now" || return 0
+    mkdir -p -m 0755 "$RUN_DIR" 2>/dev/null || return 0
+    if [ -f "$STAMPS" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            is_id "$line" || continue # non-numeric lines are ignored
+            [ "${#line}" -le 12 ] || continue
+            age=$((10#$now - 10#$line))
+            # stamps in the future (clock stepped back by chrony) are dropped, not kept forever
+            [ "$age" -ge 0 ] && [ "$age" -lt "$WINDOW_S" ] && kept+=("$line")
+        done <"$STAMPS"
+    fi
+    n=${#kept[@]}
+    if [ "$n" -ge "$MAX_FIXES" ]; then
+        return 1
+    fi
+    kept+=("$now")
+    printf '%s\n' "${kept[@]}" >"$STAMPS.tmp" 2>/dev/null && mv -f "$STAMPS.tmp" "$STAMPS" 2>/dev/null
+    return 0
+}
+
+# apply ID OLD: plain WPA-PSK, then re-select the network so the AP restarts with it. If
+# set_network fails the AP is left as it is (no disconnect).
 apply() {
-    local id="$1" old="$2"
+    local id="$1" old="$2" ok=1
     is_id "$id" || return 0
-    wpa set_network "$id" key_mgmt WPA-PSK >/dev/null
-    wpa disconnect >/dev/null
-    wpa select_network "$id" >/dev/null
+    if ! wpa_ok set_network "$id" key_mgmt WPA-PSK; then
+        log "ÉCHEC set_network $id key_mgmt WPA-PSK ($WPA_REPLY) : AP laissé tel quel"
+        return 0
+    fi
+    # A failed disconnect still tries select_network, which alone restarts the AP.
+    if ! wpa_ok disconnect; then
+        log "ÉCHEC disconnect ($WPA_REPLY) : relancer avec sudo jabuka-wifi ap ou redémarrer le Pi"
+        ok=0
+    fi
+    if ! wpa_ok select_network "$id"; then
+        log "ÉCHEC select_network $id ($WPA_REPLY) : relancer avec sudo jabuka-wifi ap ou redémarrer le Pi"
+        ok=0
+    fi
+    [ "$ok" -eq 1 ] || return 0
     log "$AP_CON : key_mgmt « $old » -> WPA-PSK sur le réseau $id (brcmfmac sans PSK-SHA256), AP relancé"
 }
 
@@ -87,10 +159,23 @@ main() {
         log "wpa_cli introuvable : correctif key_mgmt de $AP_CON non appliqué"
         return 0
     fi
-    lookup || return 0
+    if ! wait_lookup; then
+        log "wpa_supplicant : réseau $AP_SSID introuvable après $ATTEMPTS essais (wpa_cli en échec ?) : correctif key_mgmt non appliqué"
+        return 0
+    fi
     case "$KEY_MGMT" in
-        *WPA-PSK-SHA256*) apply "$NET_ID" "$KEY_MGMT" ;;
+        *WPA-PSK-SHA256*) ;;
+        *)
+            # Idempotent: a second "up" (e.g. fired by our own re-select) ends here.
+            log "$AP_CON : key_mgmt déjà « $KEY_MGMT » (réseau $NET_ID), rien à faire"
+            return 0
+            ;;
     esac
+    if ! guard_allows; then
+        log "correctif key_mgmt déjà appliqué $MAX_FIXES fois en $WINDOW_S s : abandon (boucle évitée), voir PI-SETUP.md section 6"
+        return 0
+    fi
+    apply "$NET_ID" "$KEY_MGMT"
     return 0
 }
 
