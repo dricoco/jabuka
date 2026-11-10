@@ -395,3 +395,33 @@ def test_first_route_wait_is_real_seconds_and_covers_a_pool_retry(monkeypatch) -
     monkeypatch.setattr(tablet, "time", fake_time)
     assert client.wait(lambda tb: None, 5.0) is None
     assert len(calls) <= 8
+
+
+def test_pty_reowned_when_the_replug_reuses_the_same_slave(tmp_path: Path, monkeypatch) -> None:
+    """After an unplug the kernel hands back the same /dev/pts/N (root 0600): the watcher must
+    chown it again although the link target did not change (Pi soak, 2026-11-10)."""
+    import os
+    import types
+
+    from jabuka.tools import soak as soak_tool
+
+    pty = tmp_path / "pts-2"
+    pty.write_text("")
+    link = tmp_path / "fastnet-pty"
+    link.symlink_to(pty)
+    calls: list[tuple] = []
+    monkeypatch.setattr(soak_tool.os, "chown", lambda p, uid, gid: calls.append((p, uid, gid)))
+    logs: list[tuple] = []
+    h = types.SimpleNamespace(
+        link=link,
+        owner=(os.getuid() + 1, os.getgid()),
+        _pty_failed=None,
+        log=lambda kind, **kw: logs.append((kind, kw)),
+    )
+    soak_tool.Harness._own_pty_once(h)  # first pty: chowned
+    soak_tool.Harness._own_pty_once(h)  # "replug" on the same path, still not ours: chowned again
+    assert [c[0] for c in calls] == [str(pty), str(pty)]
+    h.owner = (os.getuid(), os.getgid())  # already owned: nothing to do
+    soak_tool.Harness._own_pty_once(h)
+    assert len(calls) == 2
+    assert [k for k, _ in logs] == ["pty_chown", "pty_chown"]

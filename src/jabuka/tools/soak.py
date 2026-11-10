@@ -185,6 +185,7 @@ class Harness:
                 self.gpsd_port = _free(socket.SOCK_STREAM)
         self._pty_owner: threading.Thread | None = None
         self._pty_stop = threading.Event()
+        self._pty_failed: str | None = None  # pty path whose chown failure was already logged
         self.tablet: TabletClient | None = None  # type: ignore[assignment]
         self.synth: subprocess.Popen | None = None
         self._synth_reader: threading.Thread | None = None
@@ -538,21 +539,34 @@ class Harness:
 
     def _own_pty(self) -> None:
         """System scope: every pty slave the synth creates (start and each unplug reopen) is
-        chowned to the ingest's User=, which opens it through the link."""
-        last = None
+        chowned to the ingest's User=, which opens it through the link.
+
+        The kernel reuses the slave number after an unplug (the replug pty is often the same
+        /dev/pts/N, root 0600 again), so the owner is checked on every pass, not only when the
+        link target changes."""
         while not self._pty_stop.is_set():
-            try:
-                target = os.path.realpath(self.link) if self.link.is_symlink() else None
-            except OSError:
-                target = None
-            if target and target != last and self.owner is not None:
-                try:
-                    os.chown(target, *self.owner)
-                    last = target
-                    self.log("pty_chown", path=target)
-                except OSError as exc:
-                    self.log("pty_chown_failed", path=target, error=repr(exc))
+            self._own_pty_once()
             self._pty_stop.wait(0.1)
+
+    def _own_pty_once(self) -> None:
+        try:
+            target = os.path.realpath(self.link) if self.link.is_symlink() else None
+        except OSError:
+            target = None
+        if not target or self.owner is None:
+            return
+        try:
+            st = os.stat(target)
+            if (st.st_uid, st.st_gid) == tuple(self.owner):
+                self._pty_failed = None
+                return
+            os.chown(target, *self.owner)
+            self._pty_failed = None
+            self.log("pty_chown", path=target)
+        except OSError as exc:
+            if self._pty_failed != target:  # log once per target, retried every 0.1 s
+                self._pty_failed = target
+                self.log("pty_chown_failed", path=target, error=repr(exc))
 
     def mount_logs_tmpfs(self) -> None:
         logs = self.data_dir / "logs"
