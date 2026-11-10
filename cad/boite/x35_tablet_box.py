@@ -22,7 +22,14 @@ PLUG = 16.0                     # gap under the tablet for a 90deg USB-C plug + 
 # Amazon photo (native landscape: home button bottom-centre, USB-C on the top long edge 25 mm from the right edge,
 # power/vol on the right short edge from 18 mm below the top). Mounted rotated 180 deg so the USB-C faces DOWN:
 # -> USB-C bottom edge near the viewer's left, buttons on the left short edge near the BOTTOM, home button top-centre.
-BTN_FROM_BOTTOM = 18.0 + 4.0     # power button centre from the bottom edge once rotated
+BTN_FROM_BOTTOM = 25.0          # power button centre from the bottom (USB-C) edge once rotated (measured)
+# Volume + power buttons stand PROUD of the tablet edge (measured 2.8 mm) over 10.5..46.5 mm from the
+# bottom edge. The box is widened on the +x (button) side only and the +x wall is relieved over that
+# zone (+ margin), so a tablet sliding against the wall at heel lands on its edge, never on a button.
+BTN_PROUD = 2.8
+BTN_Z0, BTN_Z1, BTN_MARGIN = 10.5, 46.5, 5.0
+X_PLUS = 3.0                    # extra width on the +x side only (250 = A1 bed check limit; YA of the mount unchanged up to 4)
+REL_DEPTH = 4.5                 # wall relief beyond the pocket over the button zone (wall left there: WALL_S + X_PLUS - REL_DEPTH)
 HOME_W, HOME_H = 22.0, 8.0       # notch in the frame for the home button (top bezel, centred) [MEASURE]
 X_EXIT = 20.0                   # cable exit slot in the bottom wall (near the cap slot at x=+15)
 FOAM, BAG = 1.5, 0.6            # foam pad behind tablet, freezer bag
@@ -86,6 +93,8 @@ Y_RIM = Y_T1 + 0.5
 Y_FR = Y_RIM + FRONT                      # box front face = total depth
 PX = T_W / 2 + CLR                        # pocket half width
 OX = PX + WALL_S
+OXP = OX + X_PLUS                         # +x outer face (box is 2*OX + X_PLUS wide)
+REL_X = PX + REL_DEPTH                    # +x wall inner face over the button zone
 PZ = (T_H + CLR + PLUG) / 2               # pocket half height (box centred on VESA)
 OZ = PZ + WALL_TB
 XC = 0.0
@@ -104,8 +113,11 @@ def build():
     parts = {}
 
     # ---------------- body (one piece, 247 wide) ----------------
-    body = rbox(-OX, OX, Y_B0, Y_RIM, -OZ, OZ, 6)
+    body = rbox(-OX, OXP, Y_B0, Y_RIM, -OZ, OZ, 6)
     body = body.cut(rbox(-PX, PX, Y_B1, Y_FR + 5, -PZ, PZ, T_R + CLR))
+    zb = ZC - T_H / 2                                                            # tablet bottom edge
+    body = body.cut(box(PX - 1, REL_X, Y_B1, Y_FR + 5,
+                        zb + BTN_Z0 - BTN_MARGIN, zb + BTN_Z1 + BTN_MARGIN))       # relief for the proud buttons
     body = body.cut(box(X_EXIT - 2.75, X_EXIT + 2.75, Y_B1, Y_FR + 5, -OZ - 1, -PZ + 0.1))   # cable exit, faces down, closed by the frame
     for xd in X_DRAIN:
         body = body.cut(cyl(2.0, 20, V(xd, (Y_B1 + Y_RIM) / 2, -OZ - 1), V(0, 0, 1)))       # drain holes
@@ -118,16 +130,17 @@ def build():
     for x in (-VESA / 2, VESA / 2):
         for z in (-75.0, 75.0):
             body = body.cut(csk(x, Y_B1, z, 1, r_hole=2.25, r_head=4.4, L=8))   # M4 csk into pod
-    body = body.cut(cyl(2.5, 10, V(PX - 1, Y_BTN, Z_BTN), V(1, 0, 0)))          # power-button plunger hole
+    body = body.cut(cyl(2.5, 10, V(REL_X - 1, Y_BTN, Z_BTN), V(1, 0, 0)))       # power-button plunger hole
     parts["Boite"] = body
 
     # power-button plunger, inserted from inside before the tablet (flange keeps it in)
-    pl = cyl(2.2, OX + 2.5 - (TX1 + 0.4), V(TX1 + 0.4, Y_BTN, Z_BTN), V(1, 0, 0))
-    pl = pl.fuse(cyl(3.8, 1.2, V(TX1 + 0.4, Y_BTN, Z_BTN), V(1, 0, 0)))
+    x_pl = TX1 + BTN_PROUD + 0.4                                                # 0.4 mm off the proud button
+    pl = cyl(2.2, OXP + 2.5 - x_pl, V(x_pl, Y_BTN, Z_BTN), V(1, 0, 0))
+    pl = pl.fuse(cyl(3.8, 1.0, V(x_pl, Y_BTN, Z_BTN), V(1, 0, 0)))
     parts["Poussoir"] = pl
 
     # ---------------- front frame (one piece) ----------------
-    fr = rbox(-OX, OX, Y_RIM, Y_FR, -OZ, OZ, 6)
+    fr = rbox(-OX, OXP, Y_RIM, Y_FR, -OZ, OZ, 6)
     fr = fr.cut(rbox(XC - ACT_W / 2 - WIN_M, XC + ACT_W / 2 + WIN_M, Y_RIM - 1, Y_FR + 1,
                      ZC - ACT_H / 2 - WIN_M, ZC + ACT_H / 2 + WIN_M, 3))
     fr = fr.cut(box(XC - HOME_W / 2, XC + HOME_W / 2, Y_RIM - 1, Y_FR + 1,
@@ -209,7 +222,11 @@ def build():
         dims = sorted([bb.XLength, bb.YLength, bb.ZLength])
         fits[n] = ([round(d, 1) for d in (bb.XLength, bb.YLength, bb.ZLength)], dims[1] <= BED - 6 and dims[2] <= BED - 6)
     rep["fits_A1"] = fits
-    rep["box_outer_WxHxD"] = (round(2 * OX, 1), round(OZ + 4 + OZ, 1), round(Y_FR, 1))
+    rep["box_outer_x"] = (round(-OX, 1), round(OXP, 1))
+    # tablet pushed fully to +x (edge on the wall outside the relief): flange outer face vs relief wall
+    rep["button_to_relief_wall_at_heel"] = round(REL_X - (PX + BTN_PROUD), 2)      # tablet pushed fully to +x
+    rep["plunger_flange_to_wall_at_heel"] = round(REL_X - (PX + BTN_PROUD + 1.0), 2)  # flange pushed out by the button
+    rep["box_outer_WxHxD"] = (round(OX + OXP, 1), round(OZ + 4 + OZ, 1), round(Y_FR, 1))
     rep["tablet_frame_overlap_x"] = (round(XC - ACT_W / 2 - WIN_M - TX0, 1), round(TX1 - (XC + ACT_W / 2 + WIN_M), 1))
     rep["tablet_frame_overlap_z"] = round(T_H / 2 - ACT_H / 2 - WIN_M, 1)
     rep["usbc_port_x"] = X_PORT

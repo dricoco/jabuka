@@ -24,7 +24,7 @@ aux butées, taille A1), écrit les STL dans `../../stl/<boite|support>/`, le ST
 `build/` (ignoré par git) et le `.FCStd` dans le dossier du script.
 
 Construire la boîte avant le support : `TAB_W/TAB_H/TAB_D` du support doivent
-correspondre à l'encombrement de la boîte (247 × 200 × 37,5 mm, bouchon compris).
+correspondre à l'encombrement de la boîte (250 × 200 × 37,5 mm, bouchon compris ; élargie de 3 mm côté boutons, `TAB_X0, TAB_X1`).
 
 ## Nomenclature (BOM)
 

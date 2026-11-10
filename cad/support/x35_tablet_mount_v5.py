@@ -46,7 +46,8 @@ EAR = 22.0
 CL_L = 44.0
 BRIDGE_T = 20.0
 H_T = 730.0          # tablet centre = tilt axis height
-TAB_W, TAB_H, TAB_D = 247.0, 200.0, 37.5   # tablet box outer, cap included, symmetric
+TAB_W, TAB_H, TAB_D = 250.0, 200.0, 37.5   # tablet box outer, cap included
+TAB_X0, TAB_X1 = -123.5, 126.5             # box widened 3 mm on +x only (proud buttons): x extent about the VESA centre
 LIFT_MAX = 6.0       # max free play with knob fully loose (nyloc above knob)
 STOP_PLAY = 3.0      # design margin: hard stop is at most this past the last notch
 VESA_T = 6.0
@@ -68,7 +69,7 @@ Y_BR = Y_EAR + BRIDGE_T           # bridge rear face
 def tablet_min_y(yaw, tilt):
     m = 1e9
     t, a = math.radians(tilt), math.radians(yaw)
-    for x in (-TAB_W / 2, TAB_W / 2):
+    for x in (TAB_X0, TAB_X1):
         for y in (TILT_ARM + VESA_T, TILT_ARM + VESA_T + TAB_D):
             for z in (-TAB_H / 2, TAB_H / 2):
                 yt = y * math.cos(t) - z * math.sin(t)
@@ -343,7 +344,7 @@ def build():
         "Knob_yaw_M8": (cyl(4, 45, V(0, YA, Z_Y - 30)).fuse(cyl(16, 14, V(0, YA, Z_Y + 14.2))), DARK),
         "Knob_tilt_M8": (cyl(4, 50, V(-36, YA, H_T), V(1, 0, 0)).fuse(cyl(16, 14, V(-28.2, YA, H_T), V(-1, 0, 0))), DARK),
     })
-    tablet = box(-TAB_W / 2, TAB_W / 2, yv + VESA_T, yv + VESA_T + TAB_D, H_T - TAB_H / 2, H_T + TAB_H / 2)
+    tablet = box(TAB_X0, TAB_X1, yv + VESA_T, yv + VESA_T + TAB_D, H_T - TAB_H / 2, H_T + TAB_H / 2)
 
     # ---- assemble with yaw / tilt ----
     yaw_set = {"Tower", "Knob_yaw_M8"}
