@@ -70,6 +70,8 @@ class Settings(BaseModel):
     stay_extra_min: float = _f(5.0, "On reste : marge (min)", ge=1.0, le=30.0)
     route_waves: bool = _f(True, "Vagues dans le routage")
     route_current: bool = _f(True, "Courant dans le routage")
+    # -- start mode (quick 261110-cuk): the one tack cost of start mode only (O-01) -------------
+    start_tack_s: float = _f(10.0, "Départ : durée d'un virement (s)", ge=0.0, le=60.0)
     # -- GRIB wind (WIND-05/06) ------------------------------------------------------------------
     grib_wind_fallback: bool = _f(True, "Vent GRIB sans instruments")
     bias_enabled: bool = _f(True, "Correction du GRIB (biais)")

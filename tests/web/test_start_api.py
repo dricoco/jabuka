@@ -19,6 +19,9 @@ from jabuka.common.clock import SimClock
 from jabuka.common.units import kn_to_ms
 from jabuka.core.main import CoreContext
 from jabuka.core.web import create_app
+from jabuka.nav import geo
+from jabuka.nav.polar import efficiency_for
+from jabuka.sim.synth import SynthBoat, SynthConfig, udp_values
 
 START_UTC = 1_794_600_000.0  # 2026-11-13
 BOAT = (43.7161, 15.7967)
@@ -71,7 +74,8 @@ def test_start_mode_end_to_end(tmp_data_dir: Path, free_udp_port: int) -> None:
     assert r.status_code == 200
     b = r.json()["start"]
     assert b["open"] is True and b["error"] is False
-    assert b["timer"]["state"] == "off" and b["line"] == {"committee": None, "pin": None}
+    assert b["timer"]["state"] == "off" and b["line"]["committee"] is None
+    assert b["line"]["pin"] is None
 
     # ping without GPS -> 409 no_position
     r = client.post("/api/start/ping", json={"end": "committee"})
@@ -187,3 +191,126 @@ def test_a_start_failure_never_touches_the_rest(
     assert ctx.nav.errors == errors and ctx.nav.start_errors == 1
     ctx.tick_once()  # the tick goes on
     assert ctx.nav.last is not None and ctx.nav.last["start"]["error"] is True
+
+
+# -- Task 2: time to the line, margins, zone, start_tack_s (D-03, O-01) ---------------------------
+TWD = 161.0
+
+
+def _feed_wind(ctx, twd: float = TWD, tws: float = 12.0, twa: float = 45.0) -> None:
+    s = SynthBoat(SynthConfig(twd=twd, tws=tws, twa=twa)).state
+    ctx.on_message({"src": "fastnet", "values": udp_values(s)})
+
+
+def _square_line(client) -> None:
+    """A 0.6 nm line square to the wind, 0.2 nm upwind of BOAT (both tacks lay it)."""
+    centre = geo.offset(*BOAT, math.radians(TWD), 0.2)
+    com = geo.offset(*centre, math.radians(TWD - 90.0), 0.3)
+    pin = geo.offset(*centre, math.radians(TWD + 90.0), 0.3)
+    for end, (lat, lon) in (("committee", com), ("pin", pin)):
+        r = client.put(f"/api/start/line/{end}", json={"lat": lat, "lon": lon})
+        assert r.status_code == 200
+
+
+def _expected_t(ctx, nav: dict, hdg: float, extra_s: float = 0.0) -> float:
+    """Independent recomputation: distance along hdg to the line / (polar x efficiency)."""
+    w, s = nav["wind"], ctx.nav.settings
+    line = nav["start"]["line"]
+    com, pin = line["committee"], line["pin"]
+    lat0, lon0 = nav["boat"]["lat"], nav["boat"]["lon"]
+    ax, ay = geo.to_local(com["lat"], com["lon"], lat0, lon0)
+    bx, by = geo.to_local(pin["lat"], pin["lon"], lat0, lon0)
+    # boat at the origin: solve t * u(hdg) = A + k (B - A)
+    ux, uy = math.sin(math.radians(hdg)), math.cos(math.radians(hdg))
+    ex, ey = bx - ax, by - ay
+    t = (ax * ey - ay * ex) / (ux * ey - uy * ex)
+    twa = abs((w["twd_t"] - hdg + 180.0) % 360.0 - 180.0)
+    eff = efficiency_for(twa, s.efficiency, s.efficiency_up, s.efficiency_down)
+    return t / (eff * ctx.nav.polar.speed(w["tws_kn"], twa)) * 3600.0 + extra_s
+
+
+def _ready(tmp_data_dir: Path, port: int):
+    ctx, client = _make(tmp_data_dir, port)
+    _feed_wind(ctx)
+    _feed_gps(ctx, *BOAT)
+    client.post("/api/start/open", json={"open": True})
+    _square_line(client)
+    r = client.post("/api/start/timer", json={"action": "start"})
+    return ctx, client, r.json()
+
+
+def test_times_margins_and_zone(tmp_data_dir: Path, free_udp_port: int) -> None:
+    ctx, client, nav = _ready(tmp_data_dir, free_udp_port)
+    st = nav["start"]
+    assert nav["wind"]["source"] != "NONE" and st["reason"] is None
+    assert st["line"]["length_nm"] == pytest.approx(0.6, abs=2e-3)
+    now, other = st["now"], st["other"]
+    assert now["hdg_t"] == pytest.approx(nav["boat"]["hdg_t"], abs=0.1)
+    assert now["on_line"] and other["on_line"]
+    assert now["t_s"] == pytest.approx(_expected_t(ctx, nav, now["hdg_t"]), abs=0.2)
+    assert other["t_s"] == pytest.approx(_expected_t(ctx, nav, other["hdg_t"], 10.0), abs=0.2)
+    rem = st["timer"]["remaining_s"]
+    assert now["margin_s"] == pytest.approx(rem - now["t_s"], abs=0.11)
+    assert other["margin_s"] == pytest.approx(rem - other["t_s"], abs=0.11)
+    zone = st["zone"]
+    assert zone is not None and zone[0] == zone[-1] and len(zone) >= 5
+    # the zone shrinks as the timer runs
+    ctx.clock.advance(150.0)
+    _feed_wind(ctx)
+    _feed_gps(ctx, *BOAT)
+    later = ctx.nav.update()["start"]["zone"]
+    assert later is not None
+
+    def span(ring):
+        return max(p[1] for p in ring) - min(p[1] for p in ring)
+
+    assert span(later) < span(zone)
+
+
+def test_no_wind_gives_a_reason_and_no_zone(tmp_data_dir: Path, free_udp_port: int) -> None:
+    ctx, client = _make(tmp_data_dir, free_udp_port)
+    _feed_gps(ctx, *BOAT)
+    client.post("/api/start/open", json={"open": True})
+    _square_line(client)
+    st = client.post("/api/start/timer", json={"action": "start"}).json()["start"]
+    assert st["reason"] == "no_wind"
+    assert st["now"] is None and st["other"] is None and st["zone"] is None
+    assert st["tack_now"] is False
+    ctx.clock.advance(10.0)
+    _feed_gps(ctx, *BOAT)
+    st = ctx.nav.update()["start"]
+    assert st["timer"]["state"] == "running" and st["timer"]["remaining_s"] == pytest.approx(290.0)
+
+
+def test_start_tack_s_setting(tmp_data_dir: Path, free_udp_port: int) -> None:
+    ctx, client, nav = _ready(tmp_data_dir, free_udp_port)
+    base = nav["start"]["other"]["t_s"]
+    schema = client.get("/api/settings/schema").json()["properties"]["start_tack_s"]
+    assert schema["label"] == "Départ : durée d'un virement (s)"
+    assert schema["default"] == 10.0
+
+    def put(patch: dict) -> int:
+        v = client.get("/api/settings").json()["version"]
+        return client.put("/api/settings", json={"base_version": v, "patch": patch}).status_code
+
+    for bad in (-1, 61):
+        before = client.get("/api/settings").json()
+        assert put({"start_tack_s": bad}) == 422
+        assert client.get("/api/settings").json() == before
+    for ok in (0, 60):
+        assert put({"start_tack_s": ok}) == 200
+        other = client.get("/api/nav").json()["start"]["other"]
+        assert other["t_s"] == pytest.approx(base - 10.0 + ok, abs=0.2)
+    assert put({"start_tack_s": 10, "tack_penalty_s": 90}) == 200
+    nav2 = client.get("/api/nav").json()
+    assert nav2["start"]["other"]["t_s"] == pytest.approx(base, abs=0.2)
+    assert ctx.nav.settings.tack_penalty_s == 90.0
+
+
+def test_settings_file_without_start_tack_s_loads(tmp_data_dir: Path, free_udp_port: int) -> None:
+    (tmp_data_dir / "settings.json").write_text(
+        json.dumps({"version": 3, "settings": {"tack_penalty_s": 60.0}})
+    )
+    ctx, _ = _make(tmp_data_dir, free_udp_port)
+    assert ctx.nav.settings.start_tack_s == 10.0 and ctx.nav.settings.tack_penalty_s == 60.0
+    assert ctx.nav.settings_store.alerts == []

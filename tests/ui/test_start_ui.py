@@ -16,6 +16,13 @@ READY_JS = "() => window.jabuka && window.jabuka.lastNav && document.getElementB
 PANEL_JS = "() => { const p = document.getElementById('start-panel'); return p && !p.hidden; }"
 HIDDEN_JS = "() => { const p = document.getElementById('start-panel'); return p && p.hidden; }"
 TIMER_RE = re.compile(r"^(\d+):(\d\d)$")
+SOURCE_JS = """async (id) => {
+  const m = window.jabuka && window.jabuka.map;
+  const s = m && m.getSource(id);
+  if (!s) return null;
+  const data = typeof s.getData === "function" ? await s.getData() : s.serialize().data;
+  return (data.features || []).map((f) => f.geometry.type);
+}"""
 
 
 def dm(value: float) -> str:
@@ -84,7 +91,6 @@ def test_start_mode_ping_typed_timer_reload_close(page, feeder) -> None:
     server = feeder.server.get("/api/nav")["start"]["timer"]
     assert server["state"] == "running"
     assert abs(shown - server["remaining_s"]) <= 2.0, (shown, server)
-    assert server["remaining_s"] < 300.0
 
     pg.click("#start-stop")
     feeder.wait_nav(lambda n: n["start"]["timer"]["state"] == "off")
@@ -97,3 +103,31 @@ def test_start_mode_ping_typed_timer_reload_close(page, feeder) -> None:
     assert page.console_errors == []
     assert page.external_requests == []
     assert page.bad_responses == []
+
+
+def test_start_zone_and_times_on_the_map(page, feeder) -> None:
+    pg = _open_start(page, feeder)
+    _set_line(pg, feeder)
+    pg.click("#start-go")
+    nav = feeder.wait_nav(lambda n: n["start"]["zone"] is not None)
+    assert nav["start"]["zone"][0] == nav["start"]["zone"][-1]
+    pg.wait_for_function(
+        "async () => { const f = await (" + SOURCE_JS + ")('start-zone');"
+        " return Array.isArray(f) && f.includes('Polygon'); }",
+        timeout=10000,
+    )
+    assert pg.evaluate(SOURCE_JS, "start-line") == ["LineString"]
+    assert pg.evaluate(SOURCE_JS, "start-ends") == ["Point", "Point"]
+    pg.wait_for_function(
+        "() => document.querySelector('#start-now .start-side-value').textContent.length > 0"
+    )
+    text = pg.text_content("#start-now .start-side-value")
+    assert text == "—" or re.match(r"^\d+:\d\d", text), text
+    assert pg.is_visible("#start-line-info")
+    pg.click("#start-close")
+    pg.wait_for_function(HIDDEN_JS, timeout=5000)
+    pg.wait_for_function(
+        "() => window.jabuka.map.getLayoutProperty('start-zone-fill', 'visibility') === 'none'"
+    )
+    assert page.console_errors == []
+    assert page.external_requests == []

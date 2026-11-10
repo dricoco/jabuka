@@ -359,3 +359,15 @@ body.theme-night .maplibregl-ctrl-attrib-button { filter: none; opacity: 0.4; }
   user-select: text; -webkit-user-select: text;
 }
 .start-form-err { font-size: 15px; font-weight: 700; color: var(--bad); min-height: 1.2em; }
+/* times to the line (Task 2): label over value, the margin's colour; the TACK alert inverts the
+   whole panel like the helm's VIREZ cue (.primary-box.cue) */
+.start-times { align-items: flex-start; gap: 4px 16px; }
+.start-side { display: flex; flex-direction: column; min-width: 0; }
+.start-side-value { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.start-side.good .start-side-value { color: var(--good); }
+.start-side.bad .start-side-value { color: var(--bad); }
+.start-line-info { font-size: 15px; font-weight: 600; color: var(--dim); }
+.start-alert { font-size: 28px; font-weight: 900; letter-spacing: 0.02em; }
+.start-panel.tack-now { background: var(--bad); color: var(--bg); border-color: var(--bad); }
+.start-panel.tack-now *:not(input) { color: var(--bg) !important; border-color: var(--bg) !important; }
+.start-panel.tack-now button.ctrl { background: var(--bad); }

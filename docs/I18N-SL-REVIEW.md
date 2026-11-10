@@ -266,6 +266,7 @@ Terms chosen (to confirm first):
 | `settings.stay_extra_min` | On reste : marge (min) | Hold tack: margin (min) | Ostanemo: rezerva (min) |
 | `settings.route_waves` | Vagues dans le routage | Waves in the routing | Valovi v izračunu poti |
 | `settings.route_current` | Courant dans le routage | Current in the routing | Tok v izračunu poti |
+| `settings.start_tack_s` | Départ : durée d'un virement (s) | Start: tack duration (s) | Start: trajanje obrata (s) |
 | `settings.grib_wind_fallback` | Vent GRIB sans instruments | GRIB wind without instruments | Veter GRIB brez instrumentov |
 | `settings.bias_enabled` | Correction du GRIB (biais) | GRIB correction (bias) | Popravek GRIB |
 | `settings.bias_tau_decay_h` | Biais : décroissance (h) | Bias: decay (h) | Popravek: upadanje (h) |
@@ -362,6 +363,17 @@ Terms chosen (to confirm first):
 | `start.noGps` | Pas de position GPS | No GPS position | Ni položaja GPS |
 | `start.noTimer` | Pas de chrono en cours | No timer running | Štoparica ne teče |
 | `start.writeFailed` | Écriture impossible | Write failed | Zapis ni mogoč |
+| `start.lineInfo` | Ligne {d} · {h} | Line {d} · {h} | Črta {d} · {h} |
+| `start.now` | Ligne au cap | Line on heading | Črta po smeri |
+| `start.other` | Autre bord | Other tack | Drugi bok |
+| `start.timeMargin` | {t} · marge {m} | {t} · margin {m} | {t} · rezerva {m} |
+| `start.offLine` | hors ligne | off the line | mimo črte |
+| `start.tackNow` | VIREZ POUR LA LIGNE | TACK FOR THE LINE | OBRNI ZA ČRTO |
+| `start.rNoLine` | Ligne incomplète | Line incomplete | Črta nepopolna |
+| `start.rNoPosition` | Pas de position GPS | No GPS position | Ni položaja GPS |
+| `start.rNoHeading` | Cap inconnu | Heading unknown | Smer neznana |
+| `start.rNoWind` | Pas de vent | No wind | Ni vetra |
+| `start.rCalc` | Erreur de calcul du départ | Start computation error | Napaka izračuna starta |
 
 ## Alerts and reasons from the core (translated on the tablet)
 

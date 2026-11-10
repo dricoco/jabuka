@@ -140,3 +140,107 @@ def test_start_modules_parse(tmp_path: Path) -> None:
         copy.write_text((STATIC / name).read_text())
         proc = subprocess.run([NODE, "--check", str(copy)], capture_output=True, text=True)
         assert proc.returncode == 0, (name, proc.stderr)
+
+
+# -- Task 2: rows, reasons, beep, map --------------------------------------------------------
+def side(t_s, margin, on_line=True) -> dict:
+    return {"hdg_t": 322.3, "twa": 37.7, "t_s": t_s, "on_line": on_line, "margin_s": margin}
+
+
+def test_rows_classes_and_suffix() -> None:
+    b = block(
+        now=side(95.0, 25.0),
+        other=side(118.0, -3.0, on_line=False),
+        line={"committee": None, "pin": None, "length_nm": 0.35, "bearing_t": 75.0},
+        reason=None,
+        tack_now=False,
+    )
+    v = js(f"startView({json.dumps(b)}, 120, {{heading_ref: 'T', variation: 0}})")
+    assert v["now"] == {
+        "label": "Ligne au cap",
+        "time": "1:35",
+        "margin": "+0:25",
+        "cls": "",
+        "offLine": False,
+        "text": "1:35 · marge +0:25",
+    }
+    assert v["other"]["cls"] == "good" and v["other"]["offLine"] is True
+    assert v["other"]["text"] == "1:58 · marge −0:03 · hors ligne"
+    assert v["lineInfo"] == "Ligne 0,35 nm · 075°T"
+    late = js(f"startView({json.dumps(block(now=side(130.0, -10.0)))}, 120).now")
+    assert late["cls"] == "bad"
+    en = js(f"startView({json.dumps(b)}, 120)", "en")
+    assert en["other"]["text"] == "1:58 · margin −0:03 · off the line"
+    assert en["now"]["label"] == "Line on heading" and en["other"]["label"] == "Other tack"
+    assert js(f"startView({json.dumps(block(now=None))}, 1).now.text") == "—"
+
+
+def test_reasons_fr_en() -> None:
+    for reason, fr, en in (
+        ("no_line", "Ligne incomplète", "Line incomplete"),
+        ("no_position", "Pas de position GPS", "No GPS position"),
+        ("no_heading", "Cap inconnu", "Heading unknown"),
+        ("no_wind", "Pas de vent", "No wind"),
+        ("calc_error", "Erreur de calcul du départ", "Start computation error"),
+    ):
+        b = json.dumps(block(reason=reason))
+        assert js(f"startView({b}, 1).reason") == fr
+        assert js(f"startView({b}, 1).reason", "en") == en
+        assert js(f"startView({b}, 1).status") == fr
+    assert js(f"startView({json.dumps(block(reason=None))}, 1).reason") == ""
+    assert js(f"startView({json.dumps(block(tack_now=True))}, 1).tackNow") is True
+
+
+def test_beep_due_rising_edge_and_gap() -> None:
+    seq = js(
+        "(() => { let s = null; const out = [];"
+        " for (const [on, ms] of [[false, 0], [true, 1000], [true, 2000], [false, 3000],"
+        " [true, 4000], [false, 12000], [true, 12500], [true, 13000]]) {"
+        " const r = beepDue(s, on, ms); s = r.state; out.push(r.beep); } return out; })()"
+    )
+    assert seq == [False, True, False, False, False, False, True, False]
+
+
+def test_start_data_features() -> None:
+    ring = [[15.79, 43.69], [15.81, 43.69], [15.80, 43.70], [15.79, 43.69]]
+    b = block(
+        line={
+            "committee": {"lat": 43.70, "lon": 15.79, "src": "ping"},
+            "pin": {"lat": 43.70, "lon": 15.81, "src": "typed"},
+        },
+        zone=ring,
+    )
+    d = js(f"startData({json.dumps(b)})")
+    assert d["zone"]["features"][0]["geometry"] == {"type": "Polygon", "coordinates": [ring]}
+    assert d["line"]["features"][0]["geometry"]["type"] == "LineString"
+    assert [f["properties"]["role"] for f in d["ends"]["features"]] == ["committee", "pin"]
+    assert all(f["geometry"]["type"] == "Point" for f in d["ends"]["features"])
+    empty = js(f"startData({json.dumps(block(zone=None))})")
+    assert empty["zone"]["features"] == [] and empty["line"]["features"] == []
+    assert len(empty["ends"]["features"]) == 1
+    assert js("startData(null).zone.features") == []
+
+
+def _rgb(c: str) -> tuple[int, int, int]:
+    c = c.lstrip("#")
+    return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+
+
+def test_start_layers_night_is_red_only() -> None:
+    layers = js("startLayers('night')")
+    assert {ly["id"] for ly in layers} == {
+        "start-zone-fill",
+        "start-zone-edge",
+        "start-line",
+        "start-ends",
+    }
+    assert {ly["source"] for ly in layers} == {"start-zone", "start-line", "start-ends"}
+    for ly in layers:
+        for key, value in ly["paint"].items():
+            if key.endswith("color"):
+                _, g, b = _rgb(value)
+                assert g == 0 and b == 0, (ly["id"], key, value)
+            if key == "fill-opacity":
+                assert value <= 0.2
+    day = js("startLayers('day')")
+    assert [ly["id"] for ly in day] == [ly["id"] for ly in layers]
