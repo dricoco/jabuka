@@ -100,6 +100,17 @@ export function lastIdx(course) {
   return course.finish_idx ?? course.seq.length - 1;
 }
 
+// Where "À la fin" inserts a new mark: before a real finish (an explicit finish_idx, or a last
+// leg on a start-finish mark after the start), the finish staying the finish; otherwise after
+// the last mark (seq.length: add_mark appends).
+export function endInsertAt(course) {
+  if (course.finish_idx !== null && course.finish_idx !== undefined) return course.finish_idx;
+  const last = course.seq.length - 1;
+  const mark = last >= 1 ? course.marks?.[course.seq[last].mark_id] : null;
+  if (mark && mark.kind === "start-finish") return last;
+  return course.seq.length;
+}
+
 export function circle(lat, lon, radiusNm, n = 48) {
   const k = Math.cos((lat * Math.PI) / 180);
   const ring = [];
@@ -604,8 +615,8 @@ export function mount(ctx) {
     const name = el("input", { id: "mark-name", type: "text", maxlength: "40", value: `M${n}`, autocomplete: "off" });
     const body = el("div", { class: "sheet-body" });
     const post = async (at) => {
-      // "à la fin" = before the finish (the finish stays the finish)
-      const insertAt = st.pos === "end" ? lastIdx(course) : null;
+      // "end": before a real finish, else after the last mark (endInsertAt)
+      const insertAt = st.pos === "end" ? endInsertAt(course) : null;
       const ok = await act(() =>
         ctx.api.post("/api/marks", {
           name: name.value,

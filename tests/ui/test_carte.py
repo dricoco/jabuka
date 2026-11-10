@@ -256,3 +256,43 @@ def test_advance_banner_on_the_helm_and_annuler(page, feeder) -> None:
     pg.wait_for_timeout(3000)  # still abeam in the zone: suppressed, no new advance
     assert feeder.server.get("/api/course")["active_idx"] == 1
     assert page.bad_responses == [], page.bad_responses
+
+
+WATER2 = (43.665, 15.780)  # open water further south-west (checked on the fixture below)
+
+
+def _add_at_end(pg, at: tuple[float, float]) -> int:
+    """Tap open water, choose "À la fin", add: the posted insert_at."""
+    pg.mouse.click(*xy(pg, *at))
+    sheet = pg.locator("#carte-sheet")
+    sheet.wait_for(state="visible")
+    assert "Nouvelle marque" in sheet.inner_text()
+    pg.click("#carte-sheet [data-name=pos] button[data-value=end]")
+    with pg.expect_response(lambda r: r.url.endswith("/api/marks")) as resp:
+        pg.click("#mark-add")
+    assert resp.value.status == 200, resp.value.text()
+    sheet.wait_for(state="hidden")
+    return resp.value.request.post_data_json["insert_at"]
+
+
+def test_add_at_end_before_a_finish_else_after_the_last_mark(page, core_server) -> None:
+    """quick-261110-klg: "À la fin" inserts before the Vodice finish, and after the last mark
+    once the finish is deleted (it used to land before Blitvenica)."""
+    import httpx
+
+    pg = open_carte(page)
+    assert pg.evaluate(EARTH_JS, list(WATER)) == 0, "fixture: WATER is not water"
+    assert pg.evaluate(EARTH_JS, list(WATER2)) == 0, "fixture: WATER2 is not water"
+    assert _add_at_end(pg, WATER) == 4
+    ids = [leg["mark_id"] for leg in course(page)["seq"]]
+    assert ids[-3:] == ["blitvenica", "m1", "vodice"]
+    pg.wait_for_function("() => document.querySelectorAll('#course-list li').length === 6")
+    v = course(page)["version"]
+    r = httpx.delete(core_server.base_url + f"/api/course/legs/5?base_version={v}", timeout=2.0)
+    assert r.status_code == 200, r.text
+    pg.wait_for_function("() => document.querySelectorAll('#course-list li').length === 5")
+    pg.evaluate(IDLE_JS)
+    assert _add_at_end(pg, WATER2) == 5
+    ids = [leg["mark_id"] for leg in course(page)["seq"]]
+    assert ids[-3:] == ["blitvenica", "m1", "m2"]
+    assert page.bad_responses == [], page.bad_responses
