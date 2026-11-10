@@ -335,6 +335,34 @@ Terms chosen (to confirm first):
 | `diag.err.raw_errors` | écriture du journal brut en échec | raw log write failed | zapis surovega dnevnika ni uspel |
 | `diag.err.send_errors` | envoi UDP vers le cœur en échec | UDP send to the core failed | pošiljanje UDP jedru ni uspelo |
 
+## Start mode (Départ)
+
+| key | fr | en (reference) | sl (to proofread) |
+|---|---|---|---|
+| `start.open` | DÉPART | START | START |
+| `start.title` | Départ | Start | Start |
+| `start.go` | 5:00 | 5:00 | 5:00 |
+| `start.sync` | SYNC | SYNC | SYNC |
+| `start.stop` | STOP | STOP | STOP |
+| `start.close` | Fermer le départ | Close start | Zapri start |
+| `start.pingCommittee` | Ping comité | Ping committee | Ping ladja odbora |
+| `start.pingPin` | Ping bouée | Ping pin | Ping boja |
+| `start.committee` | Comité | Committee | Ladja odbora |
+| `start.pin` | Bouée | Pin | Boja |
+| `start.type` | Saisir | Type | Vnesi |
+| `start.formTitle` | {end} : coordonnées | {end}: coordinates | {end}: koordinate |
+| `start.srcPing` | ping | ping | ping |
+| `start.srcTyped` | saisie | typed | vneseno |
+| `start.endUnset` | non défini | not set | ni določeno |
+| `start.timerOff` | Chrono arrêté | Timer stopped | Štoparica ustavljena |
+| `start.waitClock` | Chrono : en attente de l'heure GPS | Timer: waiting for GPS time | Štoparica: čakam na čas GPS |
+| `start.restoredBak` | Ligne restaurée depuis la sauvegarde : vérifier | Line restored from the backup: check it | Črta obnovljena iz varnostne kopije: preveri |
+| `start.unreadable` | Ligne de départ illisible : à refaire | Start line unreadable: set it again | Startna črta neberljiva: določi znova |
+| `start.error` | Mode départ indisponible | Start mode unavailable | Način start ni na voljo |
+| `start.noGps` | Pas de position GPS | No GPS position | Ni položaja GPS |
+| `start.noTimer` | Pas de chrono en cours | No timer running | Štoparica ne teče |
+| `start.writeFailed` | Écriture impossible | Write failed | Zapis ni mogoč |
+
 ## Alerts and reasons from the core (translated on the tablet)
 
 | key | fr | en (reference) | sl (to proofread) |

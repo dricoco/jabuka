@@ -349,6 +349,8 @@ const MODULES = [
   ["lock", "./lock.js", null],
   // the route (03-06): its own try/catch like every module, so it never stops the helm numbers
   ["route", "./route.js", "tab-barre"],
+  // start mode (quick 261110-cuk): its own try/catch too, after the helm
+  ["start", "./start.js", "tab-barre"],
 ];
 
 // Screen awake (HELM-04): Wake Lock / NoSleep video from a user gesture (the first tap anywhere,

@@ -49,6 +49,7 @@ SECTIONS = [
     ("settings.", "Settings (Réglages)"),
     ("lock.", "Lock"),
     ("diag.", "Diagnostics page"),
+    ("start.", "Start mode (Départ)"),
     ("srv.", "Alerts and reasons from the core (translated on the tablet)"),
 ]
 

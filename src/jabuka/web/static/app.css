@@ -318,3 +318,44 @@ body.theme-night .maplibregl-ctrl * {
 body.theme-night .maplibregl-ctrl a,
 body.theme-night .maplibregl-ctrl-attrib a { color: var(--dim) !important; }
 body.theme-night .maplibregl-ctrl-attrib-button { filter: none; opacity: 0.4; }
+
+/* -- start mode (quick 261110-cuk): DÉPART button and the start panel over the map -------------
+   Theme colours only (night: red on black). Landscape: a strip at the top of the map area, right
+   of the helm column, clear of the map buttons at the bottom right and above the middle of the map
+   (the boat at the map centre stays visible). Portrait: at the bottom of the map, left of the map
+   buttons. Touch targets >= 48 px. */
+.start-ctrls { position: absolute; left: 8px; bottom: 36px; }
+.start-ctrls[hidden], .start-panel[hidden], .start-panel [hidden] { display: none !important; }
+.start-ctrls button.ctrl { background: var(--bg-band); font-weight: 900; }
+.start-panel {
+  position: absolute; left: 8px; right: 136px; bottom: 8px; max-height: 34%; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px; padding: 6px 8px;
+  color: var(--fg); background: var(--bg-band); border: 2px solid var(--fg); border-radius: 8px;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+@media (min-aspect-ratio: 1/1) {
+  .start-ctrls { left: calc(var(--col-w) + 8px); }
+  .start-panel {
+    top: 8px; bottom: auto; left: calc(var(--col-w) + 8px); right: 8px;
+    max-height: min(calc(100% - 220px), calc(50% - 20px));
+  }
+}
+.start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.start-panel button.ctrl { min-height: 48px; font-size: 17px; background: var(--bg); }
+.start-timer {
+  font-size: 44px; font-weight: 900; line-height: 1; min-width: 3.2ch;
+  font-variant-numeric: tabular-nums;
+}
+.start-status, .start-msg { font-size: 16px; font-weight: 700; color: var(--warn); }
+.start-msg { color: var(--bad); }
+.start-end-label { font-size: 15px; font-weight: 700; color: var(--dim); text-transform: uppercase; }
+.start-end { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.start-end.unset { color: var(--dim); }
+.start-form { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line); padding-top: 4px; }
+.start-field { display: flex; flex-direction: column; gap: 2px; }
+.start-field input {
+  min-height: 44px; width: 13em; padding: 0 8px; font-size: 18px;
+  color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 6px;
+  user-select: text; -webkit-user-select: text;
+}
+.start-form-err { font-size: 15px; font-weight: 700; color: var(--bad); min-height: 1.2em; }
