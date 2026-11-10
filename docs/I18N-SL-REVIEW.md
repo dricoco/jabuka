@@ -406,6 +406,7 @@ Terms chosen (to confirm first):
 | `srv.rNotLoaded` | pack de course non chargé | race pack not loaded | paket regate ni naložen |
 | `srv.rStayNoTack` | amure inconnue : On reste impossible | unknown tack: cannot hold tack | neznan bok: ostanemo ni mogoče |
 | `srv.rOutCourse` | parcours modifié : recalcul en cours | course changed: recomputing | proga spremenjena: ponovni izračun |
+| `srv.rOutCourseWhy` | parcours modifié : {r} | course changed: {r} | proga spremenjena: {r} |
 | `srv.rOutMissed` | virement manqué : nouvelle route impossible | missed tack: no new route | zamujen obrat: nove poti ni |
 | `srv.rOutMissedWhy` | virement manqué : nouvelle route impossible ({r}) | missed tack: no new route ({r}) | zamujen obrat: nove poti ni ({r}) |
 | `srv.rOutAge` | route périmée | route outdated | pot zastarela |
@@ -441,6 +442,7 @@ Terms chosen (to confirm first):
 | `srv.rBadSide` | côté invalide pour {name} : {x} | invalid side for {name}: {x} | neveljavna stran za {name}: {x} |
 | `srv.rBadSettings` | réglages invalides : {x} | invalid settings: {x} | neveljavne nastavitve: {x} |
 | `srv.rTargetOnLand` | cible dans la terre, aucune eau libre à {n} nm : {name} | target on land, no open water within {n} nm: {name} | cilj na kopnem, ni proste vode v {n} nm: {name} |
+| `srv.rCannotRound` | impossible de contourner {name} : aucun point en eau libre à moins de {n} nm au relèvement {b}° | cannot round {name}: no open-water point within {n} nm at bearing {b}° | obplutje {name} ni mogoče: ni točke v prosti vodi v {n} nm pri smeri {b}° |
 | `srv.rStartOnLand` | départ dans la terre : aucune eau libre à {n} nm | start on land: no open water within {n} nm | start na kopnem: ni proste vode v {n} nm |
 | `srv.wCheckImpossible` | contrôle impossible ({x}) | check impossible ({x}) | preverjanje ni mogoče ({x}) |
 | `srv.wNoUsableWind` | pas de vent utilisable ({r}) | no usable wind ({r}) | ni uporabnega vetra ({r}) |

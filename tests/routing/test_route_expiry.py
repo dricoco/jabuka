@@ -78,7 +78,37 @@ def test_course_change_withdraws_the_route(routing_core, fake_pool, rh) -> None:
         nav = _step(core, pos)
     r = nav["route"]
     _withdrawn(r)
-    assert r["reason"] == "parcours modifié : recalcul en cours"
+    # every cycle after the edit ran for the new course and failed: the helm sees why
+    # (quick-261110-klg; it read "recalcul en cours" forever before)
+    assert r["reason"] == "parcours modifié : crashed: BrokenProcessPool"
+
+
+def test_course_change_reason_while_computing_then_failed(routing_core, fake_pool, rh) -> None:
+    """quick-261110-klg: "recalcul en cours" while no cycle for the CURRENT course version has
+    failed (an older-version failure is not shown), the real failure once one has."""
+    core, pos = _start(routing_core, fake_pool, rh)
+    fake_pool.script = lambda creq: PoolOutcome("timeout", None, 60.0, "no result after 60 s")
+    core.call(lambda: core.router.force("test"))
+    _step(core, pos)
+    assert core.call(lambda: core.router._last_fail) == "timeout: no result after 60 s"
+    try:
+        fake_pool.hold = True
+        fake_pool.script = lambda creq: PoolOutcome("crashed", None, 1.0, "BrokenProcessPool")
+        base = core.client.get("/api/course").json()["version"]
+        assert core.client.post("/api/course/next", json={"base_version": base}).status_code == 200
+        nav = None
+        for _ in range(5):
+            nav = _step(core, pos, settle=False)
+        r = nav["route"]
+        _withdrawn(r)
+        assert r["reason"] == "parcours modifié : recalcul en cours"
+    finally:
+        fake_pool.hold = False
+    core.settle()
+    nav = _step(core, pos)
+    r = nav["route"]
+    _withdrawn(r)
+    assert r["reason"] == "parcours modifié : crashed: BrokenProcessPool"
 
 
 def test_rounding_the_mark_keeps_the_route(routing_core, fake_pool, rh) -> None:

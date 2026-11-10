@@ -341,6 +341,11 @@ COMPOSITES = [
     "ARRIVÉE — Vodice",
     "virement manqué : nouvelle route impossible (échec du routage)",
     "vent absent; landmask.npz absent du pack /data/racepack",
+    # quick-261110-klg: the course-change withdrawal names the real failure, and the rounding
+    # ValueError (rounding.py, not a CORE_FILE) reaches the tablet through RouteFailure
+    "parcours modifié : cible dans la terre, aucune eau libre à 1 nm : Blitvenica",
+    "impossible de contourner Blitvenica : aucun point en eau libre à moins de 1.05 nm au "
+    "relèvement 189°",
 ]
 
 
@@ -380,6 +385,15 @@ def test_every_core_text_is_translated_in_en_and_sl_and_untouched_in_fr() -> Non
         "INVALID ROUTE: route invalid (land)"
     )
     assert res["sl"][texts.index("Marque suivante : Plić Sestre")] == "Naslednja boja: Plić Sestre"
+    changed = texts.index(
+        "parcours modifié : cible dans la terre, aucune eau libre à 1 nm : Blitvenica"
+    )
+    assert res["en"][changed] == (
+        "course changed: target on land, no open water within 1 nm: Blitvenica"
+    )
+    assert res["sl"][changed] == (
+        "proga spremenjena: cilj na kopnem, ni proste vode v 1 nm: Blitvenica"
+    )
     unknown = node(
         "I.setLang('en', {persist: false});\n" + out("I.trServer('message inconnu du cœur')")
     )

@@ -244,6 +244,10 @@ class RouterService:
         self._inflight = 0
         self._last_req_t: float | None = None
         self._last_fail: str | None = None
+        # course version of the cycle behind _last_fail, and of the last request (the course-
+        # change withdrawal names a failure only for the current course, quick-261110-klg)
+        self._fail_course_version: int | None = None
+        self._last_req_course_version: int | None = None
         self._force: str | None = None
         self._soft: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -602,6 +606,7 @@ class RouterService:
         reasons = tuple(t.reason for t in trigs)
         self.request_log.append((now, reasons))
         self.last_request = req
+        self._last_req_course_version = self.nav.course.version
         if self.missed:  # this request (or a newer one) is the missed-tack reroute
             self._missed_req = req.base.request_id
         self._submit(req, forced, reasons)
@@ -798,6 +803,7 @@ class RouterService:
         """Routing-health alert (5 min) and Diag reason for a pool failure or restart."""
         self._pool_alert = (ALERT_POOL + why, self.clock.monotonic() + POOL_ALERT_S)
         self._last_fail = f"routeur relancé : {why}"
+        self._fail_course_version = self.nav.course.version
         log.warning("router pool: %s", why)
 
     def _watch_pack(self) -> None:
@@ -869,7 +875,7 @@ class RouterService:
         # 04-REVIEW WR-05: the cancelled _run never reaches _on_outcome, count the lost cycle here
         if self.last_request is not None and self._inflight > 0:
             self._counts["failed"] += 1
-            self._failed(self.last_request, self._last_fail)
+            self._failed(self.last_request, self._last_fail, self._last_req_course_version)
         self.pool = None
         new = self._new_pool()
         self.pool = new
@@ -945,7 +951,8 @@ class RouterService:
             return
         if out.status != "ok" or not isinstance(out.value, CycleResult):
             self._counts["failed"] += 1
-            self._failed(req, f"{out.status}: {out.error}" if out.error else out.status)
+            why = f"{out.status}: {out.error}" if out.error else out.status
+            self._failed(req, why, course_version)
             return
         res: CycleResult = out.value
         opt = res.optimal
@@ -954,13 +961,13 @@ class RouterService:
             if opt.fail_kind == FAIL_PACK:
                 self._pack_changed = True
             if opt.fail_kind == FAIL_LAND:  # LO-04: the worker's kind, never French words
-                self._invalid(reason, req)
+                self._invalid(reason, req, course_version)
             else:
                 self._counts["failed"] += 1
-                self._failed(req, reason)
+                self._failed(req, reason, course_version)
             return
         if not opt.valid or not opt.path:
-            self._invalid(opt.reason or "route non validée", req)
+            self._invalid(opt.reason or "route non validée", req, course_version)
             return
         if course_version != self.nav.course.version:  # the course changed meanwhile
             self._counts["superseded"] += 1
@@ -1009,20 +1016,24 @@ class RouterService:
             return
         self._adopt(req, shown, kind, course_version, res)
 
-    def _failed(self, req: CycleRequest, reason: str) -> None:
+    def _failed(self, req: CycleRequest, reason: str, course_version: int | None = None) -> None:
         """A routing cycle that produced no usable route (CR-02 bookkeeping)."""
         self._last_fail = reason
+        self._fail_course_version = course_version
         self._fail_streak += 1
         if self.missed and req.base.request_id == self._missed_req:
             self._missed_failed = True  # the missed-tack reroute failed: stop "mise à jour…"
 
-    def _invalid(self, reason: str, req: CycleRequest | None = None) -> None:
+    def _invalid(
+        self, reason: str, req: CycleRequest | None = None, course_version: int | None = None
+    ) -> None:
         """A worker route that failed validation: discarded, alert for 5 min (ROUT-11)."""
         self._counts["invalid"] += 1
         if req is not None:
-            self._failed(req, reason)
+            self._failed(req, reason, course_version)
         else:
             self._last_fail = reason
+            self._fail_course_version = course_version
         self._invalid_alert = (ALERT_INVALID + reason, self.clock.monotonic() + INVALID_ALERT_S)
         log.warning("worker route discarded: %s", reason)
 
@@ -1055,6 +1066,10 @@ class RouterService:
         if r.t0 > now + CLOCK_BACK_TOL_S:  # computed for a time still to come: UTC stepped back
             return REASON_OUT_CLOCK
         if self._course_changed(r, f):
+            # "recalcul en cours" until a cycle for the CURRENT course failed (an older-version
+            # failure says nothing about the new course), then that failure (quick-261110-klg)
+            if self._last_fail is not None and self._fail_course_version == self.nav.course.version:
+                return f"parcours modifié : {self._last_fail}"
             return REASON_OUT_COURSE
         if self.missed and (
             self._missed_failed
