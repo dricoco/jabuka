@@ -37,11 +37,18 @@ def make_display(cfg: config.Config, paths: config.Paths):
 
 
 def make_collector(runner, cfg: config.Config, paths: config.Paths) -> status.Collector:
-    return status.Collector(runner)
+    return status.Collector(runner, fetch=status.make_fetch(cfg.core_url), paths=paths)
 
 
 def make_registry(runner, console, cfg: config.Config, paths: config.Paths, collector):
-    return actions.build_registry(runner, console, cfg, paths.config, save=config.save)
+    return actions.build_registry(
+        runner,
+        console,
+        cfg,
+        paths.config,
+        save=config.save,
+        demo_active=lambda: paths.demo_flag.exists(),
+    )
 
 
 def build(paths: config.Paths | None = None) -> App:
@@ -106,7 +113,42 @@ def cmd_status(_args) -> int:
     return 0
 
 
+def cmd_calibrate(_args) -> int:
+    from . import calibrate, render
+
+    paths = config.Paths()
+    cfg = config.load(paths.config)
+    display = make_display(cfg, paths)
+    if display is None:
+        print("calibration : écran introuvable")
+        return 1
+    reader = make_reader(cfg, paths, display.width, display.height)
+    console = Console(paths.tty)
+    console.graphics()
+    try:
+        cal = calibrate.run_calibration(
+            display, reader, paths.config, render.render_cross, night=cfg.night
+        )
+        time.sleep(2.0)
+    except Exception as e:  # noqa: BLE001 - always give the console back
+        print(f"calibration : échec ({e})")
+        return 1
+    finally:
+        console.text()
+        reader.close()
+        display.close()
+    if cal is None:
+        print("calibration abandonnée (aucun appui en 30 s), valeurs inchangées")
+        return 1
+    print(
+        f"calibration enregistrée dans {paths.config} : x_min {cal.x_min} x_max {cal.x_max} "
+        f"y_min {cal.y_min} y_max {cal.y_max} swap_xy {cal.swap_xy}"
+    )
+    return 0
+
+
 COMMANDS = {
+    "calibrate": cmd_calibrate,
     "run": cmd_run,
     "restore-console": cmd_restore_console,
     "selftest": cmd_selftest,
@@ -123,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("selftest", help="rend tous les écrans en PNG et rejoue le traceur")
     st.add_argument("--out", required=True)
     sub.add_parser("status", help="état du système en texte")
+    sub.add_parser("calibrate", help="calibre le toucher (3 croix)")
     args = p.parse_args(argv)
     return COMMANDS[args.cmd or "run"](args)
 

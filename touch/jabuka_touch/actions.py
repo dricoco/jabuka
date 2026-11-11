@@ -319,7 +319,49 @@ def night_toggle(cfg, cfg_path, save: Callable | None = None) -> Action:
     return Action("night_toggle", "Nuit / jour", fn)
 
 
-def build_registry(runner, console, cfg, cfg_path, save: Callable | None = None, **extra):
+PHONE_HINT = "sudo jabuka-wifi phone depuis le Terminal pour enregistrer le mot de passe"
+DEMO_REFUSAL = "Démo en cours : revenir en mode course avant prerace"
+
+
+def prerace(runner, demo_active: Callable[[], bool] = lambda: False) -> Action:
+    """Launch prerace (detached unit jabuka-prerace, returns at once); refused during a demo."""
+
+    def fn(progress: Progress) -> Outcome:
+        if demo_active():
+            return Outcome(False, (DEMO_REFUSAL,))
+        progress("Lancement de prerace…")
+        res = runner.run([PRERACE], 30.0)
+        return cmd_outcome(res, "Prerace lancé : suivre le journal")
+
+    return Action("prerace", "Prerace", fn)
+
+
+def wifi_ap(runner) -> Action:
+    def fn(progress: Progress) -> Outcome:
+        progress("Retour au point d'accès jabuka…")
+        return cmd_outcome(runner.run([WIFI, "ap"], 30.0), "Bascule vers le Wi-Fi bateau lancée")
+
+    return Action("wifi_ap", "Wi-Fi bateau", fn)
+
+
+def wifi_phone(runner) -> Action:
+    def fn(progress: Progress) -> Outcome:
+        progress("Bascule vers le partage du téléphone…")
+        res = runner.run([WIFI, "phone"], 30.0)
+        return cmd_outcome(res, "Bascule vers le téléphone lancée", hint=PHONE_HINT, n=1)
+
+    return Action("wifi_phone", "Wi-Fi téléphone", fn)
+
+
+def build_registry(
+    runner,
+    console,
+    cfg,
+    cfg_path,
+    save: Callable | None = None,
+    demo_active: Callable[[], bool] | None = None,
+    **extra,
+):
     """The fixed registry of action ids (tasks 2/3 add theirs through ``extra``)."""
     reg = {
         a.id: a
@@ -329,6 +371,9 @@ def build_registry(runner, console, cfg, cfg_path, save: Callable | None = None,
             poweroff(runner),
             terminal(runner, console),
             night_toggle(cfg, cfg_path, save),
+            prerace(runner, demo_active or (lambda: False)),
+            wifi_ap(runner),
+            wifi_phone(runner),
         )
     }
     for a in extra.values():

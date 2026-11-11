@@ -15,7 +15,7 @@ from pathlib import Path
 from . import actions, config, touchin
 from .app import App
 from .fb import FileFrameBuffer
-from .status import KEYS, LABELS, Item, Snapshot
+from .status import API_KEYS, KEYS, LABELS, Collector, Item, Snapshot
 from .ui import UI
 
 RESTART_ARGV = [
@@ -84,9 +84,35 @@ SAMPLE = {
 }
 
 
+SAMPLE_EXTRA = {
+    "journal_prerace": (
+        "prerace: internet direct, pas de bascule Wi-Fi",
+        "jabuka-prep wind --model icon-eu : 49 pas téléchargés",
+        "jabuka-prep waves --model ewam : 27 pas téléchargés",
+        "check : couverture ok jusqu'au 2026-11-15T06:00Z",
+        "pack installé, redémarrage de jabuka-core",
+    ),
+    "prerace_status": (
+        "prerace : 2026-11-12T07:41:03Z",
+        "résultat : OK",
+        "code : 0",
+        "vent : icon-eu run 2026-11-12T00:00Z",
+        "vagues : ewam run 2026-11-12T00:00Z",
+        "Wi-Fi : point d'accès conservé (internet direct)",
+    ),
+    "prerace_last": {"running": False, "date": "2026-11-12T07:41:03Z", "result": "OK", "code": 0},
+    "wifi": {"mode": "ap", "ssid": "jabuka", "clients": 2},
+    "wifi_status": (
+        "Wi-Fi : point d'accès bateau (SSID jabuka)",
+        "Adresse wlan0 : 10.42.0.1/24",
+        "Profil téléphone enregistré : Noway_nomap",
+    ),
+}
+
+
 def sample_snapshot(t: float = 100.0, demo: bool = False, version: int = 1) -> Snapshot:
     items = tuple(Item(k, LABELS[k], *SAMPLE[k]) for k in KEYS)
-    return Snapshot(items, version, t, demo=demo)
+    return Snapshot(items, version, t, demo=demo, extra=dict(SAMPLE_EXTRA))
 
 
 def tap_bytes(cal: touchin.Calibration, x: float, y: float, w: int = 480, h: int = 320) -> bytes:
@@ -200,12 +226,53 @@ def screen_views(clock: ManualClock | None = None) -> list[tuple[str, object]]:
     ui, snap = make(night=True)
     ui.go("system")
     out.append(("system-night", ui.view(snap)))
-    for action in ("restart_services", "terminal", "reboot", "poweroff"):
+    fail = actions.ActionResult(
+        "wifi_phone",
+        "Wi-Fi téléphone",
+        "fail",
+        ("ÉCHEC (code 1)", "jabuka-wifi: pas de terminal pour le mot de passe", actions.PHONE_HINT),
+        1,
+    )
+    ui, snap = make(state=fail)
+    ui.go("prep")
+    out.append(("prep-wifi-fail", ui.view(snap)))
+    ui, snap = make()
+    ui.go("journal")
+    ui.journal_mode = "result"
+    out.append(("journal-result", ui.view(snap)))
+    for action in (
+        "restart_services",
+        "terminal",
+        "reboot",
+        "poweroff",
+        "prerace",
+        "wifi_ap",
+        "wifi_phone",
+    ):
         ui, snap = make()
         ui.go("system")
         ui.open_confirm(action)
         out.append((f"confirm-{action}", ui.view(snap)))
     return out
+
+
+def _tmp_paths(out: Path) -> config.Paths:
+    """Paths pointing into the selftest dir (nothing real is read)."""
+    root = out / "fake-sys"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "temp").write_text("51234\n")
+    return config.Paths(
+        config=root / "touch.json",
+        thermal=root / "temp",
+        data_dir=root,
+        prerace_last=root / "prerace-last.txt",
+        demo_flag=root / "no-demo.conf",
+    )
+
+
+def make_home(snap: Snapshot):
+    ui = UI(ManualClock(snap.t), config.Config(), lambda a: True, lambda: False, wall=lambda: 0.0)
+    return ui.view(snap)
 
 
 def main(out_dir: str) -> int:
@@ -225,6 +292,15 @@ def main(out_dir: str) -> int:
         demo_view = dict(views)["home-demo"]
         px = render.render(demo_view)[2, 2]
         assert tuple(int(v) for v in px) == render.DAY["demo"], f"bandeau DÉMO : {px}"
+        Image.fromarray(
+            render.render_cross(480, 320, (40, 40), "Touchez le centre de la croix (1/3)")
+        ).save(out / "calibration.png")
+        down = Collector(actions.FakeRunner(), fetch=lambda path: None, paths=_tmp_paths(out))
+        snap = down.collect_once()
+        for key in API_KEYS:
+            it = snap.item(key)
+            assert it is not None and it.level == "bad" and it.short == "cœur muet", it
+        Image.fromarray(render.render(make_home(snap))).save(out / "home-core-down.png")
         res = run_tracer(out / "tracer", render.render)
         assert res["calls"] == [RESTART_ARGV], f"commandes du traceur : {res['calls']}"
         assert res["screens"] == ["home", "system", "confirm", "system"], res["screens"]

@@ -151,3 +151,67 @@ def test_view_key_changes(clock: ManualClock) -> None:
     hh.busy = False
     hh.ui.go("system")
     assert hh.ui.view_key(s1) != k1
+
+
+def test_prep_journal_details_navigation_and_extra(h: Harness) -> None:
+    h.ui.snapshot = sample_snapshot()
+    h.tap("prep")
+    assert h.ui.screen == "prep" and h.extra[-1] == {"wifi_status"}
+    lines = h.ui.view().lines
+    assert lines[0].startswith("Prerace : OK") and "code 0" in lines[0]
+    assert lines[1].startswith("Wi-Fi : point d'accès") and "2 clients" in lines[1]
+    h.tap("journal")
+    assert h.ui.screen == "journal" and h.extra[-1] == {"journal_prerace"}
+    assert "jabuka-prep wind" in " ".join(h.ui.view().lines)
+    h.tap("toggle")
+    assert h.extra[-1] == {"prerace_status"}
+    assert "résultat : OK" in h.ui.view().lines
+    h.tap("back")
+    assert h.ui.screen == "prep" and h.extra[-1] == {"wifi_status"}
+    h.tap("back")
+    assert h.ui.screen == "home" and h.extra[-1] == set()
+    h.tap("details")
+    assert h.ui.screen == "details" and len(h.ui.view().lines) == 10
+    h.tap("back")
+    assert h.ui.screen == "home"
+
+
+def test_prep_actions_are_confirmed(h: Harness) -> None:
+    h.tap("prep")
+    for aid in ("prerace", "wifi_ap", "wifi_phone"):
+        h.tap(aid)
+        assert h.ui.screen == "confirm" and h.ui.confirm_action == aid
+        assert h.ui.view().title.endswith("?")
+        h.tap("no")
+        assert h.ui.screen == "prep"
+    assert h.submitted == []
+    h.tap("prerace")
+    h.tap("yes")
+    assert h.submitted == ["prerace"]
+
+
+def test_successful_prerace_opens_the_journal(clock: ManualClock) -> None:
+    from jabuka_touch.actions import ActionResult
+
+    hh = Harness(clock)
+    hh.tap("prep")
+    hh.state = ActionResult("prerace", "Prerace", "ok", ("Prerace lancé",), 1)
+    hh.ui.tick()
+    assert hh.ui.screen == "journal" and hh.extra[-1] == {"journal_prerace"}
+    hh.tap("back")
+    hh.ui.tick()
+    assert hh.ui.screen == "prep"  # the same result does not switch again
+
+
+def test_prep_shows_failure_lines(clock: ManualClock) -> None:
+    from jabuka_touch.actions import PHONE_HINT, ActionResult
+
+    hh = Harness(clock)
+    hh.ui.snapshot = sample_snapshot()
+    hh.ui.go("prep")
+    hh.state = ActionResult(
+        "wifi_phone", "Wi-Fi téléphone", "fail", ("ÉCHEC (code 1)", "pas de terminal", PHONE_HINT)
+    )
+    lines = hh.ui.view().lines
+    assert lines[2] == "Wi-Fi téléphone : ÉCHEC (code 1)"
+    assert lines[3:] == ("pas de terminal", PHONE_HINT)

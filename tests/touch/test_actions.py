@@ -132,3 +132,48 @@ def test_worker_records_failure_and_crash() -> None:
     w.wait(5)
     st = w.state()
     assert st.state == "fail" and st.lines == ("ÉCHEC (code 2)", "non")
+
+
+def test_prerace_and_wifi_argv(runner: FakeRunner, tmp_path: Path) -> None:
+    reg = _registry(runner, tmp_path)
+    for aid in ("prerace", "wifi_ap", "wifi_phone"):
+        assert _run(reg, aid).ok
+    assert runner.calls == [
+        ["/usr/local/sbin/prerace"],
+        ["/usr/local/sbin/jabuka-wifi", "ap"],
+        ["/usr/local/sbin/jabuka-wifi", "phone"],
+    ]
+    assert runner.timeouts == [30.0, 30.0, 30.0]
+
+
+def test_prerace_refused_during_demo(runner: FakeRunner, tmp_path: Path) -> None:
+    reg = actions.build_registry(
+        runner, FakeConsole(), config.Config(), tmp_path / "t.json", demo_active=lambda: True
+    )
+    out = _run(reg, "prerace")
+    assert not out.ok and out.lines == ("Démo en cours : revenir en mode course avant prerace",)
+    assert runner.calls == []
+    assert _run(reg, "wifi_ap").ok  # Wi-Fi switching stays allowed during a demo
+
+
+def test_wifi_phone_failure_lines(runner: FakeRunner, tmp_path: Path) -> None:
+    runner.set(
+        ("/usr/local/sbin/jabuka-wifi", "phone"),
+        CmdResult(1, "", "Mot de passe Wi-Fi\njabuka-wifi: pas de terminal pour le mot de passe\n"),
+    )
+    out = _run(_registry(runner, tmp_path), "wifi_phone")
+    assert not out.ok
+    assert out.lines == (
+        "ÉCHEC (code 1)",
+        "jabuka-wifi: pas de terminal pour le mot de passe",
+        actions.PHONE_HINT,
+    )
+
+
+def test_prerace_already_running_shows_script_output(runner: FakeRunner, tmp_path: Path) -> None:
+    runner.set(
+        ("/usr/local/sbin/prerace",),
+        CmdResult(1, "", "prerace: une préparation est déjà en cours : journalctl -fu x\n"),
+    )
+    out = _run(_registry(runner, tmp_path), "prerace")
+    assert not out.ok and out.lines[0] == "ÉCHEC (code 1)" and "déjà en cours" in out.lines[1]

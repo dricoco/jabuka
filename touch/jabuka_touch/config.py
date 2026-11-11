@@ -157,15 +157,20 @@ def defaults_dict() -> dict:
     return to_dict(Config())
 
 
-def save(path: Path | str, cfg: Config) -> None:
+def write_json(path: Path | str, data: dict) -> None:
+    """Atomic JSON write (tmp + fsync + os.replace), mode 0644."""
     p = Path(path)
     tmp = p.with_name(p.name + ".tmp")
-    data = (json.dumps(to_dict(cfg), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    raw = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
-        os.write(fd, data)
+        os.write(fd, raw)
         os.fsync(fd)
     finally:
         os.close(fd)
     os.chmod(tmp, 0o644)
     os.replace(tmp, p)
+
+
+def save(path: Path | str, cfg: Config) -> None:
+    write_json(path, to_dict(cfg))

@@ -123,3 +123,83 @@ def test_reader_missing_device_retries(tmp_path: Path) -> None:
     taps = r.poll(0)
     assert len(calls) == 2 and len(taps) == 1 and abs(taps[0].x - 50) <= 2
     r.close()
+
+
+def test_solve_calibration_recovers_default() -> None:
+    from jabuka_touch.calibrate import solve_calibration, targets
+
+    w, h = 480, 320
+    tg = targets(w, h)
+    assert tg == [(40, 40), (440, 40), (40, 280)]
+    raws = [CAL.screen_to_raw(x, y, w, h) for x, y in tg]
+    got = solve_calibration(tg, raws, w, h)
+    assert got.swap_xy is True
+    for k in ("x_min", "x_max", "y_min", "y_max"):
+        assert abs(getattr(got, k) - getattr(CAL, k)) <= 2, k
+    flat = Calibration(150, 3950, 3800, 250, False)
+    got = solve_calibration(tg, [flat.screen_to_raw(x, y, w, h) for x, y in tg], w, h)
+    assert got.swap_xy is False
+    for k in ("x_min", "x_max", "y_min", "y_max"):
+        assert abs(getattr(got, k) - getattr(flat, k)) <= 2, k
+
+
+def test_save_calibration_keeps_other_keys(tmp_path: Path) -> None:
+    import json
+
+    from jabuka_touch import config
+    from jabuka_touch.calibrate import save_calibration
+
+    p = tmp_path / "jabuka-touch.json"
+    p.write_text(json.dumps({"night": True, "custom": 1, "touch": {"device_name": "X"}}))
+    save_calibration(p, Calibration(1, 2, 3, 4, False))
+    data = json.loads(p.read_text())
+    assert data["night"] is True and data["custom"] == 1
+    assert data["touch"] == {
+        "device_name": "X",
+        "x_min": 1,
+        "x_max": 2,
+        "y_min": 3,
+        "y_max": 4,
+        "swap_xy": False,
+    }
+    cfg = config.load(p)
+    assert cfg.night is True and cfg.touch.x_max == 2 and cfg.touch.swap_xy is False
+
+
+def test_run_calibration_with_fake_display_and_reader(tmp_path: Path) -> None:
+    from jabuka_touch.calibrate import run_calibration, targets
+
+    clock = ManualClock(0.0)
+    shown = []
+
+    class Display:
+        width, height = 480, 320
+
+        def show(self, frame):
+            shown.append(frame)
+
+    pending = [touchin.Tap(0, 0, *CAL.screen_to_raw(x, y, 480, 320)) for x, y in targets(480, 320)]
+
+    class Reader:
+        def poll(self, timeout):
+            clock.advance(1.0)
+            return [pending.pop(0)] if pending else []
+
+    cal = run_calibration(
+        Display(), Reader(), tmp_path / "c.json", lambda w, h, t, txt, night: (t, txt), clock=clock
+    )
+    assert cal is not None and cal.swap_xy is True
+    assert len(shown) == 4 and "enregistrée" in shown[-1][1]
+    assert (tmp_path / "c.json").exists()
+
+    clock2 = ManualClock(0.0)
+
+    class Idle:
+        def poll(self, timeout):
+            clock2.advance(5.0)
+            return []
+
+    assert (
+        run_calibration(Display(), Idle(), tmp_path / "d.json", lambda *a: a, clock=clock2) is None
+    )
+    assert not (tmp_path / "d.json").exists()

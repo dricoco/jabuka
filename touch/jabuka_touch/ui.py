@@ -37,6 +37,15 @@ CONFIRM_TEXTS: dict[str, tuple[str, str]] = {
     ),
     "reboot": ("Redémarrer le Pi ?", "~1 min sans navigation."),
     "poweroff": ("ÉTEINDRE le Pi ?", "Attendre ~20 s avant de couper le courant."),
+    "prerace": (
+        "Lancer prerace ?",
+        "Télécharge la météo par le partage du téléphone : Wi-Fi bateau coupé 10 à 30 min.",
+    ),
+    "wifi_ap": ("Revenir au Wi-Fi bateau (jabuka) ?", "Les tablettes se reconnectent à jabuka."),
+    "wifi_phone": (
+        "Passer sur le partage du téléphone ?",
+        "Les tablettes perdent la connexion. Retour : WI-FI BATEAU ou redémarrer.",
+    ),
 }
 
 Rect = tuple[int, int, int, int]
@@ -235,15 +244,15 @@ class UI:
             out += L.row(*L.BOTTOM, [_nav("back", "RETOUR", "home")])
         elif screen == "prep":
             out += L.row(
-                120,
-                202,
+                152,
+                236,
                 [
                     _act("prerace", "LANCER PRERACE"),
                     _nav("journal", "JOURNAL", "journal"),
                 ],
             )
             out += L.row(
-                202,
+                236,
                 320,
                 [
                     _act("wifi_ap", "WI-FI BATEAU"),
@@ -355,8 +364,68 @@ class UI:
         return tuple((i.label, i.level, i.short) for i in snap.items)
 
     def lines(self, snap) -> tuple[str, ...]:
-        """Screen-specific text lines (filled by the screens of tasks 2 and 3)."""
+        """Screen-specific text lines."""
+        if self.screen == "details":
+            if snap is None:
+                return ("(collecte en cours…)",)
+            return tuple(f"{i.label} : {i.detail or i.short}" for i in snap.items)
+        if self.screen == "prep":
+            return self.prep_lines(snap)
+        if self.screen == "journal":
+            name = "journal_prerace" if self.journal_mode == "journal" else "prerace_status"
+            got = (getattr(snap, "extra", None) or {}).get(name)
+            head = "Journal prerace :" if name == "journal_prerace" else "Résultat prerace :"
+            return (head, *(got[-10:] if got else ("(chargement…)",)))
+        if self.screen == "demo":
+            return self.demo_lines()
         return ()
+
+    def prep_lines(self, snap) -> tuple[str, ...]:
+        extra = getattr(snap, "extra", None) or {}
+        last = extra.get("prerace_last") or {}
+        if getattr(snap, "prerace_running", False):
+            pr = "Prerace : en cours (JOURNAL pour suivre)"
+        elif last.get("result"):
+            pr = f"Prerace : {last['result']} · {last.get('date') or '?'} · code {last.get('code')}"
+        else:
+            pr = "Prerace : aucune préparation enregistrée"
+        wifi = extra.get("wifi") or {}
+        if wifi.get("mode") == "ap":
+            ssid, n = wifi.get("ssid") or "jabuka", wifi.get("clients", 0)
+            wl = f"Wi-Fi : point d'accès {ssid} · {n} clients"
+        elif wifi.get("mode") == "phone":
+            wl = f"Wi-Fi : téléphone {wifi.get('ssid') or '?'}"
+        else:
+            wl = "Wi-Fi : aucun"
+        status = next(
+            (ln for ln in extra.get("wifi_status") or () if ln.startswith("Wi-Fi :")), None
+        )
+        if status and wifi.get("mode") == "ap":
+            wl = f"{status} · {wifi.get('clients', 0)} clients"
+        elif status:
+            wl = status
+        out = [pr, wl]
+        st = self.state()
+        if st is not None:
+            lines = [ln for ln in st.lines if ln]
+            if st.state == "fail" and lines and lines[0].startswith("ÉCHEC"):
+                out.append(f"{st.title} : {lines[0]}")
+                lines = lines[1:]
+            else:
+                tag = {"running": "…", "ok": "OK", "fail": "ÉCHEC"}.get(st.state, st.state)
+                out.append(f"{st.title} : {tag}")
+            out += lines[-3:]
+        return tuple(out)
+
+    def demo_lines(self) -> tuple[str, ...]:
+        mode = "DÉMO : bateau simulé" if self.demo_active() else "COURSE : capteurs réels"
+        out = [mode]
+        st = self.state()
+        if st is not None and st.id in ("demo_start", "race_mode"):
+            tag = {"running": "…", "ok": "OK", "fail": "ÉCHEC"}.get(st.state, st.state)
+            out.append(f"{st.title} : {tag}")
+            out += list(st.lines[-8:])
+        return tuple(out)
 
     def view(self, snap=None) -> View:
         if snap is not None:

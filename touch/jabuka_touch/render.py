@@ -199,14 +199,20 @@ def _tiles(draw, view, pal) -> None:
         draw.text((x0 + 8, y0 + th / 2 - h / 2 - 2), txt, font=f, fill=pal["tile_text"])
 
 
-def _text_lines(draw, view, pal, y0: float, y1: float, size: int = 15, kind="regular") -> None:
+def _text_lines(
+    draw, view, pal, y0: float, y1: float, size: int = 15, kind="regular", wrap_lines=False
+) -> None:
     f = font(size, kind)
     lh = size + 4
     y = y0 + 2
-    for ln in view.lines:
+    maxw = view.w - 16
+    lines = view.lines
+    if wrap_lines:
+        lines = [part for ln in view.lines for part in wrap(draw, ln, f, maxw)]
+    for ln in lines:
         if y + lh > y1:
             break
-        draw.text((8, y), ellipsize(draw, ln, f, view.w - 16), font=f, fill=pal["text"])
+        draw.text((8, y), ellipsize(draw, ln, f, maxw), font=f, fill=pal["text"])
         y += lh
 
 
@@ -259,7 +265,7 @@ def render(view, w: int | None = None, h: int | None = None) -> np.ndarray:
     elif s == "journal":
         _text_lines(draw, view, pal, 36, 236 * h / 320, size=14, kind="mono")
     elif s == "prep":
-        _text_lines(draw, view, pal, 38, 120 * h / 320, size=16, kind="regular")
+        _text_lines(draw, view, pal, 36, 152 * h / 320, size=14, kind="regular", wrap_lines=True)
     else:
         _text_lines(draw, view, pal, 38, 236 * h / 320, size=15, kind="regular")
     for b in view.buttons:
