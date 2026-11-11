@@ -306,3 +306,104 @@ def test_race_36h_keepalive_rule_expects_nothing_else(
 ) -> None:
     exp, unexp = _classify(tmp_path, tb, kind, _WS_STALL_T + dt0, _WS_STALL_T + dt1)
     assert exp == [] and len(unexp) == 1
+
+
+# -- Pi soak 20261110T220521Z f67: course finished, core restarted without a route ---------------
+def _no_course_nav(finished: bool = True, template: str = "A") -> str:
+    """What the core restarted by f65 showed: course A finished, no route, version 0."""
+    route = {"state": "no_course", "version": 0, "reason": "plus de marque à rejoindre"}
+    course = {"template": template, "finished": finished}
+    return json.dumps({"type": "nav", "route": route, "course": course, "course_version": 9})
+
+
+def _restarted_without_route() -> TabletClient:
+    """v129 was the last route of the core killed by f65; the restarted one has none."""
+    tb = TabletClient("ws://127.0.0.1:9/ws")
+    for v in (127, 128, 129):
+        _adopt(tb, v)
+    tb._on_text(_no_course_nav())
+    return tb
+
+
+def test_last_route_version_is_the_one_the_core_shows_now() -> None:
+    tb = _restarted_without_route()
+    assert tb.max_route_version() == 129
+    assert tb.last_route_version() == 0  # nav.route.version of the restarted core
+
+
+class _FinishedCourseFake(_CoreFake):
+    """Course A finished (GET /api/course); selecting B starts it, a route v1 follows."""
+
+    def __init__(self, tb: TabletClient) -> None:
+        super().__init__(tb)
+        self.course = {"template": "A", "version": 9, "finished": True}
+
+    def http(self, method: str, path: str, body: Any = None, timeout: float = 5.0):
+        self.calls.append((method, path, body))
+        if (method, path) == ("GET", "/api/course"):
+            return 200, dict(self.course)
+        if (method, path) == ("POST", "/api/course/select"):
+            self.course = {"template": body["template"], "version": 10, "finished": False}
+            self.later(lambda: _adopt(self.tablet, 1))
+            return 200, dict(self.course)
+        return 200, {}
+
+
+def test_course_change_on_a_finished_course_after_a_restart_sees_route_1() -> None:
+    h = _FinishedCourseFake(_restarted_without_route())
+    rec = faults.course_change(h, FaultSpec("f67", "course-change", 66000.0))  # type: ignore[arg-type]
+    assert rec["ok"] is not False, rec["notes"]
+    assert rec["route_version_before"] == 0 and rec["template"] == ("A", "B")
+    assert rec["route_version"] == 1 and rec["recovery_s"] is not None
+    assert "next course selected" not in rec["notes"]  # the fake's upkeep selects nothing
+
+
+def _upkeep_harness(tb: TabletClient, course: dict) -> types.SimpleNamespace:
+    h = types.SimpleNamespace(
+        tablet=tb, _course_check=0.0, findings=[], events=[], calls=[], course=course
+    )
+
+    def http(method: str, path: str, body: Any = None, timeout: float = 5.0):
+        h.calls.append((method, path, body))
+        if (method, path) == ("GET", "/api/course"):
+            return 200, dict(h.course)
+        return 200, {}
+
+    h.http = http
+    h.log = lambda kind, **kw: h.events.append((kind, kw))
+    h.sim_now = lambda: 66151.0
+    return h
+
+
+def test_course_upkeep_ignores_a_stale_finished_nav() -> None:
+    """f67: B was selected 0.2 s earlier, the tablet's last nav still said "A finished": the
+    upkeep must not switch the fresh course B back to A."""
+    h = _upkeep_harness(
+        _restarted_without_route(), {"template": "B", "version": 10, "finished": False}
+    )
+    assert soak.Harness.course_upkeep(h) is False  # type: ignore[arg-type]
+    assert [c[:2] for c in h.calls] == [("GET", "/api/course")]
+    assert h.findings == [] and h.events == []
+
+
+def test_course_upkeep_selects_the_other_template_of_a_finished_course() -> None:
+    h = _upkeep_harness(
+        _restarted_without_route(), {"template": "A", "version": 9, "finished": True}
+    )
+    assert soak.Harness.course_upkeep(h) is True  # type: ignore[arg-type]
+    assert h.calls[-1] == ("POST", "/api/course/select", {"template": "B", "base_version": 9})
+    assert h.events[0][0] == "course_finished" and h.events[0][1]["next"] == "B"
+    assert h.findings == ["course A finished at sim 66151 s: B selected"]
+
+
+def test_wait_sim_behind_schedule_still_keeps_the_course_going() -> None:
+    """f66 (at 64888.6 s) and f67 (at 66000 s) started at 65795 / 66144 s: the wait loop never
+    ran, so the course finished at 64215 s stayed finished until f67."""
+    calls: list[str] = []
+    h = types.SimpleNamespace(
+        sim_now=lambda: 65795.0,
+        poll_abort=lambda: None,
+        course_upkeep=lambda: calls.append("upkeep"),
+    )
+    soak.Harness.wait_sim(h, 64888.6)  # type: ignore[arg-type]
+    assert calls == ["upkeep"]

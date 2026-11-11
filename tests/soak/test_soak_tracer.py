@@ -110,13 +110,15 @@ class _FinishedCourseHarness:
     def poll_abort(self) -> None:
         pass
 
-    def course_upkeep(self) -> None:
+    def course_upkeep(self) -> bool:
         import time
 
         if self.tablet.last_nav["course"]["finished"]:
             self.upkeeps += 1
             self.tablet.last_nav = {"route": {"state": "ok"}, "course": {"finished": False}}
             self.tablet.routes.append({"version": 206, "t_wall": time.time()})
+            return True
+        return False
 
 
 def test_route_wait_selects_the_next_course_when_the_boat_finished_during_a_fault() -> None:

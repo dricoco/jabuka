@@ -148,9 +148,9 @@ def _route_after(
         if h.tablet.route_block().get("state") == "no_course":
             # the boat finished the course inside the fault window (04-03 full run, f92): no
             # router can compute a route until the next template is selected, which the run loop
-            # otherwise does only between faults
-            h.course_upkeep()
-            if not upkept:
+            # otherwise does only between faults. The nav can also still show the course a fault
+            # has just replaced (f67, Pi soak 20261110T220521Z): course_upkeep then selects nothing
+            if h.course_upkeep() and not upkept:
                 upkept = True
                 _note(rec, "course finished during the fault: next course selected")
         time.sleep(0.05)

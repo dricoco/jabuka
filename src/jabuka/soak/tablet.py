@@ -8,7 +8,11 @@ messages the helm app renders.
   Every transition is recorded with its wall time.
 - Every route message is re-validated against the pack's land mask (LandMask.load +
   frame.to_xy + validate_polyline), skipping the first segment when that route's
-  nav.route.start_in_margin is true (as tests/routing/test_real_pack_e2e.py does).
+  nav.route.start_in_margin is true (as tests/routing/test_real_pack_e2e.py does). The core
+  publishes the route rounded to COORD_DECIMALS (up to 6.9 cm from the polyline the router
+  validated), so a segment the exact raster check flags only fails when it goes deeper into the
+  blocked cells than that rounding can explain (Pi soak 20261110T220521Z, v121: the router's
+  segment cleared the 100 m margin by millimetres, its published copy touched it).
 - The core error counters (diag core.*) are tracked per connection: every increase is recorded
   with its wall time, for the "outside a fault window" check.
 """
@@ -16,11 +20,14 @@ messages the helm app renders.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from jabuka.route.frame import NM_M, NM_PER_DEG
 
 WIND_PATH = "environment.wind.angleApparent"
 POS_PATH = "navigation.position"
@@ -36,6 +43,66 @@ ERROR_COUNTERS = (
 DEAD_DEBOUNCE = 3  # consecutive diag messages without the signal
 RECONNECT_S = 0.5
 JUMP_S = 30.0  # a diag uptime step larger than this is a clock jump, not a tick
+# router_service.RouterService.route_message publishes [round(lon, 6), round(lat, 6)]
+COORD_DECIMALS = 6
+GRAZE_STEP_M = 0.01  # depth sampling step along a flagged segment
+_GRAZE_CHUNK = 1 << 18  # samples per numpy batch
+
+
+def publication_precision_nm(frame: Any) -> float:
+    """Farthest the core's COORD_DECIMALS rounding can move a route point (nm, local frame): half
+    a unit of the last decimal east and north (4.04 / 5.56 cm in the race frame, 6.87 cm in all).
+    A point of a published segment is as close to the matching point of the segment the router
+    validated (the rounding of the two ends, interpolated)."""
+    half = 0.5 * 10.0**-COORD_DECIMALS
+    return math.hypot(half * frame.kx, half * NM_PER_DEG)
+
+
+def graze_depth_nm(mask: Any, grid: Any, ax: float, ay: float, bx: float, by: float) -> float:
+    """How deep segment AB goes into the blocked cells of ``grid`` (``mask.mask`` or
+    ``mask.raw``): the largest distance from a point of it, sampled every GRAZE_STEP_M, to the
+    nearest clear cell. 0.0 when no sample is blocked; inf when a blocked sample lies outside the
+    grid or has no clear cell among its 8 neighbours (then it is at least a cell deep).
+
+    Sampling can only miss the true maximum, so the published copy of a segment the router
+    validated never measures deeper than publication_precision_nm."""
+    import numpy as np
+
+    ny, nx = grid.shape
+    cell = mask.cell_nm
+    step = GRAZE_STEP_M / NM_M
+    n = max(1, int(math.ceil(math.hypot(bx - ax, by - ay) / step)))
+    worst = 0.0
+    for i0 in range(0, n + 1, _GRAZE_CHUNK):
+        t = np.arange(i0, min(i0 + _GRAZE_CHUNK, n + 1), dtype=np.float64) / n
+        px = ax + t * (bx - ax)
+        py = ay + t * (by - ay)
+        r, c = mask.rc(px, py)
+        if ((r < 0) | (r >= ny) | (c < 0) | (c >= nx)).any():
+            return math.inf
+        hit = grid[r, c]
+        if not hit.any():
+            continue
+        px, py, r, c = px[hit], py[hit], r[hit], c[hit]
+        best = np.full(len(px), np.inf)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                rr, cc = r + dr, c + dc
+                free = (rr >= 0) & (rr < ny) & (cc >= 0) & (cc < nx)
+                free[free] = ~grid[rr[free], cc[free]]
+                if not free.any():
+                    continue
+                x0 = mask.x0_nm + cc * cell
+                y0 = mask.y0_nm + rr * cell
+                dx = np.maximum(np.maximum(x0 - px, 0.0), px - (x0 + cell))
+                dy = np.maximum(np.maximum(y0 - py, 0.0), py - (y0 + cell))
+                best = np.minimum(best, np.where(free, np.hypot(dx, dy), np.inf))
+        worst = max(worst, float(best.max()))
+        if math.isinf(worst):
+            return worst
+    return worst
 
 
 def row_live(rows: list[dict], path: str, src: str) -> bool:
@@ -285,26 +352,58 @@ class TabletClient(threading.Thread):
             elif self._margin.get(v):  # a restored route ("outdated") does not carry the flag
                 start_in_margin = True
             v0 = 1 if start_in_margin else 0
-            ok, bad = self.mask.validate_polyline(xs[v0:], ys[v0:])
+            ok, bad, graze = self._published_ok(False, xs[v0:], ys[v0:])
             if not ok and v0 == 0 and bad == 0 and self._starts_in_margin(xs, ys):
                 # the router's own rule: a start inside the shore margin only has to clear real
                 # land on its exit segment (raw raster), the rest the full mask
-                raw_ok = bool(self.mask.raw_segments_clear(xs[:1], ys[:1], xs[1:2], ys[1:2])[0])
-                ok2, bad2 = self.mask.validate_polyline(xs[1:], ys[1:])
+                raw_ok, _bad, g_exit = self._published_ok(True, xs[:2], ys[:2])
+                ok2, bad2, g_rest = self._published_ok(False, xs[1:], ys[1:])
                 ok, bad = (
                     raw_ok and ok2,
                     (0 if not raw_ok else (None if bad2 is None else bad2 + 1)),
                 )
+                graze = max(g_exit, g_rest)
                 rec["detail"] = "start in the shore margin: exit segment checked on raw land"
                 v0 = 0
             rec["land_ok"] = bool(ok)
             rec["bad_index"] = None if bad is None else int(bad) + v0
+            if ok and graze > 0.0:
+                rec["graze_m"] = round(graze * NM_M, 4)
+                tol_m = publication_precision_nm(self.mask.frame) * NM_M
+                note = (
+                    f"published route grazes the mask by {rec['graze_m']:g} m, within the "
+                    f"{COORD_DECIMALS}-decimal rounding ({tol_m:.3f} m)"
+                )
+                rec["detail"] = f"{rec['detail']}; {note}" if rec.get("detail") else note
         self.routes.append(rec)
         if self.on_route is not None:
             try:
                 self.on_route(rec)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _published_ok(self, raw: bool, xs: Any, ys: Any) -> tuple[bool, int | None, float]:
+        """validate_polyline (raw_segments_clear when ``raw``) at the publication precision:
+        (ok, index of the first segment deeper than publication_precision_nm, deepest graze nm
+        among the flagged segments that are not)."""
+        import numpy as np
+
+        m = self.mask
+        assert m is not None
+        if len(xs) < 2:
+            ok, bad = m.validate_polyline(xs, ys)
+            return ok, bad, 0.0
+        ax, ay, bx, by = xs[:-1], ys[:-1], xs[1:], ys[1:]
+        clear = m.raw_segments_clear(ax, ay, bx, by) if raw else m.segments_clear(ax, ay, bx, by)
+        grid = m.raw if raw else m.mask
+        tol = publication_precision_nm(m.frame) + 1e-12  # float noise of the frame round trip
+        graze = 0.0
+        for i in np.nonzero(~clear)[0].tolist():
+            depth = graze_depth_nm(m, grid, ax[i], ay[i], bx[i], by[i])
+            if depth > tol:
+                return False, i, graze
+            graze = max(graze, depth)
+        return True, None, graze
 
     def _starts_in_margin(self, xs: Any, ys: Any) -> bool:
         m = self.mask
@@ -365,10 +464,17 @@ class TabletClient(threading.Thread):
             return max(vs) if vs else 0
 
     def last_route_version(self) -> int:
-        """Version of the route adopted last (what the helm shows now), 0 before any: the "before"
-        baseline of a fault. Not max_route_version: a core restart whose saved route is rightly
-        not restored numbers from 1 again (Pi soak 20261110T153632Z, f65 -> f67..f85)."""
+        """Version of the route the core shows now: the "before" baseline of a fault. The last
+        nav message's route.version (the core's own counter: 0 when it has no route), else the
+        version adopted last, 0 before any. Not max_route_version: a core restart whose saved
+        route is rightly not restored numbers from 1 again (Pi soak 20261110T153632Z, f65 ->
+        f67..f85); and not the last route message either: a core restarted with the course
+        finished publishes none and shows 0 (Pi soak 20261110T220521Z f67: v129 came from the
+        process f65 replaced, the new course's route was v1)."""
         with self.lock:
+            v = ((self.last_nav or {}).get("route") or {}).get("version")
+            if isinstance(v, int) and not isinstance(v, bool):
+                return v
             for r in reversed(self.routes):
                 if isinstance(r.get("version"), int):
                     return r["version"]

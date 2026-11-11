@@ -670,27 +670,35 @@ class Harness:
 
     # -- run ---------------------------------------------------------------------------------
     def wait_sim(self, t_sim: float) -> None:
+        # once even when the run is behind schedule and the loop never runs (Pi soak
+        # 20261110T220521Z: f66 and f67 started late, the course finished at sim 64215 s stayed
+        # finished until f67, and f66's stay-toggle had no route to toggle)
+        self.course_upkeep()
         while self.sim_now() < t_sim:
             self.poll_abort()
             self.course_upkeep()
             time.sleep(0.05)
 
-    def course_upkeep(self) -> None:
+    def course_upkeep(self) -> bool:
         """Course finished (the boat is back near Vodice): select the other template, so the
-        closed loop keeps sailing for any duration."""
+        closed loop keeps sailing for any duration. True when a template was selected.
+
+        The tablet's last nav only prompts the check: GET /api/course must say finished too. A
+        nav from before a template switch still says finished (Pi soak 20261110T220521Z f67:
+        0.2 s after the fault selected B, this switched the fresh course B back to A)."""
         if self.tablet is None:
-            return
+            return False
         now = time.time()
         if now - self._course_check < 1.0:
-            return
+            return False
         self._course_check = now
         with self.tablet.lock:
             course = ((self.tablet.last_nav or {}).get("course")) or {}
         if not course.get("finished"):
-            return
+            return False
         st, c = self.http("GET", "/api/course")
-        if st != 200:
-            return
+        if st != 200 or not c.get("finished"):
+            return False
         other = "B" if c.get("template") == "A" else "A"
         st, _ = self.http(
             "POST", "/api/course/select", {"template": other, "base_version": c["version"]}
@@ -699,6 +707,7 @@ class Harness:
         self.findings.append(
             f"course {c.get('template')} finished at sim {self.sim_now():.0f} s: {other} selected"
         )
+        return st == 200
 
     def wind_kw(self) -> dict[str, float]:
         w, g = self.sc.wind, self.sc.grib
@@ -947,6 +956,11 @@ class Harness:
                 )
             if unchecked:
                 detail += f"; {len(unchecked)} not checkable"
+            grazes = [r["graze_m"] for r in tb.routes if r.get("graze_m")]
+            if grazes:  # the published copy of a valid route touching the mask (6-decimal rounding)
+                detail += (
+                    f"; {len(grazes)} within the publication rounding (deepest {max(grazes):g} m)"
+                )
             c["land"] = rep.check(not bad, len(tb.routes), 0, detail)
         else:
             c["land"] = rep.insufficient("no route adopted")
