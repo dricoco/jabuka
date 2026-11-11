@@ -410,3 +410,392 @@ def test_secret_never_leaks(env: Env) -> None:
         for text in (proc.stdout, proc.stderr, env.result(), env.log()):
             assert SECRET not in text
         assert SECRET not in env.calls_file.read_text()
+
+
+# -- Task 2: robustness -------------------------------------------------------------------------
+
+CURRENT_PROBLEM = "Courant hors fenêtre (14/11 01:00 -> 15/11 01:00) : courant désactivé"
+
+
+def _pack_unchanged(env: Env, before: dict[str, bytes]) -> None:
+    assert _tree(env.pack) == before
+    assert not (env.data / "racepack.prev").exists()
+    assert not (env.data / "racepack.current-new").exists()
+    assert not _restarted(env.calls())
+
+
+def _demo_dropin(env: Env, unit: str = "jabuka-core.service") -> Path:
+    d = env.units / f"{unit}.d"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "zz-jabuka-touch-demo.conf"
+    f.write_text("[Service]\n")
+    return f
+
+
+def test_never_handles_secrets_beyond_the_path() -> None:
+    text = SCRIPT.read_text()
+    low = text.lower()
+    assert "psk" not in low and "wifi-sec" not in low
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#") or "CREDS" not in s:
+            continue
+        ok = (
+            s.startswith('CREDS="${CURRENT_CREDS:-')
+            or s == 'if [ ! -f "$CREDS" ]; then'
+            or s == '--credentials-file "$CREDS" \\'
+        )
+        assert ok, s
+
+
+def test_no_internet_switches_to_the_phone_and_back(env: Env) -> None:
+    proc = env.run("_run", FAKE_CURL_FAILS="2", FAKE_PHONE="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    calls = env.calls()
+    assert _index(calls, "wifi _switch phone") < _index(calls, "cm subset")
+    assert _wifi(calls)[-1] == "wifi _switch ap"
+    last_wifi = max(i for i, c in enumerate(calls) if c.startswith("wifi "))
+    assert last_wifi > _index(calls, "systemctl restart jabuka-core")
+    assert "retour au point d'accès" in env.result()
+
+
+def test_no_internet_and_no_phone_profile(env: Env) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_CURL_FAILS="always")
+    assert proc.returncode == 2
+    assert NO_PROFILE_MSG in proc.stdout + proc.stderr
+    assert not _wifi(env.calls()) and not _cm(env.calls())
+    _pack_unchanged(env, before)
+    assert NO_PROFILE_MSG in env.result()
+
+
+def test_phone_without_internet_returns_to_the_ap(env: Env) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_CURL_FAILS="always", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    calls = env.calls()
+    assert "wifi _switch phone" in calls
+    assert _wifi(calls)[-1] == "wifi _switch ap"
+    assert not _cm(calls)
+    _pack_unchanged(env, before)
+    assert "partage du téléphone" in env.result()
+
+
+def test_copernicus_failure_keeps_the_pack_and_the_wifi(env: Env) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_RC_CM="1", FAKE_CURL_FAILS="1", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    _pack_unchanged(env, before)
+    assert _wifi(env.calls())[-1] == "wifi _switch ap"
+    assert not _prep(env.calls())
+    res = env.result()
+    assert "ÉCHEC : téléchargement Copernicus (code 1" in res and "pack inchangé" in res
+    assert "--- journal (fin) ---" in res and "invalid credentials" in res
+    assert "code : 2" in res
+
+
+@pytest.mark.parametrize(
+    ("extra", "msg"),
+    [
+        ({"FAKE_RC_CURRENT": "2"}, "ÉCHEC : import du courant (code 2)"),
+        ({"FAKE_RC_CHECK": "2"}, "ÉCHEC : contrôle du pack (code 2)"),
+        ({"FAKE_COVERAGE": CURRENT_PROBLEM}, "ne couvre pas la fenêtre de course"),
+        ({"FAKE_COVERAGE": "Info : Courant absent : routage sans courant"}, "ne couvre pas"),
+    ],
+)
+def test_import_or_coverage_failure_keeps_the_pack(env: Env, extra: dict, msg: str) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", **extra)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    _pack_unchanged(env, before)
+    res = env.result()
+    assert msg in res and "pack inchangé" in res
+
+
+def test_incomplete_wind_does_not_block_the_current(env: Env) -> None:
+    proc = env.run("_run", FAKE_RC_CHECK="3", FAKE_COVERAGE="MÉTÉO INCOMPLÈTE : vent")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (env.pack / "current.npz").is_file()
+    assert "notes : météo du pack incomplète" in env.result()
+
+
+def test_failure_on_signal_exits_2_and_returns_to_the_ap(env: Env) -> None:
+    # a copernicusmarine that kills its parent (the script) with SIGTERM: trap -> cleanup
+    # (cm's parent is `timeout`, whose parent is the script)
+    _write_exec(
+        env.cm,
+        'printf "%s\\n" "cm $*" >>"$FAKE_CALLS"\n'
+        'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"\n',
+    )
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_CURL_FAILS="1", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    assert _wifi(env.calls())[-1] == "wifi _switch ap"
+    assert _tree(env.pack) == before
+    assert "ÉCHEC : interrompu" in env.result()
+
+
+# -- launch refusals ----------------------------------------------------------------------------
+
+
+def _no_launch(env: Env) -> None:
+    assert not [c for c in env.calls() if c.startswith("systemd-run ")]
+
+
+def test_launch_refuses_while_a_run_is_active(env: Env) -> None:
+    proc = env.run(FAKE_CURRENT_ACTIVE="1")
+    assert proc.returncode == 1 and "déjà en cours" in proc.stderr
+    _no_launch(env)
+
+
+def test_launch_refuses_while_prerace_runs(env: Env) -> None:
+    proc = env.run(FAKE_PRERACE_ACTIVE="1")
+    assert proc.returncode == 1 and "prerace en cours" in proc.stderr
+    _no_launch(env)
+
+
+@pytest.mark.parametrize("unit", ["jabuka-core.service", "jabuka-ingest-fastnet.service"])
+def test_launch_refuses_during_a_demo(env: Env, unit: str) -> None:
+    _demo_dropin(env, unit)
+    proc = env.run()
+    assert proc.returncode == 1 and "démo en cours" in proc.stderr
+    _no_launch(env)
+
+
+def test_launch_refuses_without_copernicusmarine(env: Env) -> None:
+    proc = env.run(CURRENT_CM=str(env.tmp / "nope" / "copernicusmarine"))
+    assert proc.returncode == 1 and "copernicusmarine absent" in proc.stderr
+    assert "install.sh" in proc.stderr
+    _no_launch(env)
+
+
+def test_launch_refuses_without_credentials(env: Env) -> None:
+    proc = env.run(CURRENT_CREDS=str(env.tmp / "nope" / "creds"))
+    assert proc.returncode == 1 and "identifiants Copernicus absents" in proc.stderr
+    assert "copernicusmarine login" in proc.stderr
+    _no_launch(env)
+
+
+def test_launch_refuses_without_the_prep_venv(env: Env) -> None:
+    proc = env.run(CURRENT_PREP=str(env.tmp / "nope" / "jabuka-prep"))
+    assert proc.returncode == 1 and "venv météo du Pi absent" in proc.stderr
+    _no_launch(env)
+
+
+@pytest.mark.parametrize(
+    "args", [("--bogus",), ("--after-prerace",), ("--after-prerace", "12a"), ("bogus",)]
+)
+def test_bad_arguments_exit_2(env: Env, args: tuple[str, ...]) -> None:
+    proc = env.run(*args)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    _no_launch(env)
+
+
+def test_after_prerace_launch_is_allowed_while_prerace_runs(env: Env) -> None:
+    proc = env.run("--after-prerace", "1794560000", FAKE_PRERACE_ACTIVE="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    runs = [c for c in env.calls() if c.startswith("systemd-run ")]
+    assert len(runs) == 1 and runs[0].endswith("_run --after-prerace 1794560000"), runs
+
+
+def test_after_prerace_launch_still_refuses_a_demo(env: Env) -> None:
+    _demo_dropin(env)
+    proc = env.run("--after-prerace", "1794560000")
+    assert proc.returncode == 1
+    _no_launch(env)
+
+
+# -- --after-prerace wait -----------------------------------------------------------------------
+
+
+def _prerace_result(env: Env, code: int, mtime: float | None = None) -> int:
+    p = env.data / "prerace-last.txt"
+    p.write_text(f"prerace : 2026-11-12T07:41:03Z\nrésultat : X\ncode : {code}\n")
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+    return int(p.stat().st_mtime)
+
+
+@pytest.mark.parametrize("code", [0, 3])
+def test_after_prerace_waits_then_runs(env: Env, code: int) -> None:
+    since = _prerace_result(env, code) - 5
+    proc = env.run("_run", "--after-prerace", str(since), FAKE_PRERACE_POLLS="3")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    calls = env.calls()
+    sleeps = [i for i, c in enumerate(calls) if c.startswith("sleep 15")]
+    assert len(sleeps) == 3, calls
+    assert max(sleeps) < _index(calls, "cm subset")
+    assert (env.pack / "current.npz").is_file()
+
+
+def test_after_prerace_failed_prerace_does_not_run(env: Env) -> None:
+    since = _prerace_result(env, 2) - 5
+    before = _tree(env.pack)
+    proc = env.run("_run", "--after-prerace", str(since))
+    assert proc.returncode == 2
+    assert "NON LANCÉ : prerace en échec (code 2), pack inchangé" in env.result()
+    assert not _wifi(env.calls()) and not _cm(env.calls()) and not _cm(env.calls())
+    assert not [c for c in env.calls() if c.startswith("curl ")]
+    _pack_unchanged(env, before)
+
+
+def test_after_prerace_stale_result_does_not_run(env: Env) -> None:
+    mtime = _prerace_result(env, 0, mtime=1_700_000_000)
+    proc = env.run("_run", "--after-prerace", str(mtime + 60))
+    assert proc.returncode == 2
+    assert "NON LANCÉ : pas de résultat récent de prerace" in env.result()
+    assert not _cm(env.calls()) and not _wifi(env.calls())
+
+
+def test_after_prerace_gives_up_after_the_wait_limit(env: Env) -> None:
+    since = _prerace_result(env, 0) - 5
+    proc = env.run(
+        "_run",
+        "--after-prerace",
+        str(since),
+        FAKE_PRERACE_ACTIVE="1",
+        CURRENT_POLL_S="10",
+        CURRENT_WAIT_MAX_S="50",
+    )
+    assert proc.returncode == 2
+    sleeps = [c for c in env.calls() if c.startswith("sleep ")]
+    assert 1 <= len(sleeps) <= 6, sleeps
+    assert "prerace toujours en cours" in env.result()
+    assert not _cm(env.calls()) and not _wifi(env.calls())
+
+
+# -- body refusals and concurrency guards -------------------------------------------------------
+
+
+def test_body_refuses_a_demo(env: Env) -> None:
+    _demo_dropin(env)
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_CURL_FAILS="always", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    assert "démo en cours" in env.result()
+    assert not _wifi(env.calls()) and not _cm(env.calls())
+    _pack_unchanged(env, before)
+
+
+def test_body_refuses_while_prerace_runs(env: Env) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_PRERACE_ACTIVE="1", FAKE_CURL_FAILS="always", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    assert "prerace en cours" in env.result()
+    assert not _wifi(env.calls()) and not _cm(env.calls())
+    _pack_unchanged(env, before)
+
+
+def test_prerace_at_the_wifi_check_point_prevents_the_switch(env: Env) -> None:
+    flag = env.tmp / "prerace-flag"
+    before = _tree(env.pack)
+    proc = env.run(
+        "_run",
+        FAKE_CURL_FAILS="always",
+        FAKE_PHONE="1",
+        FAKE_PRERACE_FLAG=str(flag),
+        FAKE_PY_TOUCH=str(flag),
+    )
+    assert proc.returncode == 2
+    assert "prerace en cours" in env.result()
+    assert not _wifi(env.calls()) and not _cm(env.calls())
+    assert not [c for c in env.calls() if c.startswith("curl ")]
+    _pack_unchanged(env, before)
+
+
+def test_prerace_appearing_before_the_swap_aborts(env: Env) -> None:
+    flag = env.tmp / "prerace-flag"
+    before = _tree(env.pack)
+    proc = env.run(
+        "_run",
+        FAKE_CURL_FAILS="1",
+        FAKE_PHONE="1",
+        FAKE_PRERACE_FLAG=str(flag),
+        FAKE_CHECK_TOUCH=str(flag),
+    )
+    assert proc.returncode == 2
+    assert "prerace en cours" in env.result() and "pack inchangé" in env.result()
+    assert _wifi(env.calls())[-1] == "wifi _switch ap"
+    _pack_unchanged(env, before)
+
+
+def test_demo_appearing_before_the_swap_aborts(env: Env) -> None:
+    dropin = env.units / "jabuka-core.service.d" / "zz-jabuka-touch-demo.conf"
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_CHECK_TOUCH=str(dropin))
+    assert proc.returncode == 2
+    assert "démo en cours" in env.result()
+    _pack_unchanged(env, before)
+
+
+def test_a_prerace_that_ran_during_the_run_is_never_overwritten(env: Env) -> None:
+    proc = env.run("_run", FAKE_SWAP_DURING_CHECK="1")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "pack modifié pendant le courant : pack inchangé, relancer COURANT" in env.result()
+    assert _tree(env.pack) == {"wind.json": b'{"model":"ICON-EU","run":"fresh-prerace"}\n'}
+    prev = env.data / "racepack.prev"
+    assert (prev / "old.txt").is_file() and not (prev / "current.npz").exists()
+    assert not _restarted(env.calls())
+    assert not (env.data / "racepack.current-new").exists()
+
+
+def test_pack_modified_during_the_staging_copy_aborts(env: Env) -> None:
+    proc = env.run("_run", FAKE_RSYNC_MUTATE="1")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "pack modifié pendant la copie" in env.result() and "pack inchangé" in env.result()
+    assert not _prep(env.calls())
+    assert not (env.pack / "current.npz").exists()
+    assert not (env.data / "racepack.prev").exists()
+    assert not (env.data / "racepack.current-new").exists()
+    assert not _restarted(env.calls())
+
+
+def test_swap_failure_puts_the_old_pack_back(env: Env) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_MV_FAIL_STAGE="1", FAKE_CURL_FAILS="1", FAKE_PHONE="1")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert _tree(env.pack) == before
+    assert not (env.data / "racepack.current-new").exists()
+    assert not _restarted(env.calls())
+    assert "ancien pack remis en place" in env.result()
+    assert _wifi(env.calls())[-1] == "wifi _switch ap"
+
+
+def test_window_failure_stops_before_wifi(env: Env) -> None:
+    before = _tree(env.pack)
+    proc = env.run("_run", FAKE_PY_RC="1", FAKE_CURL_FAILS="always", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    assert "fenêtre de course illisible" in env.result()
+    assert not _wifi(env.calls()) and not _cm(env.calls())
+    _pack_unchanged(env, before)
+
+
+def test_no_live_pack_stops_before_wifi(env: Env) -> None:
+    shutil.rmtree(env.pack)
+    proc = env.run("_run", FAKE_CURL_FAILS="always", FAKE_PHONE="1")
+    assert proc.returncode == 2
+    assert "pas de pack de course installé" in env.result()
+    assert not _wifi(env.calls()) and not _cm(env.calls())
+
+
+# -- status -------------------------------------------------------------------------------------
+
+
+def test_status_without_any_run(env: Env) -> None:
+    proc = env.run("status")
+    assert proc.returncode == 0
+    assert "aucun téléchargement du courant enregistré" in proc.stdout
+
+
+def test_status_shows_the_last_result(env: Env) -> None:
+    assert env.run("_run").returncode == 0
+    proc = env.run("status")
+    assert proc.returncode == 0
+    assert proc.stdout.strip().endswith(env.result().strip())
+
+
+def test_status_while_running(env: Env) -> None:
+    proc = env.run("status", FAKE_CURRENT_ACTIVE="1")
+    assert "en cours : journalctl -fu jabuka-current" in proc.stdout
+    proc = env.run("status", FAKE_CURRENT_ACTIVE="1", FAKE_PRERACE_ACTIVE="1")
+    assert "en attente de la fin de prerace" in proc.stdout

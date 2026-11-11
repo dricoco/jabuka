@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remove the jabuka-touch menu and give tty1 back to the text console (getty).
+# Remove the jabuka-touch menu (and jabuka-current) and give tty1 back to the text console (getty).
 #
 #   sudo bash touch/uninstall.sh
 #
@@ -35,9 +35,11 @@ fi
 
 # ExecStopPost gives the text console back (KD_TEXT)
 "$SYSTEMCTL" disable --now jabuka-touch.service || true
-rm -f "$DESTDIR/etc/systemd/system/jabuka-touch.service" "$DESTDIR/usr/local/sbin/jabuka-touch"
+rm -f "$DESTDIR/etc/systemd/system/jabuka-touch.service" "$DESTDIR/usr/local/sbin/jabuka-touch" \
+    "$DESTDIR/usr/local/sbin/jabuka-current"
 rm -rf "$OPT"
 "$SYSTEMCTL" daemon-reload
 "$SYSTEMCTL" start getty@tty1.service || true
 
-echo "jabuka-touch désinstallé ; configuration gardée : /etc/jabuka-touch.json"
+echo "jabuka-touch et jabuka-current désinstallés ; configuration gardée : /etc/jabuka-touch.json"
+echo "copernicusmarine gardé dans /opt/copernicusmarine (supprimer : sudo rm -rf /opt/copernicusmarine)"

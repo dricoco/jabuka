@@ -103,6 +103,30 @@ cells to 0 (no current), never to a neighbour's value. The real file layout was 
 research: the first real file must be checked (`coverage.txt` lists current as OK, no
 `courant ... désactivé` line).
 
+### On the Pi: `sudo jabuka-current` (or COURANT in the touch menu)
+
+`touch/install.sh` installs `/usr/local/sbin/jabuka-current` and copernicusmarine 2.5.1 in its
+own venv `/opt/copernicusmarine/venv` (never the race venvs; needs internet once). Then, once:
+
+```bash
+sudo /opt/copernicusmarine/venv/bin/copernicusmarine login   # credentials stay under /root/.copernicusmarine
+sudo jabuka-current                                          # runs in the background
+journalctl -fu jabuka-current                                # follow it
+sudo jabuka-current status                                   # last result (code 0 OK / 2 failure)
+```
+
+The toolbox keeps the credentials under `/root/.copernicusmarine`; jabuka only checks that the
+file exists and passes its path (`--credentials-file`), it never reads it. The download window is
+the race window `jabuka-prep` uses (13/11 18:00 -> 15/11 10:00 local) widened by -6 h / +2 h, i.e.
+`2026-11-13T11:00:00 -> 2026-11-15T11:00:00` UTC, same box as above. Wi-Fi works like `prerace`:
+phone hotspot only when there is no internet, always back to the boat AP at the end. The file is
+imported as user `jabuka` into a staging copy of the live pack (`jabuka-prep current` then
+`jabuka-prep check`); the pack is swapped in (one `racepack.prev` kept) and jabuka-core restarted
+only when both pass and the current covers the race window (no `courant désactivé` / `Courant
+absent` line). Any failure leaves the live pack untouched and is explained in
+`/var/lib/jabuka/current-last.txt`. It refuses to run during a prerace or a touch-menu demo. In
+the touch menu, LANCER PRERACE chains it automatically after a prerace that ends with code 0 or 3.
+
 ## Reading the coverage report (`coverage.txt`)
 
 Every command ends with the coverage check (the same code runs on the Pi when it loads the pack):

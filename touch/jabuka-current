@@ -71,11 +71,21 @@ esac
 [ "$(id -u)" -eq 0 ] || die 1 "lancer avec sudo : sudo jabuka-current ${*}"
 
 unit_active() { systemctl is-active --quiet "$UNIT.service"; }
+prerace_active() { systemctl is-active --quiet "$PRERACE_UNIT.service"; }
+
+# a jabuka-touch demo replaces the live data by volatile drop-ins (same test as touch/uninstall.sh)
+demo_active() {
+    local u
+    for u in jabuka-core jabuka-ingest-fastnet; do
+        [ ! -e "$RUN_UNITS/$u.service.d/zz-jabuka-touch-demo.conf" ] || return 0
+    done
+    return 1
+}
 
 # preflight: prints the French reason and returns 1 when something needed is missing.
 preflight() {
     if [ ! -x "$PREP" ]; then
-        echo "venv météo du Pi absent ($PREP) : relancer deploy/provision.sh avec deploy/wheelhouse/prep (PI-SETUP §8)"
+        echo "venv météo du Pi absent ($PREP) : provisionner le Pi avec la wheelhouse prep (PI-SETUP §8)"
         return 1
     fi
     if [ ! -x "$CM" ]; then
@@ -92,23 +102,47 @@ preflight() {
 
 # --- launch: re-run detached so a dropped SSH session (Wi-Fi switch) does not stop it -----------
 launch() {
-    if [ $# -gt 0 ]; then die 2 "argument inconnu : $1 ; $USAGE"; fi
+    local after=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --after-prerace)
+                [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]] ||
+                    die 2 "--after-prerace demande une date en secondes epoch ; $USAGE"
+                after="$2"
+                shift
+                ;;
+            *) die 2 "argument inconnu : $1 ; $USAGE" ;;
+        esac
+        shift
+    done
     if unit_active; then
         echo "jabuka-current: un téléchargement du courant est déjà en cours : journalctl -fu jabuka-current" >&2
         exit 1
     fi
+    if demo_active; then
+        die 1 "démo en cours : revenir en mode course avant le courant (sudo jabuka-touch course)"
+    fi
+    if [ -z "$after" ] && prerace_active; then
+        die 1 "prerace en cours : le courant suivra si lancé depuis le menu, sinon attendre la fin (sudo prerace status)"
+    fi
     local why
     if ! why="$(preflight)"; then die 1 "$why"; fi
+    local extra=()
+    [ -z "$after" ] || extra=(--after-prerace "$after")
     # RuntimeMaxSec is a safety cap: on timeout SIGTERM runs the cleanup and the AP comes back.
     systemd-run --quiet --unit="$UNIT" --collect --property=RuntimeMaxSec=5400 \
-        "$SELF" _run
+        "$SELF" _run "${extra[@]}"
     echo "suivre : journalctl -fu jabuka-current ; résultat : sudo jabuka-current status"
 }
 
 # --- status ------------------------------------------------------------------------------------
 status() {
     if unit_active; then
-        echo "en cours : journalctl -fu jabuka-current"
+        if prerace_active; then
+            echo "en attente de la fin de prerace : journalctl -fu jabuka-current"
+        else
+            echo "en cours : journalctl -fu jabuka-current"
+        fi
     fi
     if [ -f "$RESULT" ]; then
         cat "$RESULT"
@@ -139,6 +173,49 @@ fail() {
     OUTCOME="$*"
     echo "jabuka-current: $OUTCOME" >&2
     exit 2
+}
+
+# guard STEP: refuse to go on while prerace or a demo may be using the live pack (the frozen
+# prerace does not know about jabuka-current, so an SSH `sudo prerace` can start meanwhile).
+guard() {
+    if demo_active; then fail "ÉCHEC : démo en cours ($1), pack inchangé"; fi
+    if prerace_active; then fail "ÉCHEC : prerace en cours ($1), pack inchangé"; fi
+}
+
+# one line identifying the live pack: directory inode, sha256 of every *.json sidecar (they carry
+# the sha256 of their npz, so any weather change shows), mtime of prerace-last.txt.
+pack_identity() {
+    local f
+    printf '%s' "$(stat -c %i "$PACK" 2>/dev/null || echo none)"
+    for f in "$PACK"/*.json; do
+        [ -f "$f" ] || continue
+        printf ' %s:%s' "$(basename "$f")" "$(sha256sum <"$f" | cut -d ' ' -f 1)"
+    done
+    printf ' %s\n' "$(stat -c %Y "$PRERACE_RESULT" 2>/dev/null || echo none)"
+}
+
+# --after-prerace SINCE: wait for jabuka-prerace to end, then go on only if it wrote a fresh
+# result (mtime >= SINCE) with code 0 or 3.
+wait_for_prerace() {
+    local since="$1" waited=0 mtime code
+    while prerace_active; do
+        if [ "$waited" -ge "$WAIT_MAX_S" ]; then
+            fail "ÉCHEC : prerace toujours en cours après $((WAIT_MAX_S / 60)) min, courant non lancé, pack inchangé"
+        fi
+        echo "jabuka-current : en attente de la fin de prerace"
+        sleep "$POLL_S"
+        waited=$((waited + POLL_S))
+    done
+    mtime="$(stat -c %Y "$PRERACE_RESULT" 2>/dev/null || echo 0)"
+    if [ ! -f "$PRERACE_RESULT" ] || [ "$mtime" -lt "$since" ]; then
+        fail "NON LANCÉ : pas de résultat récent de prerace, pack inchangé"
+    fi
+    code="$(grep -m 1 '^code : ' "$PRERACE_RESULT" || true)"
+    code="${code#code : }"
+    case "$code" in
+        0 | 3) echo "jabuka-current : prerace terminé (code $code), suite avec le courant" ;;
+        *) fail "NON LANCÉ : prerace en échec (code ${code:-?}), pack inchangé" ;;
+    esac
 }
 
 write_result() {
@@ -211,7 +288,18 @@ print(int(w.start_utc), int(w.end_utc))' 2>>"$LOG")" || return 1
 }
 
 run_body() {
-    if [ $# -gt 0 ]; then die 2 "_run : argument inconnu : $1"; fi
+    local after=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --after-prerace)
+                [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]] || die 2 "_run : --after-prerace invalide"
+                after="$2"
+                shift
+                ;;
+            *) die 2 "_run : argument inconnu : $1" ;;
+        esac
+        shift
+    done
 
     cd "$DATA"
     : >"$LOG"
@@ -227,17 +315,38 @@ run_body() {
     echo "jabuka-current : début, heure du Pi $(date -u +%Y-%m-%dT%H:%M:%SZ) (UTC ; fausse si le GPS n'a pas réglé l'horloge)"
 
     # 1. local checks first: a doomed run never drops the boat Wi-Fi
+    if [ -n "$after" ]; then wait_for_prerace "$after"; fi
+    guard "début"
     local why
     if ! why="$(preflight)"; then fail "ÉCHEC : $why, pack inchangé"; fi
     race_window || fail "ÉCHEC : fenêtre de course illisible (venv météo du Pi), pack inchangé"
     echo "jabuka-current : fenêtre $WINDOW_NOTE"
     [ -d "$PACK" ] || fail "ÉCHEC : pas de pack de course installé (prerace d'abord)"
 
-    # 2. internet
+    # 2. internet: the boat AP has none, so use the phone hotspot (password saved beforehand);
+    # never switch the Wi-Fi under a running prerace
+    guard "avant internet"
     if have_internet; then
         echo "jabuka-current : internet disponible"
     else
-        fail "ÉCHEC : pas d'internet, pack inchangé"
+        if ! have_phone_profile; then
+            fail "ÉCHEC : pas d'internet et aucun profil $PHONE : lancer d'abord sudo jabuka-wifi phone une fois pour enregistrer le mot de passe"
+        fi
+        echo "jabuka-current : pas d'internet, bascule vers le partage du téléphone"
+        SWITCHED=1 # before the switch: the trap returns to the AP even after a half-failed switch
+        "$WIFI" _switch phone || true
+        local i online=0
+        for i in $(seq 1 12); do
+            if have_internet; then
+                online=1
+                break
+            fi
+            [ "$i" -eq 12 ] || sleep 5
+        done
+        if [ "$online" -eq 0 ]; then
+            fail "ÉCHEC : pas d'internet par le partage du téléphone (partage activé ?), pack inchangé"
+        fi
+        WIFI_NOTE="partage du téléphone"
     fi
 
     # 3. download as root (the credentials live in /root/.copernicusmarine), passed by path only
@@ -258,15 +367,24 @@ run_body() {
         fail "ÉCHEC : téléchargement Copernicus (code $rc_cm : réseau, identifiants ou serveur, voir le journal ci-dessous), pack inchangé"
     fi
     chown -R jabuka:jabuka "$CACHE"
+    guard "après le téléchargement"
 
-    # 4. staging copy of the live pack (the live pack is never written in place)
+    # 4. staging copy of the live pack (the live pack is never written in place); its identity
+    # before the copy is what the swap compares against
+    local ident ident_after
+    ident="$(pack_identity)"
     rm -rf "${STAGE:?}"
     if command -v rsync >/dev/null 2>&1; then
         rsync -a "$PACK/" "$STAGE/"
     else
         cp -a "$PACK" "$STAGE"
     fi
+    ident_after="$(pack_identity)"
+    if [ "$ident_after" != "$ident" ]; then
+        fail "ÉCHEC : pack modifié pendant la copie de travail : pack inchangé, relancer COURANT"
+    fi
     chown -R jabuka:jabuka "$STAGE"
+    guard "après la copie de travail"
 
     # 5. import + check as jabuka
     local rc_cur=0 rc_check=0
@@ -292,10 +410,21 @@ run_body() {
         note "météo du pack incomplète (vent ou vagues), sans rapport avec le courant : sudo prerace status"
     fi
 
-    # 7. install by rename swap, exactly one racepack.prev kept
+    # 7. install by rename swap, exactly one racepack.prev kept; never over a pack that changed
+    # since the staging copy (e.g. a whole SSH `sudo prerace` ran in between)
+    guard "avant l'installation"
+    if [ "$(pack_identity)" != "$ident" ]; then
+        fail "ÉCHEC : pack modifié pendant le courant : pack inchangé, relancer COURANT"
+    fi
+    OUTCOME="ÉCHEC : installation impossible (renommage du pack), pack inchangé"
     rm -rf "${PREV:?}"
     mv "$PACK" "$PREV"
-    mv "$STAGE" "$PACK"
+    if ! mv "$STAGE" "$PACK"; then
+        if mv "$PREV" "$PACK"; then
+            fail "ÉCHEC : installation impossible, ancien pack remis en place"
+        fi
+        fail "ÉCHEC : installation impossible ET ancien pack non remis : sudo mv /var/lib/jabuka/racepack.prev /var/lib/jabuka/racepack"
+    fi
     INSTALLED=1
     chown -R jabuka:jabuka "$PACK"
     if ! systemctl restart jabuka-core.service; then
@@ -313,6 +442,6 @@ case "$cmd" in
         shift
         run_body "$@"
         ;;
-    "") launch "$@" ;;
+    "" | --after-prerace) launch "$@" ;;
     *) die 2 "commande inconnue : $cmd ; $USAGE" ;;
 esac

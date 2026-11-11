@@ -49,7 +49,7 @@ def test_example_config_is_the_defaults() -> None:
     assert data == config.defaults_dict()
 
 
-@pytest.mark.parametrize("name", ["install.sh", "uninstall.sh", "jabuka-touch"])
+@pytest.mark.parametrize("name", ["install.sh", "uninstall.sh", "jabuka-touch", "jabuka-current"])
 def test_scripts_syntax_and_no_boot_partition(name: str) -> None:
     p = subprocess.run(["bash", "-n", str(TOUCH / name)], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
@@ -80,13 +80,44 @@ def env(tmp_path: Path) -> dict[str, str]:
     stub_py = tmp_path / "stub-python"
     stub_py.write_text(f'#!/usr/bin/env bash\necho "python $* (cwd $(pwd))" >> "{log}"\nexit 0\n')
     stub_py.chmod(0o755)
+    # CM_PYTHON: `-m venv DIR` creates DIR/bin/pip; that pip logs its arguments and, on install,
+    # creates DIR/bin/copernicusmarine (version 2.5.1); its exit code comes from FAKE_PIP_RC.
+    cm_py = tmp_path / "cm-python"
+    cm_py.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "cmpython $*" >> "{log}"\n'
+        '[ "$1 $2" = "-m venv" ] || exit 1\n'
+        'mkdir -p "$3/bin"\n'
+        "cat >\"$3/bin/pip\" <<'PIP'\n"
+        "#!/usr/bin/env bash\n"
+        'echo "pip $*" >> "$LOG"\n'
+        'rc="${FAKE_PIP_RC:-0}"\n'
+        'if [ "$1" = install ] && [ "$rc" = 0 ]; then\n'
+        "    printf '#!/usr/bin/env bash\\necho \"copernicusmarine, version 2.5.1\"\\n' "
+        '>"$(dirname "$0")/copernicusmarine"\n'
+        '    chmod 755 "$(dirname "$0")/copernicusmarine"\n'
+        "fi\n"
+        'exit "$rc"\n'
+        "PIP\n"
+        'chmod 755 "$3/bin/pip"\n'
+    )
+    cm_py.chmod(0o755)
+    stubs = tmp_path / "stubbin"
+    stubs.mkdir()
+    curl = stubs / "curl"
+    curl.write_text(
+        f'#!/usr/bin/env bash\necho "curl $*" >> "{log}"\nexit "${{FAKE_CURL_RC:-0}}"\n'
+    )
+    curl.chmod(0o755)
     dest = tmp_path / "root"
     dest.mkdir()
     return {
         **os.environ,
+        "PATH": f"{stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}",
         "DESTDIR": str(dest),
         "SYSTEMCTL": str(fake_ctl),
         "TOUCH_PYTHON": str(stub_py),
+        "CM_PYTHON": str(cm_py),
         "LOG": str(log),
     }
 
@@ -181,3 +212,79 @@ def test_install_refuses_without_pillow(env: dict[str, str], tmp_path: Path) -> 
     p = _sh("install.sh", {**env, "TOUCH_PYTHON": str(failing)})
     assert p.returncode != 0 and "python3-pil" in p.stderr
     assert not (Path(env["DESTDIR"]) / "opt/jabuka-touch").exists()
+
+
+# -- jabuka-current + copernicusmarine venv -------------------------------------------------------
+
+
+def test_constraints_pin_everything() -> None:
+    lines = _lines(TOUCH / "copernicusmarine-constraints.txt")
+    assert "copernicusmarine==2.5.1" in lines
+    assert len(lines) >= 60
+    for ln in lines:
+        name, _, version = ln.partition("==")
+        assert name and version and " " not in ln, ln
+
+
+def test_install_current_and_copernicusmarine_venv(env: dict[str, str]) -> None:
+    dest = Path(env["DESTDIR"])
+    p = _sh("install.sh", env)
+    assert p.returncode == 0, p.stderr
+    script = dest / "usr/local/sbin/jabuka-current"
+    assert script.read_bytes() == (TOUCH / "jabuka-current").read_bytes()
+    assert script.stat().st_mode & 0o777 == 0o755
+    venv = dest / "opt/copernicusmarine/venv"
+    log = _log(env)
+    assert f"cmpython -m venv {venv}" in log
+    pips = [ln for ln in log if ln.startswith("pip ")]
+    assert len(pips) == 1, log
+    argv = pips[0].split()
+    assert argv[1] == "install" and "--only-binary=:all:" in argv
+    assert argv[argv.index("-c") + 1] == str(TOUCH / "copernicusmarine-constraints.txt")
+    assert argv[-1] == "copernicusmarine==2.5.1"
+    assert (venv / "bin/copernicusmarine").is_file()
+    assert log[-3:] == [
+        "systemctl daemon-reload",
+        "systemctl enable jabuka-touch.service",
+        "systemctl restart jabuka-touch.service",
+    ]
+    assert not (dest / "opt/jabuka").exists() and not (dest / "opt/jabuka-prep").exists()
+    assert "copernicusmarine login" in p.stdout
+    # second run: already there, pip is not called again
+    Path(env["LOG"]).write_text("")
+    p = _sh("install.sh", env)
+    assert p.returncode == 0, p.stderr
+    assert "copernicusmarine 2.5.1 déjà installé" in p.stdout
+    assert not [ln for ln in _log(env) if ln.startswith(("pip ", "cmpython ", "curl "))]
+    # uninstall removes the script, keeps the venv
+    p = _sh("uninstall.sh", env)
+    assert p.returncode == 0, p.stderr
+    assert not script.exists()
+    assert (venv / "bin/copernicusmarine").is_file()
+    assert "/opt/copernicusmarine" in p.stdout
+
+
+def test_install_without_internet_still_installs_the_menu(env: dict[str, str]) -> None:
+    dest = Path(env["DESTDIR"])
+    p = _sh("install.sh", {**env, "FAKE_CURL_RC": "7"})
+    assert p.returncode == 0, p.stderr
+    assert "copernicusmarine NON installé" in p.stdout + p.stderr
+    assert "pas d'internet" in p.stdout + p.stderr
+    assert not [ln for ln in _log(env) if ln.startswith(("pip ", "cmpython "))]
+    assert (dest / "usr/local/sbin/jabuka-current").is_file()
+    assert (dest / "opt/jabuka-touch/jabuka_touch/__main__.py").is_file()
+    assert _log(env)[-1] == "systemctl restart jabuka-touch.service"
+
+
+def test_install_pip_failure_is_not_fatal(env: dict[str, str]) -> None:
+    dest = Path(env["DESTDIR"])
+    p = _sh("install.sh", {**env, "FAKE_PIP_RC": "1"})
+    assert p.returncode == 0, p.stderr
+    assert "copernicusmarine NON installé" in p.stdout + p.stderr
+    assert not (dest / "opt/copernicusmarine/venv/bin/copernicusmarine").exists()
+    assert (dest / "usr/local/sbin/jabuka-current").is_file()
+    assert _log(env)[-3:] == [
+        "systemctl daemon-reload",
+        "systemctl enable jabuka-touch.service",
+        "systemctl restart jabuka-touch.service",
+    ]
