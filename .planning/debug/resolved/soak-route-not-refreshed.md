@@ -1,6 +1,6 @@
 ---
 status: resolved
-resolution_state: resolved-pending-soak (final human verification = next Pi system-scope race-36h soak by the user)
+resolution_state: resolved — verified by Pi race-36h soak n°3 20261111T005058Z (code 0c582d6, PASS, 131 of 131 checks; route after fault worst 15.19 s over 23 faults, power-pull and persistence OK)
 fix_commit: 35a61a7
 trigger: "Soak race-36h sur le Pi (20261110T153632Z) : FAIL — route non recalculée dans les 60 s après f67/f70/f71/f79/f85 ; grib-gap harness error ; manual CHANGED après power-pull propre f55 ; 2 AssertionError dans le journal du cœur"
 created: 2026-11-10
