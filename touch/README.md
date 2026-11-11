@@ -11,8 +11,11 @@ désinstallé, la navigation (jabuka-core, jabuka-ingest-fastnet) continue.
   mis à jour chaque seconde : BUS Fastnet, GPS + horloge, VENT, MÉTÉO (pack), ROUTE, WI-FI
   (mode, clients), ALIM (sous-tension), TEMP. CPU, DISQUE (/var/lib/jabuka), SERVICES. Toucher
   les voyants ouvre le détail. « cœur muet » en rouge = jabuka-core ne répond pas.
-- **MÉTÉO / WI-FI** : LANCER PRERACE (météo par le partage du téléphone), JOURNAL (suivi en
-  direct, RÉSULTAT = `prerace status`), WI-FI BATEAU / WI-FI TÉLÉPHONE.
+- **MÉTÉO / WI-FI** : LANCER PRERACE (météo par le partage du téléphone, puis le courant
+  Copernicus si prerace finit en code 0 ou 3), COURANT (le courant seul), JOURNAL (prerace +
+  courant en direct, RÉSULTAT = `prerace status`), WI-FI BATEAU / WI-FI TÉLÉPHONE. Les lignes du
+  haut donnent le dernier résultat de prerace et du courant ; le détail du voyant MÉTÉO dit si le
+  courant est présent dans le pack et quand il a été téléchargé.
 - **DÉMO** : bateau simulé que la tablette voit sur http://10.42.0.1 ; MODE COURSE revient aux
   capteurs réels.
 - **SYSTÈME** : REDÉMARRER SERVICES, TERMINAL, NUIT / JOUR, REDÉMARRER LE PI, ÉTEINDRE.
@@ -30,6 +33,46 @@ copie du dépôt sur le Pi :
 
 Le script est rejouable (mise à jour) ; il garde `/etc/jabuka-touch.json` (calibration) et ne
 touche ni à la configuration de démarrage du Pi, ni à /opt/jabuka, ni aux unités du cœur.
+
+Il installe aussi `/usr/local/sbin/jabuka-current` et l'outil copernicusmarine 2.5.1 dans son
+propre venv `/opt/copernicusmarine/venv` (versions figées par `touch/copernicusmarine-constraints.txt`,
+jamais dans les venvs de course). Cette étape demande internet une fois : sans internet, le script
+le dit (« copernicusmarine NON installé ») et installe le reste ; le relancer plus tard avec
+internet (partage du téléphone : `sudo jabuka-wifi phone`). Une deuxième installation ne
+retélécharge rien.
+
+## Courant Copernicus (jabuka-current)
+
+Une seule fois, avec internet, enregistrer le compte Copernicus Marine (gratuit) :
+
+    sudo /opt/copernicusmarine/venv/bin/copernicusmarine login
+
+L'outil garde les identifiants dans `/root/.copernicusmarine` ; jabuka vérifie seulement que le
+fichier existe et passe son chemin, il ne le lit jamais. Ensuite :
+
+- `sudo jabuka-current` (ou COURANT dans le menu) : en arrière-plan, partage du téléphone
+  seulement s'il n'y a pas d'internet, téléchargement du courant (uo/vo) pour la fenêtre de course
+  de jabuka-prep (-6 h / +2 h), import dans une copie de travail du pack, échange, redémarrage de
+  jabuka-core, retour au point d'accès ;
+- `sudo jabuka-current status` : dernier résultat (`/var/lib/jabuka/current-last.txt`) ;
+- `journalctl -fu jabuka-current` : suivre en direct.
+
+Ce que ça change : le pack n'est remplacé que si l'import et le contrôle passent et que le courant
+couvre la fenêtre de course ; `racepack.prev` devient le pack d'avant le courant. Après la chaîne
+LANCER PRERACE + courant, le pack d'avant prerace n'est donc plus gardé. Tout échec (réseau,
+identifiants, serveur, import, couverture) laisse le pack intact (« pack inchangé ») et
+s'explique dans le résultat.
+
+Refus propres : un courant déjà en cours, prerace en cours (depuis le menu, LANCER PRERACE
+programme le courant pour après), une DÉMO (démarrer une démo pendant un courant l'arrête sans
+rien installer). Enchaîné après prerace, le Wi-Fi bateau est coupé une deuxième fois. Après un
+`sudo prerace` lancé en SSH, lancer `sudo jabuka-current` une fois prerace terminé.
+
+**Attention** : ne jamais lancer `sudo prerace` en SSH pendant que COURANT / jabuka-current tourne.
+prerace ne connaît pas le courant : le Wi-Fi bateau peut revenir sous ses pieds et son
+téléchargement échouer ; jabuka-current refuse alors d'installer (« pack modifié pendant le
+courant : pack inchangé, relancer COURANT »). Depuis le menu c'est impossible (LANCER PRERACE est
+refusé pendant le courant).
 
 ## Depuis un shell (clavier USB sur l'écran, ou SSH)
 
@@ -58,8 +101,9 @@ touche ni à la configuration de démarrage du Pi, ni à /opt/jabuka, ni aux uni
 
     sudo bash touch/uninstall.sh
 
-Termine d'abord une démo en cours, retire le menu et rend tty1 à la console texte (getty).
-`/etc/jabuka-touch.json` est gardé.
+Termine d'abord une démo en cours, retire le menu et `jabuka-current`, et rend tty1 à la console
+texte (getty). `/etc/jabuka-touch.json` et `/opt/copernicusmarine` sont gardés (supprimer :
+`sudo rm -rf /opt/copernicusmarine`).
 
 ## Tests
 

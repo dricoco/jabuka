@@ -159,7 +159,8 @@ def test_prep_journal_details_navigation_and_extra(h: Harness) -> None:
     assert h.ui.screen == "prep" and h.extra[-1] == {"wifi_status"}
     lines = h.ui.view().lines
     assert lines[0].startswith("Prerace : OK") and "code 0" in lines[0]
-    assert lines[1].startswith("Wi-Fi : point d'accès") and "2 clients" in lines[1]
+    assert lines[1].startswith("Courant : OK") and "code 0" in lines[1]
+    assert lines[2].startswith("Wi-Fi : point d'accès") and "2 clients" in lines[2]
     h.tap("journal")
     assert h.ui.screen == "journal" and h.extra[-1] == {"journal_prerace"}
     assert "jabuka-prep wind" in " ".join(h.ui.view().lines)
@@ -213,8 +214,8 @@ def test_prep_shows_failure_lines(clock: ManualClock) -> None:
         "wifi_phone", "Wi-Fi téléphone", "fail", ("ÉCHEC (code 1)", "pas de terminal", PHONE_HINT)
     )
     lines = hh.ui.view().lines
-    assert lines[2] == "Wi-Fi téléphone : ÉCHEC (code 1)"
-    assert lines[3:] == ("pas de terminal", PHONE_HINT)
+    assert lines[3] == "Wi-Fi téléphone : ÉCHEC (code 1)"
+    assert lines[4:] == ("pas de terminal", PHONE_HINT)
 
 
 def test_demo_screen_modes_and_confirmations(clock: ManualClock) -> None:

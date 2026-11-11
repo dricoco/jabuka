@@ -258,6 +258,8 @@ def _paths(tmp_path: Path, demo: bool = False) -> config.Paths:
         thermal=tmp_path / "temp",
         data_dir=tmp_path,
         prerace_last=tmp_path / "prerace-last.txt",
+        current_last=tmp_path / "current-last.txt",
+        current_npz=tmp_path / "racepack" / "current.npz",
         demo_flag=flag,
     )
 
@@ -312,6 +314,8 @@ def test_collector_never_raises(tmp_path: Path) -> None:
         thermal=tmp_path / "absent",
         data_dir=tmp_path / "absent",
         prerace_last=tmp_path / "absent",
+        current_last=tmp_path / "absent",
+        current_npz=tmp_path / "absent",
         demo_flag=tmp_path / "absent",
     )
 
@@ -346,6 +350,8 @@ def test_extra_queries_only_while_requested(tmp_path: Path) -> None:
         "journalctl",
         "-u",
         "jabuka-prerace.service",
+        "-u",
+        "jabuka-current.service",
         "-n",
         "10",
         "--no-pager",

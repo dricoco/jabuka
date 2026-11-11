@@ -40,7 +40,8 @@ CONFIRM_TEXTS: dict[str, tuple[str, str]] = {
     "poweroff": ("ÉTEINDRE le Pi ?", "Attendre ~20 s avant de couper le courant."),
     "prerace": (
         "Lancer prerace ?",
-        "Télécharge la météo par le partage du téléphone : Wi-Fi bateau coupé 10 à 30 min.",
+        "Météo puis courant Copernicus par le partage du téléphone : Wi-Fi bateau coupé "
+        "10 à 30 min (deux fois).",
     ),
     "current": (
         "Télécharger le courant Copernicus ?",
@@ -384,7 +385,9 @@ class UI:
         if self.screen == "journal":
             name = "journal_prerace" if self.journal_mode == "journal" else "prerace_status"
             got = (getattr(snap, "extra", None) or {}).get(name)
-            head = "Journal prerace :" if name == "journal_prerace" else "Résultat prerace :"
+            head = (
+                "Journal prerace + courant :" if name == "journal_prerace" else "Résultat prerace :"
+            )
             return (head, *(got[-10:] if got else ("(chargement…)",)))
         if self.screen == "demo":
             return self.demo_lines()
@@ -399,6 +402,16 @@ class UI:
             pr = f"Prerace : {last['result']} · {last.get('date') or '?'} · code {last.get('code')}"
         else:
             pr = "Prerace : aucune préparation enregistrée"
+        cur = extra.get("current") or {}
+        cl = cur.get("last") or {}
+        if cur.get("running") and getattr(snap, "prerace_running", False):
+            cu = "Courant : en attente de la fin de prerace"
+        elif cur.get("running"):
+            cu = "Courant : en cours (JOURNAL pour suivre)"
+        elif cl.get("result"):
+            cu = f"Courant : {cl['result']} · {cl.get('date') or '?'} · code {cl.get('code')}"
+        else:
+            cu = "Courant : aucun téléchargement (bouton COURANT)"
         wifi = extra.get("wifi") or {}
         if wifi.get("mode") == "ap":
             ssid, n = wifi.get("ssid") or "jabuka", wifi.get("clients", 0)
@@ -414,7 +427,7 @@ class UI:
             wl = f"{status} · {wifi.get('clients', 0)} clients"
         elif status:
             wl = status
-        out = [pr, wl]
+        out = [pr, cu, wl]
         st = self.state()
         if st is not None:
             lines = [ln for ln in st.lines if ln]
@@ -424,7 +437,7 @@ class UI:
             else:
                 tag = {"running": "…", "ok": "OK", "fail": "ÉCHEC"}.get(st.state, st.state)
                 out.append(f"{st.title} : {tag}")
-            out += lines[-3:]
+            out += lines[-2:]
         return tuple(out)
 
     def demo_lines(self) -> tuple[str, ...]:

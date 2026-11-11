@@ -135,15 +135,19 @@ def test_worker_records_failure_and_crash() -> None:
 
 
 def test_prerace_and_wifi_argv(runner: FakeRunner, tmp_path: Path) -> None:
-    reg = _registry(runner, tmp_path)
+    reg = actions.build_registry(
+        runner, FakeConsole(), config.Config(), tmp_path / "t.json", wall=lambda: 1794560000.4
+    )
     for aid in ("prerace", "wifi_ap", "wifi_phone"):
         assert _run(reg, aid).ok
     assert runner.calls == [
+        ["systemctl", "is-active", "jabuka-current.service"],
         ["/usr/local/sbin/prerace"],
+        ["/usr/local/sbin/jabuka-current", "--after-prerace", "1794560000"],
         ["/usr/local/sbin/jabuka-wifi", "ap"],
         ["/usr/local/sbin/jabuka-wifi", "phone"],
     ]
-    assert runner.timeouts == [30.0, 30.0, 30.0]
+    assert runner.timeouts == [10.0, 30.0, 30.0, 30.0, 30.0]
 
 
 def test_prerace_refused_during_demo(runner: FakeRunner, tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,8 @@ ENV = {
 CORE_UNIT = "jabuka-core.service"
 INGEST_UNIT = "jabuka-ingest-fastnet.service"
 GETTY_UNIT = "getty@tty1.service"
+CURRENT_UNIT = "jabuka-current.service"
+ACTIVE_STATES = ("active", "activating", "reloading")
 
 
 def check_argv(argv: list[str]) -> None:
@@ -323,17 +326,42 @@ def night_toggle(cfg, cfg_path, save: Callable | None = None) -> Action:
 
 PHONE_HINT = "sudo jabuka-wifi phone depuis le Terminal pour enregistrer le mot de passe"
 DEMO_REFUSAL = "Démo en cours : revenir en mode course avant prerace"
+CURRENT_RUNNING_REFUSAL = "Courant en cours : attendre la fin (JOURNAL)"
 
 
-def prerace(runner, demo_active: Callable[[], bool] = lambda: False) -> Action:
-    """Launch prerace (detached unit jabuka-prerace, returns at once); refused during a demo."""
+def prerace(
+    runner,
+    demo_active: Callable[[], bool] = lambda: False,
+    wall: Callable[[], float] = time.time,
+) -> Action:
+    """Launch prerace (detached unit jabuka-prerace, returns at once), then schedule
+    `jabuka-current --after-prerace <launch time>`: that detached unit waits for prerace by itself
+    and runs only if prerace ends with code 0 or 3, so this worker is never blocked for the whole
+    prerace and a menu restart does not lose the chain. Refused during a demo and while a current
+    run is active."""
 
     def fn(progress: Progress) -> Outcome:
         if demo_active():
             return Outcome(False, (DEMO_REFUSAL,))
+        cur = runner.run(["systemctl", "is-active", CURRENT_UNIT], 10.0)
+        if cur.out.strip() in ACTIVE_STATES:
+            return Outcome(False, (CURRENT_RUNNING_REFUSAL,))
+        since = int(wall())  # before the launch: the prerace result written later is newer
         progress("Lancement de prerace…")
         res = runner.run([PRERACE], 30.0)
-        return cmd_outcome(res, "Prerace lancé : suivre le journal")
+        if not res.ok:
+            return cmd_outcome(res, "Prerace lancé : suivre le journal")
+        progress("Programmation du courant après prerace…")
+        cres = runner.run([CURRENT, "--after-prerace", str(since)], 30.0)
+        lines = ["Prerace lancé : suivre le journal", *res.tail(2)]
+        if cres.ok:
+            lines.append("Courant : suivra prerace (si code 0 ou 3)")
+        else:
+            lines.append(
+                f"Courant non programmé ({cres.describe()}) : bouton COURANT après prerace"
+            )
+            lines += cres.tail(1)
+        return Outcome(True, tuple(lines))
 
     return Action("prerace", "Prerace", fn)
 
@@ -379,6 +407,7 @@ def build_registry(
     cfg_path,
     save: Callable | None = None,
     demo_active: Callable[[], bool] | None = None,
+    wall: Callable[[], float] = time.time,
     **extra,
 ):
     """The fixed registry of action ids (tasks 2/3 add theirs through ``extra``)."""
@@ -390,7 +419,7 @@ def build_registry(
             poweroff(runner),
             terminal(runner, console),
             night_toggle(cfg, cfg_path, save),
-            prerace(runner, demo_active or (lambda: False)),
+            prerace(runner, demo_active or (lambda: False), wall),
             current(runner, demo_active or (lambda: False)),
             wifi_ap(runner),
             wifi_phone(runner),

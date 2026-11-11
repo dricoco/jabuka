@@ -101,6 +101,11 @@ SAMPLE_EXTRA = {
         "Wi-Fi : point d'accès conservé (internet direct)",
     ),
     "prerace_last": {"running": False, "date": "2026-11-12T07:41:03Z", "result": "OK", "code": 0},
+    "current": {
+        "running": False,
+        "present": True,
+        "last": {"running": False, "date": "2026-11-12T07:55:10Z", "result": "OK", "code": 0},
+    },
     "wifi": {"mode": "ap", "ssid": "jabuka", "clients": 2},
     "wifi_status": (
         "Wi-Fi : point d'accès bateau (SSID jabuka)",
@@ -262,6 +267,7 @@ def screen_views(clock: ManualClock | None = None) -> list[tuple[str, object]]:
         "reboot",
         "poweroff",
         "prerace",
+        "current",
         "wifi_ap",
         "wifi_phone",
         "demo_start",
@@ -284,6 +290,8 @@ def _tmp_paths(out: Path) -> config.Paths:
         thermal=root / "temp",
         data_dir=root,
         prerace_last=root / "prerace-last.txt",
+        current_last=root / "current-last.txt",
+        current_npz=root / "racepack" / "current.npz",
         demo_flag=root / "no-demo.conf",
     )
 

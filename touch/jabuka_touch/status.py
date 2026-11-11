@@ -14,10 +14,10 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .actions import PRERACE, WIFI
+from .actions import ACTIVE_STATES, CURRENT_UNIT, PRERACE, WIFI
 from .config import Paths
 
 log = logging.getLogger("jabuka_touch.status")
@@ -45,6 +45,8 @@ EXTRA_QUERIES = {
         "journalctl",
         "-u",
         PRERACE_UNIT,
+        "-u",
+        CURRENT_UNIT,
         "-n",
         "10",
         "--no-pager",
@@ -179,18 +181,19 @@ def parse_chrony_tracking(text: str) -> dict:
     return {"synced": leap == "Normal", "ref": fields[1].strip(), "leap": leap}
 
 
-def parse_prerace_last(text: str) -> dict:
-    """prerace-last.txt (or `prerace status`) -> {running, date, result, code}."""
+def parse_last(text: str, key: str) -> dict:
+    """A result file (prerace-last.txt, current-last.txt) or its `status` output ->
+    {running, date, result, code}; ``key`` names the first line's date field."""
     out: dict = {"running": False, "date": None, "result": None, "code": None}
     lines = (text or "").splitlines()
-    if lines and lines[0].startswith("en cours"):
+    if lines and lines[0].startswith(("en cours", "en attente")):
         out["running"] = True
     for line in lines:
         k, sep, v = line.partition(" : ")
         if not sep:
             continue
         k, v = k.strip(), v.strip()
-        if k == "prerace" and out["date"] is None:
+        if k == key and out["date"] is None:
             out["date"] = v
         elif k == "résultat" and out["result"] is None:
             out["result"] = v
@@ -200,6 +203,32 @@ def parse_prerace_last(text: str) -> dict:
             except ValueError:
                 pass
     return out
+
+
+def parse_prerace_last(text: str) -> dict:
+    """prerace-last.txt (or `prerace status`) -> {running, date, result, code}."""
+    return parse_last(text, "prerace")
+
+
+def parse_current_last(text: str) -> dict:
+    """current-last.txt (or `jabuka-current status`) -> {running, date, result, code}."""
+    return parse_last(text, "courant")
+
+
+def pack_current(it: Item, cur: dict | None) -> Item:
+    """The MÉTÉO item with the Copernicus current state appended to its detail (level unchanged:
+    the current is optional). ``cur`` = {"running", "present", "last"} from the collector."""
+    cur = cur or {}
+    last = cur.get("last") or {}
+    if cur.get("running"):
+        mention = "courant : téléchargement en cours"
+    elif cur.get("present") and last.get("code") == 0 and last.get("date"):
+        mention = f"courant : présent (téléchargé {last['date']})"
+    elif cur.get("present"):
+        mention = "courant : présent"
+    else:
+        mention = "courant : absent"
+    return replace(it, detail=f"{it.detail} ; {mention}" if it.detail else mention)
 
 
 def temp_item(milli: str) -> Item:
@@ -417,6 +446,7 @@ class Collector:
         self._chrony: dict | None = None
         self._prerace_running = False
         self._prerace_last: dict = {}
+        self._current: dict = {"running": False, "present": False, "last": {}}
         self._wifi: dict = {}
 
     # -- steps -----------------------------------------------------------------------------
@@ -464,7 +494,7 @@ class Collector:
     def _prerace_step(self) -> None:
         try:
             res = self._run(["systemctl", "is-active", PRERACE_UNIT])
-            self._prerace_running = res.out.strip() in ("active", "activating", "reloading")
+            self._prerace_running = res.out.strip() in ACTIVE_STATES
         except Exception as e:  # noqa: BLE001
             log.warning("prerace : %s", e)
             self._prerace_running = False
@@ -474,6 +504,25 @@ class Collector:
         except OSError:
             self._prerace_last = {}
 
+    def _current_step(self) -> None:
+        running = present = False
+        last: dict = {}
+        try:
+            res = self._run(["systemctl", "is-active", CURRENT_UNIT])
+            running = res.out.strip() in ACTIVE_STATES
+        except Exception as e:  # noqa: BLE001
+            log.warning("courant : %s", e)
+        try:
+            text = Path(self.paths.current_last).read_text(encoding="utf-8", errors="replace")
+            last = parse_current_last(text)
+        except OSError:
+            last = {}
+        try:
+            present = Path(self.paths.current_npz).is_file()
+        except OSError:
+            present = False
+        self._current = {"running": running, "present": present, "last": last}
+
     def _system(self) -> None:
         self._safe("services", self._services)
         self._safe("power", self._power)
@@ -482,6 +531,7 @@ class Collector:
         self._safe("disk", self._disk)
         self._chrony_step()
         self._prerace_step()
+        self._current_step()
 
     def _api(self) -> None:
         try:
@@ -533,9 +583,14 @@ class Collector:
         extra = {
             **{k: v for k, v in self._extra.items() if k in names},
             "prerace_last": dict(self._prerace_last),
+            "current": {**self._current, "last": dict(self._current.get("last") or {})},
             "wifi": dict(self._wifi),
         }
         items = tuple(self._items[k] for k in KEYS)
+        try:
+            items = tuple(pack_current(i, self._current) if i.key == "pack" else i for i in items)
+        except Exception as e:  # noqa: BLE001 - the mention is optional
+            log.warning("courant (MÉTÉO) : %s", e)
         return self._publish(
             items,
             now,

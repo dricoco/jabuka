@@ -64,6 +64,8 @@ class Paths:
     thermal: Path = Path("/sys/class/thermal/thermal_zone0/temp")
     data_dir: Path = Path("/var/lib/jabuka")
     prerace_last: Path = Path("/var/lib/jabuka/prerace-last.txt")
+    current_last: Path = Path("/var/lib/jabuka/current-last.txt")
+    current_npz: Path = Path("/var/lib/jabuka/racepack/current.npz")
     demo_flag: Path = Path("/run/systemd/system/jabuka-core.service.d/zz-jabuka-touch-demo.conf")
 
 
