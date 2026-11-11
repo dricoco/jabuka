@@ -266,6 +266,8 @@ def render(view, w: int | None = None, h: int | None = None) -> np.ndarray:
         _text_lines(draw, view, pal, 36, 236 * h / 320, size=14, kind="mono")
     elif s == "prep":
         _text_lines(draw, view, pal, 36, 152 * h / 320, size=14, kind="regular", wrap_lines=True)
+    elif s == "demo":
+        _text_lines(draw, view, pal, 38, 236 * h / 320, size=15, kind="regular", wrap_lines=True)
     else:
         _text_lines(draw, view, pal, 38, 236 * h / 320, size=15, kind="regular")
     for b in view.buttons:

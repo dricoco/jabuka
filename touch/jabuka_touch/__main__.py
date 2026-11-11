@@ -8,7 +8,7 @@ import logging
 import sys
 import time
 
-from . import actions, config, fb, status, touchin
+from . import actions, config, demo, fb, status, touchin
 from .app import App
 from .console import Console
 from .ui import UI
@@ -40,7 +40,12 @@ def make_collector(runner, cfg: config.Config, paths: config.Paths) -> status.Co
     return status.Collector(runner, fetch=status.make_fetch(cfg.core_url), paths=paths)
 
 
+def fetch_for_port(port: int):
+    return status.make_fetch(f"http://127.0.0.1:{int(port)}")
+
+
 def make_registry(runner, console, cfg: config.Config, paths: config.Paths, collector):
+    dpaths = demo.DemoPaths()
     return actions.build_registry(
         runner,
         console,
@@ -48,6 +53,7 @@ def make_registry(runner, console, cfg: config.Config, paths: config.Paths, coll
         paths.config,
         save=config.save,
         demo_active=lambda: paths.demo_flag.exists(),
+        **demo.demo_actions(runner, dpaths, cfg, fetch_for_port, owner=demo.chown_jabuka),
     )
 
 
@@ -147,7 +153,19 @@ def cmd_calibrate(_args) -> int:
     return 0
 
 
+def cmd_race_mode(_args) -> int:
+    out = demo.stop_demo(actions.Runner(), demo.DemoPaths(), lambda line: print(line, flush=True))
+    for line in out.lines:
+        print(line)
+    if out.ok:
+        print("mode course : OK")
+        return 0
+    print("mode course : ÉCHEC (redémarrer le Pi : sudo systemctl reboot)")
+    return 1
+
+
 COMMANDS = {
+    "race-mode": cmd_race_mode,
     "calibrate": cmd_calibrate,
     "run": cmd_run,
     "restore-console": cmd_restore_console,
@@ -166,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--out", required=True)
     sub.add_parser("status", help="état du système en texte")
     sub.add_parser("calibrate", help="calibre le toucher (3 croix)")
+    sub.add_parser("race-mode", help="quitte la démo : mode course (capteurs réels)")
     args = p.parse_args(argv)
     return COMMANDS[args.cmd or "run"](args)
 

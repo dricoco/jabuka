@@ -236,6 +236,22 @@ def screen_views(clock: ManualClock | None = None) -> list[tuple[str, object]]:
     ui, snap = make(state=fail)
     ui.go("prep")
     out.append(("prep-wifi-fail", ui.view(snap)))
+    ui, snap = make(demo=True)
+    ui.go("demo")
+    out.append(("demo-active", ui.view(snap)))
+    rb_fail = actions.ActionResult(
+        "race_mode",
+        "Mode course",
+        "fail",
+        (
+            "Drop-ins démo retirés, mais jabuka-core.service pas actif : "
+            "redémarrer le Pi rétablit le mode course",
+        ),
+        2,
+    )
+    ui, snap = make(state=rb_fail)
+    ui.go("demo")
+    out.append(("demo-reboot-hint", ui.view(snap)))
     ui, snap = make()
     ui.go("journal")
     ui.journal_mode = "result"
@@ -248,6 +264,8 @@ def screen_views(clock: ManualClock | None = None) -> list[tuple[str, object]]:
         "prerace",
         "wifi_ap",
         "wifi_phone",
+        "demo_start",
+        "race_mode",
     ):
         ui, snap = make()
         ui.go("system")

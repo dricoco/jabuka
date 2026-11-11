@@ -41,6 +41,12 @@ CONFIRM_TEXTS: dict[str, tuple[str, str]] = {
         "Lancer prerace ?",
         "Télécharge la météo par le partage du téléphone : Wi-Fi bateau coupé 10 à 30 min.",
     ),
+    "demo_start": (
+        "Lancer la DÉMO ?",
+        "Bateau simulé à la place des instruments. Données de course intactes. "
+        "Redémarrage = mode course.",
+    ),
+    "race_mode": ("Revenir en MODE COURSE ?", "Capteurs réels et données de course."),
     "wifi_ap": ("Revenir au Wi-Fi bateau (jabuka) ?", "Les tablettes se reconnectent à jabuka."),
     "wifi_phone": (
         "Passer sur le partage du téléphone ?",

@@ -1,0 +1,21 @@
+{
+  "touch": {
+    "x_min": 3936,
+    "x_max": 227,
+    "y_min": 268,
+    "y_max": 3880,
+    "swap_xy": true,
+    "device_name": "ADS7846 Touchscreen",
+    "debounce_s": 0.25
+  },
+  "fb_name": "fb_ili9486",
+  "core_url": "http://127.0.0.1",
+  "night": false,
+  "confirm_timeout_s": 8.0,
+  "tap_guard_s": 0.6,
+  "demo": {
+    "speed": 2.0,
+    "shift_deg_h": 6.0,
+    "start_utc": "2026-11-13T18:00:00+00:00"
+  }
+}

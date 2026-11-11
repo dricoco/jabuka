@@ -215,3 +215,43 @@ def test_prep_shows_failure_lines(clock: ManualClock) -> None:
     lines = hh.ui.view().lines
     assert lines[2] == "Wi-Fi téléphone : ÉCHEC (code 1)"
     assert lines[3:] == ("pas de terminal", PHONE_HINT)
+
+
+def test_demo_screen_modes_and_confirmations(clock: ManualClock) -> None:
+    hh = Harness(clock)
+    hh.ui.snapshot = sample_snapshot(demo=False)
+    hh.tap("demo")
+    v = hh.ui.view()
+    assert v.lines[0] == "COURSE : capteurs réels" and not v.demo
+    assert [b.id for b in hh.ui.buttons()] == ["demo_start", "back"]
+    hh.tap("demo_start")
+    assert hh.ui.screen == "confirm" and hh.ui.view().title == "Lancer la DÉMO ?"
+    hh.tap("yes")
+    assert hh.submitted == ["demo_start"]
+    hh.ui.snapshot = sample_snapshot(demo=True)
+    v = hh.ui.view()
+    assert v.lines[0] == "DÉMO : bateau simulé" and v.demo
+    assert [b.id for b in hh.ui.buttons()] == ["race_mode", "back"]
+    hh.tap("race_mode")
+    assert hh.ui.view().title == "Revenir en MODE COURSE ?"
+    hh.tap("yes")
+    assert hh.submitted == ["demo_start", "race_mode"]
+
+
+def test_demo_screen_reboot_hint_after_failed_race_mode(clock: ManualClock) -> None:
+    from jabuka_touch.actions import ActionResult
+
+    hint = (
+        "Drop-ins démo retirés, mais jabuka-core.service pas actif : "
+        "redémarrer le Pi rétablit le mode course"
+    )
+    hh = Harness(clock)
+    hh.ui.snapshot = sample_snapshot(demo=False)
+    hh.ui.go("demo")
+    hh.state = ActionResult("race_mode", "Mode course", "fail", (hint,), 3)
+    assert hint in hh.ui.view().lines
+    assert [b.id for b in hh.ui.buttons()] == ["demo_start", "reboot", "back"]
+    hh.tap("reboot")
+    assert hh.ui.screen == "confirm" and hh.ui.confirm_action == "reboot"
+    hh.tap("yes")
+    assert hh.submitted == ["reboot"]

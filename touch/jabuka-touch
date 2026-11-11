@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# jabuka-touch: the touchscreen menu from a shell (installed as /usr/local/sbin/jabuka-touch).
+#
+#   sudo jabuka-touch            back to the menu (same as: sudo jabuka-touch menu)
+#   sudo jabuka-touch status     state of the boat system as text
+#   sudo jabuka-touch course     leave the DÉMO: race mode (real sensors, race data)
+#   sudo jabuka-touch calibrate  recalibrate the touch panel (3 crosses)
+set -euo pipefail
+
+OPT=/opt/jabuka-touch
+PY=/usr/bin/python3
+USAGE="usage : sudo jabuka-touch [menu | status | course | calibrate]"
+
+case "${1:-menu}" in
+    -h | --help | help)
+        echo "$USAGE"
+        echo "  menu       revenir au menu tactile (ferme la session du terminal de l'écran)"
+        echo "  status     état du système en texte"
+        echo "  course     quitter la démo : mode course (capteurs réels)"
+        echo "  calibrate  recalibrer le toucher (3 croix)"
+        exit 0
+        ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || {
+    echo "jabuka-touch : lancer avec sudo ($USAGE)" >&2
+    exit 1
+}
+
+case "${1:-menu}" in
+    menu)
+        echo "Retour au menu tactile : la session du terminal de l'écran (tty1) va se fermer."
+        exec systemctl start jabuka-touch.service
+        ;;
+    status)
+        cd "$OPT"
+        exec "$PY" -s -m jabuka_touch status
+        ;;
+    course)
+        cd "$OPT"
+        exec "$PY" -s -m jabuka_touch race-mode
+        ;;
+    calibrate)
+        echo "Calibration : touchez le centre de chaque croix (3 croix) sur l'écran."
+        echo "Ensuite le menu revient : une session du terminal de l'écran (tty1) va se fermer."
+        systemctl stop jabuka-touch.service || true
+        rc=0
+        (cd "$OPT" && "$PY" -s -m jabuka_touch calibrate) || rc=$?
+        systemctl start jabuka-touch.service || true
+        exit "$rc"
+        ;;
+    *)
+        echo "$USAGE" >&2
+        exit 2
+        ;;
+esac

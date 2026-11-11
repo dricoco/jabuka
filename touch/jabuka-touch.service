@@ -1,0 +1,44 @@
+# jabuka-touch: French touchscreen menu on the MHS35 3.5" screen (tty1, framebuffer fb_ili9486).
+# Installed by touch/install.sh to /etc/systemd/system/ and enabled at boot.
+#
+# - Strictly an add-on: no Requires/BindsTo/PartOf/Requisite/After on jabuka-core or
+#   jabuka-ingest-fastnet, so a menu crash, restart or removal never affects navigation. It only
+#   reads the core's HTTP API (127.0.0.1) and runs whitelisted commands (argv lists, no shell).
+# - Runs as root: it needs the framebuffer, the touch input device, KDSETMODE on tty1 and
+#   systemctl (restart, reboot, power-off, the volatile demo drop-ins in /run). Nice=10,
+#   MemoryMax and OOMScoreAdjust=500 keep it behind navigation for CPU and memory.
+# - Conflicts=getty@tty1.service: the menu owns tty1. The TERMINAL button starts getty@tty1
+#   (which stops the menu); `sudo jabuka-touch` brings the menu back. At boot both are pulled
+#   in: systemd keeps the conflicting unit (this one) and drops the getty.
+# - Restart=on-failure + RestartMode=direct (systemd >= 254): automatic restarts skip the failed
+#   state, so OnFailure= only fires once the start limit is hit and then gives the text console
+#   back (getty@tty1). ExecStopPost restores KD_TEXT whatever happened.
+# - A reboot always comes back on the menu in race mode (the demo drop-ins live in /run).
+
+[Unit]
+Description=Jabuka menu tactile (écran 3,5 pouces)
+Documentation=file:///opt/jabuka-touch/README.md
+Conflicts=getty@tty1.service
+After=systemd-user-sessions.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+OnFailure=getty@tty1.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jabuka-touch
+ExecStart=/usr/bin/python3 -s -m jabuka_touch run
+ExecStopPost=/usr/bin/python3 -s -m jabuka_touch restore-console
+Restart=on-failure
+RestartSec=3
+RestartMode=direct
+Nice=10
+MemoryMax=150M
+OOMScoreAdjust=500
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
