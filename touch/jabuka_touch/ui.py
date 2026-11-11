@@ -18,6 +18,7 @@ SCREENS = ("home", "details", "prep", "journal", "demo", "system", "confirm")
 RISKY = frozenset(
     {
         "prerace",
+        "current",
         "wifi_ap",
         "wifi_phone",
         "demo_start",
@@ -40,6 +41,11 @@ CONFIRM_TEXTS: dict[str, tuple[str, str]] = {
     "prerace": (
         "Lancer prerace ?",
         "Télécharge la météo par le partage du téléphone : Wi-Fi bateau coupé 10 à 30 min.",
+    ),
+    "current": (
+        "Télécharger le courant Copernicus ?",
+        "Partage du téléphone s'il n'y a pas d'internet : Wi-Fi bateau coupé quelques minutes. "
+        "Pack inchangé en cas d'échec.",
     ),
     "demo_start": (
         "Lancer la DÉMO ?",
@@ -249,14 +255,12 @@ class UI:
         elif screen == "details":
             out += L.row(*L.BOTTOM, [_nav("back", "RETOUR", "home")])
         elif screen == "prep":
-            out += L.row(
-                152,
-                236,
-                [
-                    _act("prerace", "LANCER PRERACE"),
-                    _nav("journal", "JOURNAL", "journal"),
-                ],
-            )
+            # both confirmation openers stay left of OUI (x 240-480)
+            out += [
+                Button("prerace", L.r(0, 152, 125, 236), "LANCER\nPRERACE", "action", "prerace"),
+                Button("current", L.r(125, 152, 240, 236), "COURANT", "action", "current"),
+                Button("journal", L.r(240, 152, 480, 236), "JOURNAL", "nav", "journal"),
+            ]
             out += L.row(
                 236,
                 320,
@@ -351,7 +355,7 @@ class UI:
         seq = getattr(st, "seq", 0) or 0
         if st is not None and seq != self.seen_seq and getattr(st, "state", "") != "running":
             self.seen_seq = seq
-            if st.id == "prerace" and st.state == "ok" and self.screen == "prep":
+            if st.id in ("prerace", "current") and st.state == "ok" and self.screen == "prep":
                 self.journal_mode = "journal"
                 self.go("journal")
 

@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# jabuka-current: download the Copernicus Med surface current ON the Pi and add it to the race pack.
+# Installed by touch/install.sh as /usr/local/sbin/jabuka-current (run with sudo). Manual: touch/README.md.
+#
+#   sudo jabuka-current                        in the background: phone hotspot only if there is no
+#                                              internet, Copernicus current (uo/vo) into a staging copy
+#                                              of /var/lib/jabuka/racepack, swap, restart jabuka-core,
+#                                              back to the AP
+#   sudo jabuka-current --after-prerace EPOCH  same, but first wait for prerace to finish (used by the
+#                                              touch menu after LANCER PRERACE)
+#   sudo jabuka-current status                 result of the last run (and whether one is running)
+#
+# Follow a run: journalctl -fu jabuka-current. A run ends with 0 (OK) or 2 (failure, the old pack is
+# kept untouched). One-time setup: sudo /opt/copernicusmarine/venv/bin/copernicusmarine login
+set -euo pipefail
+
+# The Copernicus credentials file is only tested for existence and passed by path to copernicusmarine
+# (--credentials-file): this script never reads, prints, copies or logs its content.
+
+# Test-harness overrides only (stubbed PATH tests): sudo's env_reset and systemd-run both drop
+# these variables in real use, and the touch menu calls this script with a fixed environment, so
+# the real paths always apply on the Pi.
+DATA="${CURRENT_DATA_DIR:-/var/lib/jabuka}"
+PREP="${CURRENT_PREP:-/opt/jabuka-prep/venv/bin/jabuka-prep}"
+PREP_PY="$(dirname "$PREP")/python"
+WIFI="${CURRENT_WIFI:-/usr/local/sbin/jabuka-wifi}"
+CM="${CURRENT_CM:-/opt/copernicusmarine/venv/bin/copernicusmarine}"
+CREDS="${CURRENT_CREDS:-/root/.copernicusmarine/.copernicusmarine-credentials}"
+RUN_UNITS="${CURRENT_RUN_UNITS:-/run/systemd/system}"
+POLL_S="${CURRENT_POLL_S:-15}"
+WAIT_MAX_S="${CURRENT_WAIT_MAX_S:-3900}"
+
+UNIT=jabuka-current
+PRERACE_UNIT=jabuka-prerace
+URL=https://stac.marine.copernicus.eu/metadata/catalog.stac.json
+PHONE=jabuka-phone
+DATASET=cmems_mod_med_phy-cur_anfc_4.2km-2D_PT1H-m
+# race area, same box as docs/WEATHER-PACK.md
+LON_MIN=14.75
+LON_MAX=16.55
+LAT_MIN=42.55
+LAT_MAX=44.25
+MARGIN_BEFORE_S=21600
+MARGIN_AFTER_S=7200
+PACK="${DATA:?}/racepack"
+STAGE="${DATA:?}/racepack.current-new"
+PREV="${DATA:?}/racepack.prev"
+CACHE="${DATA:?}/cache/current"
+NC_NAME=current_med.nc
+RESULT="${DATA:?}/current-last.txt"
+LOG="${DATA:?}/current-last.log"
+PRERACE_RESULT="${DATA:?}/prerace-last.txt"
+SELF="$(readlink -f "$0")"
+USAGE="usage : sudo jabuka-current [--after-prerace EPOCH] | sudo jabuka-current status"
+
+die() {
+    local code="$1"
+    shift
+    echo "jabuka-current: $*" >&2
+    exit "$code"
+}
+
+case "${1:-}" in
+    -h | --help)
+        sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+esac
+
+# /var/lib/jabuka is 0750 jabuka: every subcommand needs root.
+[ "$(id -u)" -eq 0 ] || die 1 "lancer avec sudo : sudo jabuka-current ${*}"
+
+unit_active() { systemctl is-active --quiet "$UNIT.service"; }
+
+# preflight: prints the French reason and returns 1 when something needed is missing.
+preflight() {
+    if [ ! -x "$PREP" ]; then
+        echo "venv météo du Pi absent ($PREP) : relancer deploy/provision.sh avec deploy/wheelhouse/prep (PI-SETUP §8)"
+        return 1
+    fi
+    if [ ! -x "$CM" ]; then
+        echo "copernicusmarine absent ($CM) : sudo bash touch/install.sh avec internet"
+        return 1
+    fi
+    # existence only: the file is never opened by this script
+    if [ ! -f "$CREDS" ]; then
+        echo "identifiants Copernicus absents : sudo /opt/copernicusmarine/venv/bin/copernicusmarine login (une fois)"
+        return 1
+    fi
+    return 0
+}
+
+# --- launch: re-run detached so a dropped SSH session (Wi-Fi switch) does not stop it -----------
+launch() {
+    if [ $# -gt 0 ]; then die 2 "argument inconnu : $1 ; $USAGE"; fi
+    if unit_active; then
+        echo "jabuka-current: un téléchargement du courant est déjà en cours : journalctl -fu jabuka-current" >&2
+        exit 1
+    fi
+    local why
+    if ! why="$(preflight)"; then die 1 "$why"; fi
+    # RuntimeMaxSec is a safety cap: on timeout SIGTERM runs the cleanup and the AP comes back.
+    systemd-run --quiet --unit="$UNIT" --collect --property=RuntimeMaxSec=5400 \
+        "$SELF" _run
+    echo "suivre : journalctl -fu jabuka-current ; résultat : sudo jabuka-current status"
+}
+
+# --- status ------------------------------------------------------------------------------------
+status() {
+    if unit_active; then
+        echo "en cours : journalctl -fu jabuka-current"
+    fi
+    if [ -f "$RESULT" ]; then
+        cat "$RESULT"
+    else
+        echo "aucun téléchargement du courant enregistré (sudo jabuka-current pour en lancer un)"
+    fi
+}
+
+# --- the detached body -------------------------------------------------------------------------
+have_internet() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -sfI --max-time 10 -o /dev/null "$URL"
+    else
+        python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=10)' \
+            "$URL" >/dev/null 2>&1
+    fi
+}
+
+have_phone_profile() {
+    command -v nmcli >/dev/null 2>&1 || return 1
+    nmcli -g NAME connection show 2>/dev/null | grep -x "$PHONE" >/dev/null
+}
+
+note() { NOTES="${NOTES:+$NOTES ; }$*"; }
+
+# fail MESSAGE: record the outcome, say it in the journal, exit 2 (the trap writes the result).
+fail() {
+    OUTCOME="$*"
+    echo "jabuka-current: $OUTCOME" >&2
+    exit 2
+}
+
+write_result() {
+    local rc="$1" dir="$STAGE"
+    [ "$INSTALLED" -eq 0 ] || dir="$PACK"
+    {
+        echo "courant : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "résultat : $OUTCOME"
+        echo "code : $rc"
+        echo "fenêtre : $WINDOW_NOTE"
+        echo "fichier : $IMPORT_LINE"
+        echo "Wi-Fi : $WIFI_NOTE"
+        if [ -n "$NOTES" ]; then echo "notes : $NOTES"; fi
+        echo "--- coverage.txt (courant) ---"
+        if [ -f "$dir/coverage.txt" ]; then
+            grep -i courant "$dir/coverage.txt" 2>/dev/null || echo "(aucune ligne courant)"
+        else
+            echo "(pas de coverage.txt)"
+        fi
+        if [ "$rc" -ne 0 ]; then
+            echo "--- journal (fin) ---"
+            tail -n 15 "$LOG" 2>/dev/null || true
+        fi
+    } >"$RESULT.tmp"
+    mv -f "$RESULT.tmp" "$RESULT"
+}
+
+cleanup() {
+    local rc=$?
+    trap - EXIT
+    # the run contract is exactly 0 OK / 2 failure (a signal, 143, is a failure too)
+    [ "$rc" -eq 0 ] || rc=2
+    if [ "$SWITCHED" -eq 1 ]; then
+        if "$WIFI" _switch ap; then
+            WIFI_NOTE="partage du téléphone puis retour au point d'accès"
+        else
+            WIFI_NOTE="partage du téléphone puis ÉCHEC du retour AP : sudo jabuka-wifi ap ou redémarrer"
+        fi
+    fi
+    write_result "$rc" || true
+    if [ "$INSTALLED" -eq 0 ]; then
+        rm -rf "${STAGE:?}" || true
+    fi
+    cat "$RESULT" 2>/dev/null || true
+    exit "$rc"
+}
+
+# prep CMD ARGS...: jabuka-prep as jabuka (never root: the NetCDF is untrusted input), niced so
+# jabuka-core stays responsive on the Pi 3. Returns jabuka-prep's exit code (pipefail).
+prep() {
+    local rc=0
+    echo "== jabuka-prep $*" | tee -a "$LOG"
+    runuser -u jabuka -- nice -n 10 "$PREP" "$@" --out "$STAGE" 2>&1 | tee -a "$LOG" || rc=$?
+    return "$rc"
+}
+
+# race window of the installed jabuka-prep (the one `jabuka-prep check` judges), widened by the
+# margins; sets START / END (naive ISO = UTC for copernicusmarine) and WINDOW_NOTE.
+race_window() {
+    local out s e
+    # -I: a module planted in the jabuka-writable cwd cannot shadow an import
+    out="$(runuser -u jabuka -- "$PREP_PY" -I -c 'from jabuka.route.racepack import DEFAULT_WINDOW_LOCAL as W, window_from_local as f
+w = f(*W)
+print(int(w.start_utc), int(w.end_utc))' 2>>"$LOG")" || return 1
+    read -r s e <<<"$out" || return 1
+    [[ "$s" =~ ^[0-9]+$ ]] && [[ "$e" =~ ^[0-9]+$ ]] || return 1
+    START="$(date -u -d "@$((s - MARGIN_BEFORE_S))" +%Y-%m-%dT%H:%M:%S)"
+    END="$(date -u -d "@$((e + MARGIN_AFTER_S))" +%Y-%m-%dT%H:%M:%S)"
+    WINDOW_NOTE="$START -> $END UTC (fenêtre de course jabuka-prep, marge -6 h / +2 h)"
+}
+
+run_body() {
+    if [ $# -gt 0 ]; then die 2 "_run : argument inconnu : $1"; fi
+
+    cd "$DATA"
+    : >"$LOG"
+    SWITCHED=0
+    INSTALLED=0
+    OUTCOME="ÉCHEC : interrompu"
+    NOTES=""
+    WIFI_NOTE="non utilisé"
+    WINDOW_NOTE="?"
+    IMPORT_LINE="?"
+    trap cleanup EXIT
+    trap 'exit 143' TERM INT HUP
+    echo "jabuka-current : début, heure du Pi $(date -u +%Y-%m-%dT%H:%M:%SZ) (UTC ; fausse si le GPS n'a pas réglé l'horloge)"
+
+    # 1. local checks first: a doomed run never drops the boat Wi-Fi
+    local why
+    if ! why="$(preflight)"; then fail "ÉCHEC : $why, pack inchangé"; fi
+    race_window || fail "ÉCHEC : fenêtre de course illisible (venv météo du Pi), pack inchangé"
+    echo "jabuka-current : fenêtre $WINDOW_NOTE"
+    [ -d "$PACK" ] || fail "ÉCHEC : pas de pack de course installé (prerace d'abord)"
+
+    # 2. internet
+    if have_internet; then
+        echo "jabuka-current : internet disponible"
+    else
+        fail "ÉCHEC : pas d'internet, pack inchangé"
+    fi
+
+    # 3. download as root (the credentials live in /root/.copernicusmarine), passed by path only
+    mkdir -p "$CACHE"
+    rm -f "${CACHE:?}/$NC_NAME"
+    local rc_cm=0
+    echo "== copernicusmarine subset $DATASET" | tee -a "$LOG"
+    env HOME=/root timeout --kill-after=30 900 nice -n 10 "$CM" subset \
+        --dataset-id "$DATASET" \
+        --variable uo --variable vo \
+        --minimum-longitude "$LON_MIN" --maximum-longitude "$LON_MAX" \
+        --minimum-latitude "$LAT_MIN" --maximum-latitude "$LAT_MAX" \
+        --start-datetime "$START" --end-datetime "$END" \
+        --output-directory "$CACHE" --output-filename "$NC_NAME" --overwrite \
+        --credentials-file "$CREDS" \
+        --disable-progress-bar 2>&1 | tee -a "$LOG" || rc_cm=$?
+    if [ "$rc_cm" -ne 0 ] || [ ! -s "$CACHE/$NC_NAME" ]; then
+        fail "ÉCHEC : téléchargement Copernicus (code $rc_cm : réseau, identifiants ou serveur, voir le journal ci-dessous), pack inchangé"
+    fi
+    chown -R jabuka:jabuka "$CACHE"
+
+    # 4. staging copy of the live pack (the live pack is never written in place)
+    rm -rf "${STAGE:?}"
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a "$PACK/" "$STAGE/"
+    else
+        cp -a "$PACK" "$STAGE"
+    fi
+    chown -R jabuka:jabuka "$STAGE"
+
+    # 5. import + check as jabuka
+    local rc_cur=0 rc_check=0
+    prep current "$CACHE/$NC_NAME" || rc_cur=$?
+    IMPORT_LINE="$(grep '^Courant : ' "$LOG" | tail -n 1 || true)"
+    IMPORT_LINE="${IMPORT_LINE:-?}"
+    case "$rc_cur" in
+        0 | 3) ;;
+        *) fail "ÉCHEC : import du courant (code $rc_cur), pack inchangé" ;;
+    esac
+    prep check || rc_check=$?
+    case "$rc_check" in
+        0 | 3) ;;
+        *) fail "ÉCHEC : contrôle du pack (code $rc_check), pack inchangé" ;;
+    esac
+
+    # 6. the current must cover the race window (else the router would run without it)
+    if [ ! -f "$STAGE/current.npz" ] \
+        || grep -Eiq 'courant désactivé|courant absent|courant invalides' "$STAGE/coverage.txt" 2>/dev/null; then
+        fail "ÉCHEC : le courant ne couvre pas la fenêtre de course (voir coverage), pack inchangé"
+    fi
+    if [ "$rc_check" -eq 3 ]; then
+        note "météo du pack incomplète (vent ou vagues), sans rapport avec le courant : sudo prerace status"
+    fi
+
+    # 7. install by rename swap, exactly one racepack.prev kept
+    rm -rf "${PREV:?}"
+    mv "$PACK" "$PREV"
+    mv "$STAGE" "$PACK"
+    INSTALLED=1
+    chown -R jabuka:jabuka "$PACK"
+    if ! systemctl restart jabuka-core.service; then
+        note "ÉCHEC du redémarrage de jabuka-core : sudo systemctl restart jabuka-core"
+    fi
+    rm -f "${CACHE:?}/$NC_NAME"
+    OUTCOME="OK : courant installé, jabuka-core redémarré"
+    exit 0
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    status) status ;;
+    _run)
+        shift
+        run_body "$@"
+        ;;
+    "") launch "$@" ;;
+    *) die 2 "commande inconnue : $cmd ; $USAGE" ;;
+esac

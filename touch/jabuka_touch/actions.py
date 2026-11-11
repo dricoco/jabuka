@@ -23,6 +23,7 @@ ALLOWED = frozenset(
         "systemd-run",
         "journalctl",
         "prerace",
+        "jabuka-current",
         "jabuka-wifi",
         "runuser",
         "nmcli",
@@ -34,6 +35,7 @@ ALLOWED = frozenset(
 ALLOWED_DIRS = ("/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/sbin", "/usr/local/bin")
 SBIN = "/usr/local/sbin"
 PRERACE = f"{SBIN}/prerace"
+CURRENT = f"{SBIN}/jabuka-current"
 WIFI = f"{SBIN}/jabuka-wifi"
 ENV = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -336,6 +338,23 @@ def prerace(runner, demo_active: Callable[[], bool] = lambda: False) -> Action:
     return Action("prerace", "Prerace", fn)
 
 
+CURRENT_DEMO_REFUSAL = "Démo en cours : revenir en mode course avant le courant"
+
+
+def current(runner, demo_active: Callable[[], bool] = lambda: False) -> Action:
+    """Launch jabuka-current alone (detached unit jabuka-current, returns at once); refused during
+    a demo (the script refuses too)."""
+
+    def fn(progress: Progress) -> Outcome:
+        if demo_active():
+            return Outcome(False, (CURRENT_DEMO_REFUSAL,))
+        progress("Lancement du courant Copernicus…")
+        res = runner.run([CURRENT], 30.0)
+        return cmd_outcome(res, "Courant lancé : suivre le journal")
+
+    return Action("current", "Courant", fn)
+
+
 def wifi_ap(runner) -> Action:
     def fn(progress: Progress) -> Outcome:
         progress("Retour au point d'accès jabuka…")
@@ -372,6 +391,7 @@ def build_registry(
             terminal(runner, console),
             night_toggle(cfg, cfg_path, save),
             prerace(runner, demo_active or (lambda: False)),
+            current(runner, demo_active or (lambda: False)),
             wifi_ap(runner),
             wifi_phone(runner),
         )
