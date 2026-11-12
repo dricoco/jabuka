@@ -19,5 +19,9 @@ for n, sh in (("TEST_Poutre_bout", cp), ("TEST_Coulisseau", PARTS["Coulisseau_S"
     o = doc.addObject("Part::Feature", n); o.Shape = sh
     Mesh.export([o], os.path.join(stl, n + ".stl"))
     doc.removeObject(n)
+for n, sh in KNOBS.items():                       # printed star knobs, print orientation
+    o = doc.addObject("Part::Feature", n); o.Shape = sh
+    Mesh.export([o], os.path.join(stl, n + ".stl"))
+    doc.removeObject(n)
 doc.saveAs(os.path.join(OUT, "X35_TabletMount_v5.FCStd"))
 print("elapsed", round(time.time() - t0))

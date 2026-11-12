@@ -46,8 +46,8 @@ EAR = 22.0
 CL_L = 44.0
 BRIDGE_T = 20.0
 H_T = 730.0          # tablet centre = tilt axis height
-TAB_W, TAB_H, TAB_D = 250.0, 200.0, 37.5   # tablet box outer, cap included
-TAB_X0, TAB_X1 = -123.5, 126.5             # box widened 3 mm on +x only (proud buttons): x extent about the VESA centre
+TAB_W, TAB_H, TAB_D = 253.0, 200.0, 37.5   # tablet box outer, cap included
+TAB_X0, TAB_X1 = -126.0, 127.0             # box widened 1 mm on +x only (proud buttons): x extent about the VESA centre
 LIFT_MAX = 6.0       # max free play with knob fully loose (nyloc above knob)
 STOP_PLAY = 3.0      # design margin: hard stop is at most this past the last notch
 VESA_T = 6.0
@@ -80,6 +80,7 @@ def tablet_min_y(yaw, tilt):
 _ys, _ts = YAW_MAX + STOP_PLAY, TILT_MAX + STOP_PLAY
 MINY = min(tablet_min_y(a, t) for a in (-_ys, 0, _ys) for t in (-_ts, 0, _ts))
 YA = math.ceil((WHEEL_HALF + CLEAR - MINY) / 5.0) * 5.0 + CR_EXTRA   # whole column shifts aft with the thicker cradle
+YA = min(YA, 159.0)   # pinned at the printed value: with the 255.5 wide box the formula above asks 164, but the checked clearance at the hard stops is still 30.3 mm (> CLEAR)
 
 
 def box(x0, x1, y0, y1, z0, z1):
@@ -113,6 +114,25 @@ def hexprism(af, h, base, d):
     pts = [V(r * math.cos(math.radians(60 * i + 30)), r * math.sin(math.radians(60 * i + 30)), 0) for i in range(7)]
     s = Part.Face(Part.makePolygon(pts)).extrude(V(0, 0, h))
     return baked(s, Placement(base, Rotation(V(0, 0, 1), d)))
+
+
+def star_knob(R, H, N, rs, d, af=13.1, k=5.0, ch=1.5):
+    """printed star knob for an M8 hex bolt (13 mm a/f, head 5.3): hex pocket open at the bottom (z = 0),
+    k deep so the head stands 0.3 proud and bears on the part, not the knob. Axis +z, top chamfered."""
+    s = cyl(R, H, V(0, 0, 0))
+    for i in range(N):
+        a = 2 * math.pi * i / N
+        s = s.cut(cyl(rs, H + 2, V(d * math.cos(a), d * math.sin(a), -1)))         # finger scallops
+    env = cyl(R + 0.01, H - ch, V(0, 0, 0)).fuse(Part.makeCone(R + 0.01, R - ch, ch, V(0, 0, H - ch)))
+    s = s.common(env)
+    s = s.cut(hexprism(af, k, V(0, 0, -0.01), 0))                                     # bolt head pocket
+    return s.removeSplitter()
+
+
+# star knobs (printed): yaw knob sits on the tower's Hirth disc, 17 mm from the stem -> R 15 max;
+# tilt knob sits on the tower's tilt boss (x = -14), 35 mm from the VESA plate -> R 20
+KNOB_YAW = dict(R=15.0, H=22.0, N=5, rs=4.5, d=16.5)    # M8 x 50 hex bolt
+KNOB_TILT = dict(R=20.0, H=16.0, N=6, rs=5.0, d=22.0)   # M8 x 45 hex bolt
 
 
 def hull2d(pts):
@@ -339,10 +359,12 @@ def build():
 
     print('STAGE', '# ---- hardware ----', flush=True)
     # ---- hardware ----
+    kyaw = baked(star_knob(**KNOB_YAW), Placement(V(0, YA, Z_Y + 14.3), Rotation()))
+    ktilt = baked(star_knob(**KNOB_TILT), Placement(V(-14.3, YA, H_T), Rotation(V(0, 1, 0), -90)))
     hwp = dict(bands)
     hwp.update({
-        "Knob_yaw_M8": (cyl(4, 45, V(0, YA, Z_Y - 30)).fuse(cyl(16, 14, V(0, YA, Z_Y + 14.2))), DARK),
-        "Knob_tilt_M8": (cyl(4, 50, V(-36, YA, H_T), V(1, 0, 0)).fuse(cyl(16, 14, V(-28.2, YA, H_T), V(-1, 0, 0))), DARK),
+        "Knob_yaw_M8": (cyl(4, 50, V(0, YA, Z_Y - 36)).fuse(kyaw), DARK),             # M8 x 50, head on the disc top (Z_Y + 14)
+        "Knob_tilt_M8": (cyl(4, 45, V(-14, YA, H_T), V(1, 0, 0)).fuse(ktilt), DARK),   # M8 x 45, head on the boss face (x = -14)
     })
     tablet = box(TAB_X0, TAB_X1, yv + VESA_T, yv + VESA_T + TAB_D, H_T - TAB_H / 2, H_T + TAB_H / 2)
 
@@ -402,7 +424,7 @@ def build():
                 if s.common(keep).Volume > 1e-3:
                     hits.append((n, "pedestal/wheel", a, t))
             mind = min(mind, P["Tablet"].distToShape(wheel)[0])
-            for n in ("Tablet", "VESA_Head"):
+            for n in ("Tablet", "VESA_Head", "Knob_yaw_M8", "Knob_tilt_M8"):
                 for f in ("Column", "Poutre"):
                     if P[n].common(posed(f)).Volume > 1e-3:
                         hits.append((n, f, a, t))
@@ -415,6 +437,20 @@ def build():
                     hits.append(("Tower", "Column", a, round(v, 1)))
     print('STAGE', 'rep["min_tablet_to_wheel_notches"]', flush=True)
     rep["min_tablet_to_wheel_notches"] = round(mind, 1)
+    # knob clearances (knob bodies only, bolt left out)
+    tw_up = allp["Tower"][0].common(box(-100, 100, -1e4, 1e4, Z_Y + 14.6, H_T + 100))
+    tw_side = allp["Tower"][0].common(box(-100, -14.6, -1e4, 1e4, -1e4, 1e4))
+    kg = {"yaw_knob_to_tower_stem": kyaw.distToShape(tw_up)[0],
+          "tilt_knob_to_tower": ktilt.distToShape(tw_side)[0] if tw_side.Volume > 0 else 99.0,
+          "tilt_knob_to_VESA_head": ktilt.distToShape(allp["VESA_Head"][0])[0],
+          "tilt_knob_to_tablet": ktilt.distToShape(tablet)[0]}
+    cg = 99.0
+    for a in range(-int(YAW_MAX), int(YAW_MAX) + 1, 15):
+        for l in (0.0, LIFT_MAX):
+            kp = baked(baked(kyaw, Placement(V(0, 0, l), Rotation())), Placement(V(), Rotation(V(0, 0, 1), a), V(0, YA, 0)))
+            cg = min(cg, kp.distToShape(allp["Column"][0])[0])
+    kg["yaw_knob_to_column_any_yaw_lift"] = cg
+    rep["knob_gaps_mm"] = {k: round(v, 1) for k, v in kg.items()}
     # hard-stop angles with joint lifted just enough to clear teeth, and fully loose
     ys = {l: stop_angle("yaw", l) for l in (3.6, LIFT_MAX)}
     tsp = {}
@@ -476,5 +512,8 @@ def build():
 
 
 doc, report, PARTS = build()
+# knobs in print orientation: top on the bed, hex pocket open upwards (no support)
+KNOBS = {n: baked(star_knob(**kw), Placement(V(0, 0, kw["H"]), Rotation(V(1, 0, 0), 180)))
+         for n, kw in (("Bouton_lacet", KNOB_YAW), ("Bouton_inclinaison", KNOB_TILT))}
 for k, v in report.items():
     print(k, v)

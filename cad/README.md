@@ -8,6 +8,7 @@ avec son module powerbank. Impression : PETG sur Bambu Lab A1.
 |---|---|---|
 | `support/` | `x35_tablet_mount_v5.py` | socle réglable (poutre à queue d'aronde, coulisseaux, berceaux en V + colliers inox, colonne réglable avant/arrière), tour orientable, tête VESA |
 | `boite/` | `x35_tablet_box.py` | boîte, cadre, poussoir marche, module powerbank, bouchon |
+| `pi/` | `x35_pi_box.py` | boîtier Pi 3B + écran 3,5" (fourreau Thingiverse 3473751, non fourni) + powerbank QX55, barres de blocage |
 
 Les paramètres (dimensions supposées du piédestal, de la tablette, de la powerbank)
 sont en tête de chaque script.
@@ -24,7 +25,8 @@ aux butées, taille A1), écrit les STL dans `../../stl/<boite|support>/`, le ST
 `build/` (ignoré par git) et le `.FCStd` dans le dossier du script.
 
 Construire la boîte avant le support : `TAB_W/TAB_H/TAB_D` du support doivent
-correspondre à l'encombrement de la boîte (250 × 200 × 37,5 mm, bouchon compris ; élargie de 3 mm côté boutons, `TAB_X0, TAB_X1`).
+correspondre à l'encombrement de la boîte (253 × 200 × 37,5 mm, bouchon compris ; élargie de 1 mm côté boutons, `TAB_X0, TAB_X1`).
+Tablette mesurée le 11/11 : 239 à 242 × 160 à 164 mm, le logement (244 mm) accepte les deux.
 
 ## Nomenclature (BOM)
 
