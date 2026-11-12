@@ -152,7 +152,7 @@ def hw_box(items, title="Il te faut"):
     return t
 
 
-def step(num, title, images, hw, text, warn=None, img_w=118 * mm):
+def step(num, title, images, hw, text, warn=None, img_w=118 * mm, stack=False):
     BADGE = ParagraphStyle("badge", parent=N, fontName="DVB", fontSize=20, leading=24, textColor=colors.white, alignment=1)
     head = Table([[Paragraph(num, BADGE), Paragraph(title, H2)]],
                  colWidths=[16 * mm, 170 * mm])
@@ -160,6 +160,9 @@ def step(num, title, images, hw, text, warn=None, img_w=118 * mm):
                               ("TOPPADDING", (0, 0), (0, 0), 2), ("BOTTOMPADDING", (0, 0), (0, 0), 4)]))
     if len(images) == 1:
         pics = img(images[0], img_w, 92 * mm)
+    elif stack:
+        pics = Table([[img(n, img_w, 62 * mm)] for n in images], colWidths=[img_w])
+        pics.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     else:
         w = img_w / 2 - 2 * mm
         cells = [img(n, w, 55 * mm) for n in images]
@@ -239,15 +242,20 @@ st.append(step("2", "Coulisseaux dans la poutre",
                ["m_2_coulisseaux"], [],
                ["Glisse chaque coulisseau par un bout de la poutre, dans la queue d'aronde de la face avant, "
                 "les crans contre les crans de la poutre.",
-                "Coulisseau_S d'un côté, Coulisseau_P de l'autre (ils sont symétriques). Ils doivent glisser à la main."]))
+                "Coulisseau_S d'un côté, Coulisseau_P de l'autre (ils sont symétriques). Ils doivent glisser à la main.",
+                "Ils ne sont pas vissés à la poutre pour l'instant : c'est la vis de pivot de l'étape 3 qui serre "
+                "ensemble poutre, coulisseau et berceau."]))
 st.append(step("3", "Berceaux et vis de pivot",
-               ["m_3_berceaux_pivots"],
+               ["m_3_berceaux_pivots", "m_3b_empilage_pivot"],
                [HW("hex", 6, 45, 2), HW("washer", 6, qty=2, od=18)],
-               ["Engage le pivot Ø14 du berceau dans le trou du coulisseau, le V vers l'avant.",
+               ["En bas, l'empilage d'un côté, dans l'axe de la vis : <b>vis + rondelle large → lumière de la poutre → "
+                "coulisseau → pivot du berceau → écrou M6 du berceau</b>. C'est la seule vis qui tient le coulisseau.",
+                "Engage le pivot Ø14 du berceau dans le trou du coulisseau, le V vers l'avant.",
                 "Passe la vis M6 × 45 avec sa rondelle large par l'arrière de la poutre, à travers la lumière, "
                 "le coulisseau et le berceau, jusque dans l'écrou du berceau.",
                 "Visse seulement au contact : le berceau doit encore tourner sur son pivot et le coulisseau "
                 "glisser dans la poutre."],
+               stack=True,
                warn="Vis de pivot : <b>45 mm, pas plus</b>. Plus longue, elle sort au fond du V et appuie sur le tube du pied."))
 st.append(step("4", "Pose sur les pieds arrière du piédestal",
                ["m_4_pietement", "m_4_pietement_arriere"],

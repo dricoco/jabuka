@@ -233,6 +233,23 @@ for tag, sx in (("S", 1), ("P", -1)):
            (arrow(V(sx * XS, 70, ZC - 45), V(sx * XS, 105, ZC - 45), 2.0), RED)]
 done.append(scene("m_3_berceaux_pivots", it, V(-0.65, -1.0, -0.45)))
 
+# ---- 3b: the pivot stack along the bolt axis (one side): bolt > washer > beam > slider > cradle > nut ----
+cut = Part.makeBox(90, 400, 200, V(XS - 45, -100, ZC - 100))
+yap = SP["RB"] * math.sqrt(2)
+pl = SP["clamp_pl"](1, ZC)
+nut_c = pl.multVec(V(0, yap + 1.0 + NUT_T / 2, 0))
+e_sl, e_cr, e_bolt = V(0, -35, 0), V(0, -80, 0), V(0, 45, 0)
+pb = V(XS, Y_BEAM_AFT, ZC)
+it = [(S("Poutre").common(cut), GREY),
+      (mv(S("Coulisseau_S"), e_sl), ORA),
+      (mv(S("Berceau_S"), e_cr), ORA),
+      (nut(nut_c + e_cr + pl.Rotation.multVec(V(1, 0, 0)) * 45, V(0, 1, 0), 6), STEEL),
+      (arrow(nut_c + e_cr + pl.Rotation.multVec(V(1, 0, 0)) * 39, nut_c + e_cr + pl.Rotation.multVec(V(1, 0, 0)) * 33, 1.2), RED),
+      (bolt(pb + e_bolt + V(0, 1.6, 0), V(0, -1, 0), 45, 6), STEEL),
+      (washer(pb + e_bolt * 0.5, V(0, -1, 0), 6, 18), STEEL),
+      (guide(pb + e_bolt * 0.5, nut_c + e_cr), RED)]
+done.append(scene("m_3b_empilage_pivot", it, V(-1.0, -0.25, -0.35)))
+
 # ---- 4: on the pedestal, rubber + hose clamps ----
 legs = [DS.getObject(n).Shape.copy() for n in ("Leg_aft_S", "Leg_aft_P")]
 clip = Part.makeBox(800, 200, 220, V(-400, -50, ZC - 110))
